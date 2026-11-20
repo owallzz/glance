@@ -50,7 +50,7 @@ Run the tests and the linter before every commit; CI runs the same checks.
 
 ## Releasing
 1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`), run `cargo build` to refresh `Cargo.lock`, commit, push, and wait for CI to pass on all three platforms.
-2. `git tag -a vX.Y.Z -m "glance vX.Y.Z" && git push origin vX.Y.Z`. `release.yml` checks the tag against the version and attaches Linux (self-hosted), macOS aarch64 and Windows x86_64 (Blacksmith) archives.
+2. `git tag -a vX.Y.Z -m "glance vX.Y.Z" && git push origin vX.Y.Z`. `release.yml` checks the tag against the version and attaches plain binaries (no archives) for Linux (self-hosted), macOS aarch64 and Windows x86_64 (Blacksmith).
 3. Write release notes with `gh release edit vX.Y.Z --notes-file ...`: what works, what doesn't, and the unsigned-build workarounds.
 
 ## Privacy

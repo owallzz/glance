@@ -11,7 +11,7 @@
 - **License:** none (all rights reserved). No LICENSE file.
 - **Repo:** `owallzz/glance`, private.
 - **CI:** fmt + clippy + test on each push. Linux runs on the owallzz self-hosted runner (`fedora:44` container); macOS (Apple Silicon) and Windows (x64) run clippy + test + release build on Blacksmith runners.
-- **Releases:** tagged GitHub Releases with Linux x86_64 (self-hosted runner), macOS aarch64 and Windows x86_64 (Blacksmith) archives. Installers (AppImage/.dmg/.msi) and signing come in M11.
+- **Releases:** tagged GitHub Releases with Linux x86_64 (self-hosted runner), macOS aarch64 and Windows x86_64 (Blacksmith) binaries, uploaded uncompressed. Installers (AppImage/.dmg/.msi) and signing come in M11.
 - **MVP feature set:** multi-person rooms, everyone can share at once, voice chat, shared system/app audio, text chat, webcam, **contacts**, **file sharing**.
 - **Resolution:** streams go above 1080p: 1440p, 4K (3840×2160), ultrawide (e.g. 5120×1440) and Source, at up to 60 fps (144 fps stretch). Above 1080p60 needs a hardware encoder (software H.264 can't keep up). The UI scales frames to each tile's on-screen size (see M1 results).
 - **File sharing:** drop, paste or attach files in room chat, or send to a contact. Transfers are peer-to-peer via `iroh-blobs` (BLAKE3-verified, resumable, no size limit), and anyone who downloaded a file can serve it to others in the room.

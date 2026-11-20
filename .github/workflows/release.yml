@@ -31,7 +31,7 @@ jobs:
       - name: Package
         run: |
           mkdir dist
-          tar -czf "dist/glance-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" -C target/release glance
+          cp target/release/glance "dist/glance-${GITHUB_REF_NAME}-linux-x86_64"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-linux
@@ -54,10 +54,10 @@ jobs:
         include:
           - name: macOS
             runs-on: blacksmith-6vcpu-macos-latest
-            archive: macos-aarch64.tar.gz
+            asset: macos-aarch64
           - name: Windows
             runs-on: blacksmith-4vcpu-windows-2025
-            archive: windows-x86_64.zip
+            asset: windows-x86_64.exe
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 90
     defaults:
@@ -75,13 +75,11 @@ jobs:
       - run: cargo build --release --locked -p glance-app
       - name: Package
         run: |
+          # Plain binaries, no archive: download and run.
           mkdir dist
-          name="glance-${GITHUB_REF_NAME}-${{ matrix.archive }}"
-          if [ "${{ matrix.name }}" = "Windows" ]; then
-            7z a "dist/$name" ./target/release/glance.exe
-          else
-            tar -czf "dist/$name" -C target/release glance
-          fi
+          bin=target/release/glance
+          [ "${{ matrix.name }}" = "Windows" ] && bin=target/release/glance.exe
+          cp "$bin" "dist/glance-${GITHUB_REF_NAME}-${{ matrix.asset }}"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.name }}
