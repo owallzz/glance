@@ -16,7 +16,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Linux: the owallzz self-hosted runner, in a Fedora container.
   check:
+    name: Linux
     runs-on: [self-hosted, Linux, X64]
     # The runner has no C compiler/linker, so Rust builds run in a container.
     container: fedora:44
@@ -35,3 +37,28 @@ jobs:
       - name: Fix workspace ownership
         if: always()
         run: chown -R "$(stat -c %u:%g "$GITHUB_WORKSPACE/..")" "$GITHUB_WORKSPACE"
+
+  # macOS and Windows: Blacksmith runners (not the self-hosted one).
+  # No containers here; the toolchain comes from rust-toolchain.toml.
+  native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            runs-on: blacksmith-6vcpu-macos-latest
+          - name: Windows
+            runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # actions/cache (used by rust-cache) is backed by Blacksmith's cache.
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo build --release --locked -p glance-app

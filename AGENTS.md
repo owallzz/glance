@@ -45,7 +45,7 @@ Run the tests and the linter before every commit; CI runs the same checks.
 - Commit in small steps, one idea per commit, imperative messages. Push after each commit and keep CI green.
 - Tick off milestones in `PLAN.md` in the commit that finishes them.
 - Git identity for this repo is set locally (`owallz`); don't change it.
-- CI runs on the owallzz org's self-hosted runner (`runs-on: [self-hosted, Linux, X64]`) in a `fedora:44` container. Never use GitHub-hosted runners. Don't `sudo` in workflows. System packages go in the `dnf install` line. Keep the "Fix workspace ownership" step last in every job.
+- CI: Linux jobs run on the owallzz org's self-hosted runner (`runs-on: [self-hosted, Linux, X64]`) in a `fedora:44` container. macOS and Windows jobs run on Blacksmith (`blacksmith-6vcpu-macos-latest`, `blacksmith-4vcpu-windows-2025`), and only those platforms use Blacksmith. Never use GitHub-hosted runners. Blacksmith jobs don't use containers or the ownership-fix step; caching uses upstream `actions/cache` via `Swatinem/rust-cache` (Blacksmith backs it). Don't `sudo` in workflows. System packages go in the `dnf install` line. Keep the "Fix workspace ownership" step last in every job.
 - Project skills live in `.claude/skills/`. Use them, and add one when a multi-step task keeps coming up.
 
 ## Privacy

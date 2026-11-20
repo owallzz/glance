@@ -11,7 +11,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Linux: the owallzz self-hosted runner, in a Fedora container.
   release:
+    name: Linux
     runs-on: [self-hosted, Linux, X64]
     container: fedora:44
     timeout-minutes: 60
@@ -32,7 +34,7 @@ jobs:
           tar -czf "dist/glance-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" -C target/release glance
       - uses: actions/upload-artifact@v7
         with:
-          name: dist
+          name: dist-linux
           path: dist/*
       - uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
@@ -42,3 +44,49 @@ jobs:
       - name: Fix workspace ownership
         if: always()
         run: chown -R "$(stat -c %u:%g "$GITHUB_WORKSPACE/..")" "$GITHUB_WORKSPACE"
+
+  # macOS and Windows: Blacksmith runners.
+  native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            runs-on: blacksmith-6vcpu-macos-latest
+            archive: macos-aarch64.tar.gz
+          - name: Windows
+            runs-on: blacksmith-4vcpu-windows-2025
+            archive: windows-x86_64.zip
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check tag matches workspace version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="glance-app") | .version')
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != v$v"; exit 1; }
+      - run: cargo build --release --locked -p glance-app
+      - name: Package
+        run: |
+          mkdir dist
+          name="glance-${GITHUB_REF_NAME}-${{ matrix.archive }}"
+          if [ "${{ matrix.name }}" = "Windows" ]; then
+            7z a "dist/$name" ./target/release/glance.exe
+          else
+            tar -czf "dist/$name" -C target/release glance
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/*
+      - uses: softprops/action-gh-release@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/*
