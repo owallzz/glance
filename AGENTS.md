@@ -48,6 +48,11 @@ Run the tests and the linter before every commit; CI runs the same checks.
 - CI: Linux jobs run on the owallzz org's self-hosted runner (`runs-on: [self-hosted, Linux, X64]`) in a `fedora:44` container. macOS and Windows jobs run on Blacksmith (`blacksmith-6vcpu-macos-latest`, `blacksmith-4vcpu-windows-2025`), and only those platforms use Blacksmith. Never use GitHub-hosted runners. Blacksmith jobs don't use containers or the ownership-fix step; caching uses upstream `actions/cache` via `Swatinem/rust-cache` (Blacksmith backs it). Don't `sudo` in workflows. System packages go in the `dnf install` line. Keep the "Fix workspace ownership" step last in every job.
 - Project skills live in `.claude/skills/`. Use them, and add one when a multi-step task keeps coming up.
 
+## Releasing
+1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`), run `cargo build` to refresh `Cargo.lock`, commit, push, and wait for CI to pass on all three platforms.
+2. `git tag -a vX.Y.Z -m "glance vX.Y.Z" && git push origin vX.Y.Z`. `release.yml` checks the tag against the version and attaches Linux (self-hosted), macOS aarch64 and Windows x86_64 (Blacksmith) archives.
+3. Write release notes with `gh release edit vX.Y.Z --notes-file ...`: what works, what doesn't, and the unsigned-build workarounds.
+
 ## Privacy
 This repo must not contain personal or identifying information. Never commit:
 - real names, email addresses, phone numbers, or home addresses (also not in `authors` fields or code comments)
