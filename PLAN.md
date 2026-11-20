@@ -172,7 +172,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - [x] **M5: Everyone shares at once.** Multiple simultaneous streams, keyframe requests and per-viewer backpressure (done in M4), plus bitrate adaptation, stats overlay, fullscreen and pop-out.
 - [x] **M6: Voice.** cpal + Opus + AEC/NS/VAD, jitter buffer, mixer, mute/deafen, speaking ring, per-user volume, device selection, sounds.
 - [x] **M7: Stream audio.** System/app audio with screen shares, per-stream volume.
-  - Linux: PipeWire capture of one app's output (excludes call audio) or the default sink's monitor ("Entire system"). Windows: WASAPI loopback of the default output. macOS: ScreenCaptureKit system audio excluding glance itself (compiles in CI; not yet run on a Mac).
+  - Linux: PipeWire capture of one app's output, or "Entire system", which links every other app's output into our capture stream and skips glance's own nodes (matched through their PipeWire client's process id), so viewers never hear the call echoed back. Windows: WASAPI loopback of the default output. macOS: ScreenCaptureKit system audio excluding glance itself (compiles in CI; not yet run on a Mac).
   - Opus at 64 kbps (music mode), sent as datagrams only to people watching the screen; receivers mix it as a separate source with its own volume.
 - [x] **M8: Webcam.** Camera tiles via nokhwa, sharing the video pipeline.
 - [ ] **M9: macOS + Windows backends.** Done so far: macOS .app bundle + .dmg in releases (usage strings, URL scheme, icon; ad-hoc signed), single instance with link hand-off, `glance://` registration on Linux/Windows, macOS open-URL events. SCK/WGC capture plus audio, VideoToolbox/Media Foundation encode/decode, URL scheme registration, permissions prompts.
