@@ -27,7 +27,7 @@ impl GlanceApp {
             .flex()
             .child(self.render_home_sidebar(p, cx))
             .child(self.render_contacts_page(p, cx))
-            .child(self.render_active_now(p))
+            .child(self.render_active_now(p, cx))
     }
 
     fn render_home_sidebar(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -333,60 +333,69 @@ impl GlanceApp {
         };
         let pid = c.profile.id;
         let can_ring = c.presence.can_ring();
-        let actions =
-            match c.state {
-                ContactState::Incoming => {
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(action(IconName::Check, "Accept", "accept").on_click(
-                            cx.listener(move |this, _, _, cx| this.accept_contact(pid, cx)),
-                        ))
-                        .child(action(IconName::X, "Ignore", "ignore").on_click(
-                            cx.listener(move |this, _, _, cx| this.remove_contact(pid, cx)),
-                        ))
-                }
-                ContactState::Outgoing => div().flex().child(
-                    action(IconName::X, "Cancel request", "cancel")
+        let online = c.presence.is_online();
+        let actions = match c.state {
+            ContactState::Incoming => div()
+                .flex()
+                .gap_2()
+                .child(
+                    action(IconName::Check, "Accept", "accept")
+                        .on_click(cx.listener(move |this, _, _, cx| this.accept_contact(pid, cx))),
+                )
+                .child(
+                    action(IconName::X, "Ignore", "ignore")
                         .on_click(cx.listener(move |this, _, _, cx| this.remove_contact(pid, cx))),
                 ),
-                ContactState::Blocked => div().flex().child(
-                    Button::new(SharedString::from(format!("unblock-{id}")))
-                        .small()
-                        .label("Unblock")
-                        .on_click(cx.listener(move |this, _, _, cx| this.unblock_contact(pid, cx))),
-                ),
-                ContactState::Mutual => div()
-                    .flex()
-                    .gap_2()
-                    .when(c.joinable && c.in_call.is_some(), |d| {
-                        d.child(
-                            Button::new(SharedString::from(format!("join-{id}")))
-                                .success()
-                                .small()
-                                .label("Join")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.request_join(pid);
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .when(can_ring, |d| {
-                        d.child(action(IconName::Phone, "Call", "call").on_click(
-                            cx.listener(move |this, _, _, cx| this.call_contacts(vec![pid], cx)),
-                        ))
-                    })
-                    .child(action(IconName::EllipsisVertical, "More", "more").on_click(
-                        cx.listener(move |this, _, _, cx| {
+            ContactState::Outgoing => div().flex().child(
+                action(IconName::X, "Cancel request", "cancel")
+                    .on_click(cx.listener(move |this, _, _, cx| this.remove_contact(pid, cx))),
+            ),
+            ContactState::Blocked => div().flex().child(
+                Button::new(SharedString::from(format!("unblock-{id}")))
+                    .small()
+                    .label("Unblock")
+                    .on_click(cx.listener(move |this, _, _, cx| this.unblock_contact(pid, cx))),
+            ),
+            ContactState::Mutual => div()
+                .flex()
+                .gap_2()
+                .when(c.joinable && c.in_call.is_some(), |d| {
+                    d.child(
+                        Button::new(SharedString::from(format!("join-{id}")))
+                            .success()
+                            .small()
+                            .label("Join")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.request_join(pid);
+                                cx.notify();
+                            })),
+                    )
+                })
+                .when(can_ring, |d| {
+                    d.child(action(IconName::Phone, "Call", "call").on_click(
+                        cx.listener(move |this, _, _, cx| this.call_contacts(vec![pid], cx)),
+                    ))
+                })
+                .when(online, |d| {
+                    d.child(
+                        action(IconName::FileText, "Send file", "sendfile").on_click(
+                            cx.listener(move |this, _, _, cx| this.send_file_to_contact(pid, cx)),
+                        ),
+                    )
+                })
+                .child(
+                    action(IconName::EllipsisVertical, "More", "more").on_click(cx.listener(
+                        move |this, _, _, cx| {
                             this.contact_menu = if this.contact_menu == Some(pid) {
                                 None
                             } else {
                                 Some(pid)
                             };
                             cx.notify();
-                        }),
+                        },
                     )),
-            };
+                ),
+        };
         let menu_open = self.contact_menu == Some(pid);
         let favorite = c.favorite;
         let menu_item = |key: &str, label: &'static str, danger: bool| {
@@ -540,13 +549,18 @@ impl GlanceApp {
         )
     }
 
-    fn render_active_now(&self, p: &Palette) -> impl IntoElement {
+    fn render_active_now(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let files: Vec<AnyElement> = (0..self.direct_files.len())
+            .map(|i| self.direct_file_card(p, i, cx))
+            .collect();
         let in_calls: Vec<&Contact> = self
             .contacts
             .iter()
             .filter(|c| c.in_call.is_some())
             .collect();
         div()
+            .id("active-now")
+            .overflow_y_scroll()
             .w(px(320.))
             .h_full()
             .flex_shrink_0()
@@ -590,6 +604,10 @@ impl GlanceApp {
                             ),
                     )
             }))
+            .when(!files.is_empty(), |d| {
+                d.child(div().pt_2().child(section_label(p, "FILES")))
+                    .children(files)
+            })
             .child(div().pt_2().child(section_label(p, "RECENT CALLS")))
             .children(self.calls.iter().map(|call| {
                 let names: Vec<String> = call

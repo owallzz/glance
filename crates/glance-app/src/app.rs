@@ -399,6 +399,8 @@ pub struct GlanceApp {
     pub presence_menu: bool,
     /// Contact whose "more" menu is open.
     pub contact_menu: Option<PeerId>,
+    /// Files sent to / received from contacts outside calls (newest first).
+    pub direct_files: Vec<crate::direct::DirectFile>,
     /// "Invite" panel in a room.
     pub invite_open: bool,
     /// Stream shown full-window (fullscreen viewing).
@@ -505,6 +507,7 @@ impl GlanceApp {
             _contacts_task: None,
             presence_menu: false,
             contact_menu: None,
+            direct_files: Vec::new(),
             invite_open: false,
             _tray: None,
             _tray_task: None,

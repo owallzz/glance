@@ -8,7 +8,7 @@ glance: peer-to-peer screen sharing rooms (multi-sharer, voice, chat, webcam, co
 | Host env (immutable Fedora only) | `source scripts/env.sh` |
 | Build | `cargo build` |
 | Run | `cargo run -p glance-app` (`-- --demo` for a populated fake room, `-- --spike N W H FPS` for the video spike) |
-| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]` (headless: joins, greets, echoes chat, toggles mute, accepts contact requests and answers rings by joining; `--ring-back` instead rings a new contact back once they leave; `--stream` shares a test pattern through the real encoder plus a 440 Hz tone as stream audio; `--tone` talks with a sine tone and prints who it hears speaking) |
+| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]` (headless: joins, greets, echoes chat, toggles mute, accepts contact requests and answers rings by joining; `--ring-back` instead rings a new contact back once they leave; `--file` also sends the file to anyone who becomes its contact; `--stream` shares a test pattern through the real encoder plus a 440 Hz tone as stream audio; `--tone` talks with a sine tone and prints who it hears speaking) |
 | Capture probe | `cargo run --release -p glance-media --example capture_probe [secs] [max_height]` (captures, encodes, prints fps and encode cost) |
 | Second identity | `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app` |
 | Auto-watch | `GLANCE_AUTOWATCH=1` watches every stream automatically (lets a second instance test viewing without clicks; a bot with it prints `hearing stream audio from ...`) |

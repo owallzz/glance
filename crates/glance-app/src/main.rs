@@ -4,6 +4,7 @@ mod app;
 mod bot;
 mod camera;
 mod contacts;
+mod direct;
 mod files;
 mod home;
 mod instance;

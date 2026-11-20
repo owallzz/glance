@@ -480,6 +480,7 @@ impl GlanceApp {
                     self.join_error = Some(format!("{name}'s call isn't open to join right now."));
                 }
             },
+            ContactEvent::FileReceived { from, file } => self.on_contact_file(from, file),
             ContactEvent::Undeliverable { to, what } => {
                 let name = self
                     .profile_of(peer_id(to))

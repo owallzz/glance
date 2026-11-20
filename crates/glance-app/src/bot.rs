@@ -180,6 +180,7 @@ pub fn run(
             ));
         }
     });
+    let mut offered: Option<glance_proto::WireFile> = None;
     if let Some(path) = file {
         // Wait until we're connected to someone, or the offer reaches no one.
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
@@ -207,12 +208,14 @@ pub fn run(
         let mime = mime_guess::from_path(&path)
             .first_or_octet_stream()
             .to_string();
-        room.send(Command::OfferFile(glance_proto::WireFile {
+        let wire = glance_proto::WireFile {
             hash,
             name,
             size,
             mime,
-        }));
+        };
+        room.send(Command::OfferFile(wire.clone()));
+        offered = Some(wire);
         println!("offered {} ({size} bytes)", path.display());
     }
     // Bots fetch every file offered to them (into a temp dir) and say so.
@@ -311,6 +314,14 @@ pub fn run(
                         contacts.send(ContactCommand::SetRelations(relations.borrow().clone()));
                         contacts.send(ContactCommand::Accept(*id));
                         println!("accepted contact {}", profile.name);
+                        // `--file` also goes straight to new contacts.
+                        if let Some(file) = &offered {
+                            contacts.send(ContactCommand::SendFile {
+                                to: *id,
+                                file: file.clone(),
+                            });
+                            println!("sent {} to {}", file.name, profile.name);
+                        }
                     }
                     ContactEvent::Ring {
                         from,

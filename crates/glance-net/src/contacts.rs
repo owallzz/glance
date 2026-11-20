@@ -62,6 +62,11 @@ pub enum ContactCommand {
         to: EndpointId,
         link: Option<String>,
     },
+    /// Send a file (already in our store) to a mutual contact.
+    SendFile {
+        to: EndpointId,
+        file: glance_proto::WireFile,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +110,11 @@ pub enum ContactEvent {
     JoinTicket {
         from: EndpointId,
         link: Option<String>,
+    },
+    /// A mutual contact sent us a file.
+    FileReceived {
+        from: EndpointId,
+        file: glance_proto::WireFile,
     },
     /// A request or ring couldn't be delivered (peer unreachable).
     Undeliverable {
@@ -266,6 +276,7 @@ impl Actor {
                         ContactMsg::Request { .. } => "contact request",
                         ContactMsg::Ring { .. } => "call",
                         ContactMsg::JoinRequest => "join request",
+                        ContactMsg::File(_) => "file",
                         _ => continue,
                     };
                     let _ = self.events.send(ContactEvent::Undeliverable {
@@ -411,15 +422,32 @@ impl Actor {
                 }
             },
             ContactMsg::Accept { profile } if rel == Some(Relation::Outgoing) => {
+                // Mutual from this moment, so whatever they send right behind
+                // the acceptance (their status, a file) isn't dropped while
+                // the app catches up with SetRelations.
+                self.relations.insert(from, Relation::Mutual);
                 let _ = self
                     .events
                     .send(ContactEvent::Accepted { id: from, profile });
+                if let Some(peer) = self.peers.get(&from) {
+                    if let Some(info) = self.presence.clone() {
+                        let _ = peer.tx.send(ContactMsg::Presence(info));
+                    }
+                    let _ = self.events.send(ContactEvent::Online {
+                        id: from,
+                        profile: peer.profile.clone(),
+                        presence: None,
+                    });
+                }
             }
             ContactMsg::Remove if rel.is_some() && rel != Some(Relation::Blocked) => {
                 let _ = self.events.send(ContactEvent::Removed(from));
             }
             ContactMsg::Presence(info) if mutual => {
                 let _ = self.events.send(ContactEvent::Presence { id: from, info });
+            }
+            ContactMsg::File(file) if mutual => {
+                let _ = self.events.send(ContactEvent::FileReceived { from, file });
             }
             ContactMsg::Ring {
                 call_id,
@@ -589,6 +617,7 @@ impl Actor {
                 }
             }
             ContactCommand::Remove(to) => self.deliver(to, ContactMsg::Remove),
+            ContactCommand::SendFile { to, file } => self.deliver(to, ContactMsg::File(file)),
             ContactCommand::Ring {
                 to,
                 call_id,

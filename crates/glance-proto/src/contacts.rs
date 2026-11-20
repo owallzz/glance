@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::room::WireProfile;
+use crate::room::{WireFile, WireProfile};
 
 pub const CONTACTS_ALPN: &[u8] = b"glance/contacts/1";
 
@@ -70,6 +70,8 @@ pub enum ContactMsg {
     JoinTicket {
         link: Option<String>,
     },
+    /// A file for you (fetch it from the sender's blob store by hash).
+    File(WireFile),
 }
 
 #[cfg(test)]
@@ -90,6 +92,12 @@ mod tests {
                 link: "glance://join/x".into(),
                 members: vec!["Ana".into()],
             },
+            ContactMsg::File(WireFile {
+                hash: [7; 32],
+                name: "notes.txt".into(),
+                size: 12,
+                mime: "text/plain".into(),
+            }),
             ContactMsg::Presence(PresenceInfo {
                 presence: WirePresence::DoNotDisturb,
                 in_call: Some(3),

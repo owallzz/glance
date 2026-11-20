@@ -214,3 +214,84 @@ async fn strangers_cant_ring_and_blocked_peers_are_refused() {
         "{got:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_go_to_mutual_contacts_outside_calls() {
+    let (a, b) = (node("Ana").await, node("Ben").await);
+    let rooms = meet(&a, &b).await;
+    let (ca, cb) = (a.contacts().clone(), b.contacts().clone());
+    ca.send(ContactCommand::SetRelations(rel(b.id(), Relation::Mutual)));
+    cb.send(ContactCommand::SetRelations(rel(a.id(), Relation::Mutual)));
+    // Leave the room: the file goes over the contacts link alone.
+    drop(rooms);
+
+    let dir = std::env::temp_dir().join(format!("glance-cfile-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("notes.txt");
+    std::fs::write(&src, b"hello from ana, outside a call").unwrap();
+    let (hash, size) = a.files().add(&src).await.unwrap();
+    let file = glance_proto::WireFile {
+        hash,
+        name: "notes.txt".into(),
+        size,
+        mime: "text/plain".into(),
+    };
+    ca.send(ContactCommand::SendFile {
+        to: b.id(),
+        file: file.clone(),
+    });
+    let ev = expect(&cb, "file", |e| {
+        matches!(e, ContactEvent::FileReceived { .. })
+    })
+    .await;
+    assert_eq!(
+        ev,
+        ContactEvent::FileReceived {
+            from: a.id(),
+            file: file.clone()
+        }
+    );
+    b.files()
+        .download(b.endpoint(), hash, vec![a.id()], |_| {})
+        .await
+        .unwrap();
+    let out = dir.join("got.txt");
+    b.files().export(hash, &out).await.unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), std::fs::read(&src).unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn messages_right_after_acceptance_are_not_dropped() {
+    let (a, b) = (node("Ana").await, node("Ben").await);
+    let _rooms = meet(&a, &b).await;
+    let (ca, cb) = (a.contacts().clone(), b.contacts().clone());
+    ca.send(ContactCommand::SetRelations(rel(
+        b.id(),
+        Relation::Outgoing,
+    )));
+    ca.send(ContactCommand::SendRequest(b.id()));
+    expect(&cb, "request", |e| {
+        matches!(e, ContactEvent::RequestReceived { .. })
+    })
+    .await;
+    // Ben accepts and immediately sends a file; Ana's app hasn't updated its
+    // relations yet.
+    cb.send(ContactCommand::SetRelations(rel(a.id(), Relation::Mutual)));
+    cb.send(ContactCommand::Accept(a.id()));
+    let file = glance_proto::WireFile {
+        hash: [3; 32],
+        name: "hi.txt".into(),
+        size: 2,
+        mime: "text/plain".into(),
+    };
+    cb.send(ContactCommand::SendFile {
+        to: a.id(),
+        file: file.clone(),
+    });
+    let ev = expect(&ca, "file", |e| {
+        matches!(e, ContactEvent::FileReceived { .. })
+    })
+    .await;
+    assert_eq!(ev, ContactEvent::FileReceived { from: b.id(), file });
+}
