@@ -12,7 +12,9 @@
 - **Repo:** `owallzz/glance`, private.
 - **CI:** fmt + clippy + test on each push, on the owallzz self-hosted runner (`fedora:44` container).
 - **Releases:** tagged GitHub Releases. The self-hosted runner builds the Linux x86_64 binary and AppImage. macOS and Windows release builds are an open question (see §6).
-- **MVP feature set:** multi-person rooms, everyone can share at once, voice chat, shared system/app audio, text chat, webcam, **contacts**.
+- **MVP feature set:** multi-person rooms, everyone can share at once, voice chat, shared system/app audio, text chat, webcam, **contacts**, **file sharing**.
+- **Resolution:** streams go above 1080p: 1440p, 4K (3840×2160), ultrawide (e.g. 5120×1440) and Source, at up to 60 fps (144 fps stretch). Above 1080p60 needs a hardware encoder (software H.264 can't keep up). The UI scales frames to each tile's on-screen size (see M1 results).
+- **File sharing:** drop, paste or attach files in room chat, or send to a contact. Transfers are peer-to-peer via `iroh-blobs` (BLAKE3-verified, resumable, no size limit), and anyone who downloaded a file can serve it to others in the room.
 - **Contacts:**
   - Added by a **mutual request**, offered after a call or from the participant list.
   - Invites **ring** with Join/Decline, and unanswered rings become missed calls.
@@ -50,7 +52,7 @@ Consequences:
 
 **v0.1 does:**
 - **Rooms:** "Start a room" gives a link (`glance://join/<ticket>`) plus a copyable code, auto-copied. Others join by link click (URL scheme), by pasting, or by the Join box. There's a display name and avatar colour on first run and no accounts. The identity key is persisted so friends recognise you.
-- **Screen sharing:** anyone can Go Live, and many at once. The picker offers screens and windows (thumbnails on X11/macOS/Windows, OS picker on Wayland). Quality presets: 720p30, 1080p30, 1080p60, Source. There's an optional "share audio" toggle.
+- **Screen sharing:** anyone can Go Live, and many at once. The picker offers screens and windows (thumbnails on X11/macOS/Windows, OS picker on Wayland). Quality presets: 720p30, 1080p60, 1440p60, 4K30, 4K60, Source (native resolution and refresh, ultrawide included). Presets the machine's encoder can't sustain are shown disabled with a reason. There's an optional "share audio" toggle.
 - **Watching:** a LIVE badge in the participant list and a "Watch stream" tile. Views:
   - grid view, focus view with filmstrip, double-click to focus, fullscreen
   - pop-out stream window
@@ -58,6 +60,17 @@ Consequences:
   - stream stats overlay (resolution, fps, bitrate, direct/relayed, latency)
 - **Voice:** mic, mute/deafen, input/output device pick, input sensitivity / VAD, noise suppression and echo cancel, a green speaking ring, per-user volume, join/leave sounds (our own).
 - **Text chat:** a room chat panel with ephemeral history in the session and unread badge.
+- **File sharing:**
+  - **Sending:**
+    - Drag files or folders onto the room window, paste from the clipboard, or click the attach button in chat. A file card (name, size, type icon) is posted to everyone in the room.
+    - From the contacts home, "Send file" sends to one contact, who gets a notification. This works without a call when both apps are online.
+  - **Receiving:**
+    - Images and short videos under 25 MB preview inline automatically.
+    - Other files need a click on Download (or Save as…), and save to the Downloads folder by default.
+    - The file card shows a progress bar, speed, and ETA. Received files are hash-verified.
+    - Executable types get an "Are you sure?" prompt before opening.
+  - **Serving:** files are served from the sender's disk while they're online. Nothing is uploaded until someone downloads. Each receiver also serves its copy to the rest of the room, so the load spreads.
+  - Interrupted transfers resume. Cancel and retry are available. Transfers run at lower priority than voice and video, so they don't wreck a call.
 - **Webcam:** a camera toggle that shows camera tiles alongside screen tiles, with a device pick.
 - **Contacts:** a Discord-style home screen with a contacts list (tabs: Online / All / Pending / Blocked) and recent calls.
   - **Adding:**
@@ -75,10 +88,12 @@ Consequences:
   - **Manage:** nickname, favorite (pinned to top), remove, block (rejects connections from that key). Contacts are stored locally in `contacts.json` in the data dir, written atomically.
 - **Background:** a tray icon with a menu (Open, status picker, Quit), start on login, and closing the window hides to the tray. In the tray glance only keeps contact connections open, and the window and UI state are dropped.
 - **Settings:** audio, video, stream quality defaults, relay URL, appearance (dark and light), and in-app keybinds (mute, deafen). Persisted as TOML in the OS config dir.
-- Light and snappy: target <150 ms cold start and <80 MB RAM idle, with no work done when nobody watches.
+- Light and snappy: target <150 ms cold start, 0% CPU and <100 MB proportional memory (PSS) idle, and no work done when nobody watches. M1 measured 0% CPU and about 49 MB private memory idle. Most of the 179 MB RSS is shared GPU driver libraries.
 
 **Out of scope for now:**
-- Accounts, servers/guilds, persistent chat history, DMs/messaging contacts outside a call.
+- Accounts, servers/guilds, persistent chat history, DMs/messaging contacts outside a call (sending a file to a contact is the one exception).
+- Offline file delivery: the sender must be online, or someone else who has the file. There's no cloud storage.
+- Codecs beyond H.264 (so 8K and HDR are out for now).
 - Syncing contacts across your own devices (each install is its own identity for now). Contact discovery by username or search, since adding needs a shared call or link.
 - An SFU/relay media server, and recording.
 - Remote control of a shared screen, and drawing/annotation.
@@ -114,6 +129,10 @@ Consequences:
   - A second ALPN `glance-contacts/1` handles contact requests, presence, rings, and join-ticket requests. Each app keeps a lightweight QUIC connection to each online mutual contact. It reconnects with backoff, so idle cost is keepalives only.
   - Every message is checked against the authenticated remote EndpointId, so a ring can only come from a saved contact and blocked keys are dropped at accept.
   - The contact store and presence logic live in `glance-core` as a pure state machine with tests. The network side lives in `glance-net/contacts`.
+- **Files:**
+  - Each app runs an `iroh-blobs` store (`glance-net/files`) on a third ALPN, with an on-disk store in the data dir and imports done by reference so big files aren't copied.
+  - A file offer is a chat message carrying the blob hash, name, size, MIME type, and the provider list. Downloads fetch from any peer in the room that has the file.
+  - Partial downloads persist, so they resume after restart.
 - **Media flow:** the sharer captures, converts BGRA to I420 on the capture thread, encodes once, and fans packets out to each subscribed viewer. Each viewer has a bounded queue. If a queue overflows, it drops until the next keyframe and requests one (PLI-like). On the viewer side, a decode thread produces BGRA `Arc<Frame>` and the UI swaps the image and requests a repaint only for visible tiles.
 - **Audio:** 20 ms Opus frames go out as QUIC datagrams, through a per-peer jitter buffer and then a mixer to the output device. Shared-screen audio is a separate Opus track tied to that stream's volume slider.
 - **Threads:** a tokio runtime for net, dedicated threads for capture/encode/decode/audio, and the gpui main thread for UI. Channels are bounded crossbeam/tokio channels.
@@ -123,7 +142,7 @@ glance/
   Cargo.toml            # workspace
   crates/
     glance-proto/       # messages, framing, ticket encode/decode (+ tests)
-    glance-net/         # iroh endpoint, room mesh, streams (+ in-process 2–3 peer tests)
+    glance-net/         # iroh endpoint, room mesh, streams, contacts, files (+ in-process 2–3 peer tests)
     glance-media/       # capture/, video/, audio/, webcam/ with per-OS backends
     glance-core/        # room + contacts state machines, stores, session controller (+ tests)
     glance-app/         # gpui-kit UI, tray, notifications, binary `glance` (also `glance bot`)
@@ -136,17 +155,24 @@ glance/
 Each milestone ends with something that runs. Commit and push in small steps.
 
 - [x] **M0: Scaffold.** Workspace, gpui-kit window with Discord-style theme tokens and Inter, CI green, README/AGENTS.md.
-- [ ] **M1: Video render spike.** A test pattern at 1080p60 rendered in a gpui tile. Measure CPU/GPU and pick the frame-upload path.
+- [x] **M1: Video render spike.** Test-pattern tiles at up to 4K60, measured.
+  - **Result:** per-frame `RenderImage` swap plus `drop_image` works.
+    - Uploading full 4K every frame costs about 65% of the UI thread (~50 fps).
+    - Fix: tiles publish their on-screen pixel size and producers scale frames to it.
+    - After the fix, 4 × 4K60 and 9 × 1440p60 all paint at 60 fps with the UI thread under 8%.
+    - Native Wayland is required: XWayland throttles to about 1 fps in the background.
+  - **Open:** fullscreen 4K on a 4K monitor still uploads full frames. If that's too heavy, patch `gpui-pre-wgpu` with a persistent texture plus YUV upload (see §6).
 - [ ] **M2: UI shell with fake data.** Home (Start/Join), room view (participant sidebar with avatars, speaking rings, and LIVE badges), stage grid/focus/filmstrip, control bar, user panel, chat panel, Go Live modal, settings dialog. Fully clickable.
 - [ ] **M3: Rooms over iroh.** Create/join by ticket, mesh membership, presence, text chat, connection indicator. Two or three instances on one machine, plus `glance bot`.
 - [ ] **M3b: Contacts + ringing.** Persisted identity, end-of-call "Add contact", mutual requests, contacts home (Online/All/Pending/Blocked), presence/status, Call and Invite rings with incoming-call popup, missed calls, block/remove, tray + start on login + OS notifications. Tested with two local instances using separate data dirs.
+- [ ] **M3c: File sharing.** iroh-blobs store, drag/drop, paste and attach in chat, file cards with progress, inline image preview, multi-provider download, resume, send-to-contact.
 - [ ] **M4: First real screen share (Linux).** Portal+PipeWire and X11 capture, openh264 encode/decode, one sharer to many watchers, Watch/Stop watching, encode-only-when-watched.
 - [ ] **M5: Everyone shares at once.** Multiple simultaneous streams, keyframe requests, per-viewer backpressure, bitrate adaptation, stats overlay, fullscreen and pop-out.
 - [ ] **M6: Voice.** cpal + Opus + AEC/NS/VAD, jitter buffer, mixer, mute/deafen, speaking ring, per-user volume, device selection, sounds.
 - [ ] **M7: Stream audio.** System/app audio with screen shares (Linux PipeWire monitor), per-stream volume.
 - [ ] **M8: Webcam.** Camera tiles via nokhwa, sharing the video pipeline.
 - [ ] **M9: macOS + Windows backends.** SCK/WGC capture plus audio, VideoToolbox/Media Foundation encode/decode, URL scheme registration, permissions prompts.
-- [ ] **M10: Hardware codecs on Linux + quality presets.** VA-API/NVENC encode/decode with openh264 fallback, up to 1440p60/Source.
+- [ ] **M10: Hardware codecs on Linux + quality presets.** VA-API/NVENC encode/decode with openh264 fallback, up to 4K60/ultrawide/Source, plus a fused I420→BGRA scale+convert at tile size on the decode side.
 - [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.
 
 ## 5. Running and testing
@@ -155,6 +181,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - Proto round-trips, room state machine, jitter buffer, and ticket parsing.
   - In-process iroh tests (relay disabled, localhost) with 3 peers exchanging synthetic frames and chat.
   - Contact tests: mutual add, ring/decline/timeout, block, DND.
+  - File tests: 3-peer transfer, resume after interruption, hash mismatch rejected, second downloader fetches from the first receiver.
 - Multiple local identities: `GLANCE_DATA_DIR=/tmp/... cargo run -p glance-app` runs a second "person" on one machine.
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`
 - Manual end-to-end: run two app instances plus one or two `glance bot` peers locally, then a real test across two networks.
@@ -165,6 +192,9 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - **gpui-kit is pre-1.0** and pins exact `gpui-pre` versions, so expect API churn. Pin the version and wrap gpui-kit use in our own components.
 - **Video in gpui:** if per-frame `RenderImage` swaps are too slow, write a custom element with a persistent GPU texture. M1 exists to find this out early.
 - **Wayland portal quirks** vary by compositor (GNOME/KDE/Hyprland). Test on the local desktop first.
+- **Fullscreen 4K upload:** gpui on Linux/Windows has no external-texture surface, so a full-size 4K frame is a new atlas texture plus three copies. Fallback: a small `[patch.crates-io]` fork of `gpui-pre-wgpu` adding a persistent video texture with YUV planes and shader conversion.
+- **4K needs hardware encode:** sharers without a usable GPU encoder are capped at 1080p (openh264). This shows in the Go Live picker.
+- **Open (file sharing):** auto-preview limit (25 MB) and default save folder are guesses, so say if you want them different. Folder sharing is planned as a zipped/collection blob, and per-file approval for big files from non-contacts is still to decide.
 - **Mesh bandwidth** caps practical room size for high-quality shares. Document it and warn in the UI. An optional SFU is a later project.
 - **Contacts depend on both apps running** (tray + autostart) and on n0's discovery service. If discovery is down, contacts on another network can't be rung, but a pasted link still works.
 - **Linux tray** needs a StatusNotifierItem host (GNOME needs the AppIndicator extension). There's a fallback, but it's less seamless.
