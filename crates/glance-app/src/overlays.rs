@@ -430,9 +430,11 @@ impl GlanceApp {
                     $desc,
                     Switch::new($id)
                         .checked(self.settings.$field)
-                        .on_click(cx.listener(|this, v: &bool, _, cx| {
+                        .on_click(cx.listener(|this, v: &bool, window, cx| {
                             this.settings.$field = *v;
                             this.on_settings_changed();
+                            this.apply_tray(window, cx);
+                            crate::tray::sync_autostart(this.settings.autostart);
                             cx.notify();
                         })),
                 )

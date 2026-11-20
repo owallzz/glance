@@ -141,6 +141,46 @@ impl Settings {
 }
 
 impl GlanceApp {
+    /// Show or hide the tray icon to match the setting.
+    pub fn apply_tray(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let want = self.settings.tray && self.net.is_some();
+        if !want {
+            self._tray = None;
+            self._tray_task = None;
+            return;
+        }
+        if self._tray.is_some() {
+            return;
+        }
+        let Some(net) = self.net.clone() else { return };
+        let (tx, rx) = flume::unbounded();
+        self._tray = crate::tray::start(&net, tx);
+        if self._tray.is_none() {
+            return;
+        }
+        self._tray_task = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Ok(ev) = rx.recv_async().await {
+                let quit = this
+                    .update_in(cx, |app, window, cx| match ev {
+                        crate::tray::TrayEvent::Open => {
+                            window.activate_window();
+                            false
+                        }
+                        crate::tray::TrayEvent::SetPresence(p) => {
+                            app.set_presence(p, cx);
+                            false
+                        }
+                        crate::tray::TrayEvent::Quit => true,
+                    })
+                    .unwrap_or(true);
+                if quit {
+                    let _ = cx.update(|_, cx| cx.quit());
+                    break;
+                }
+            }
+        }));
+    }
+
     pub fn save_settings(&self) {
         if let Some(net) = &self.net
             && let Err(e) = self.settings.save(&net.data_dir)
@@ -227,6 +267,8 @@ pub struct GlanceApp {
     pub contact_menu: Option<PeerId>,
     /// "Invite" panel in a room.
     pub invite_open: bool,
+    pub _tray: Option<crate::tray::Tray>,
+    pub _tray_task: Option<Task<()>>,
     /// Audio devices, listed when the voice settings open.
     pub audio_devices: Option<(
         Vec<glance_media::audio::device::DeviceInfo>,
@@ -319,7 +361,21 @@ impl GlanceApp {
             presence_menu: false,
             contact_menu: None,
             invite_open: false,
+            _tray: None,
+            _tray_task: None,
         };
+        // While the tray icon is up, closing the window minimizes it so calls
+        // keep going and contacts can still ring you.
+        window.on_window_should_close(cx, |window, _cx| {
+            if crate::tray::active() {
+                window.minimize_window();
+                false
+            } else {
+                true
+            }
+        });
+        app.apply_tray(window, cx);
+        crate::tray::sync_autostart(app.settings.autostart && app.net.is_some());
         if !demo_room {
             app.start_contacts(cx);
         }
@@ -774,6 +830,14 @@ impl Render for GlanceApp {
 /// the window menu, and the minimize/maximize/close buttons per platform.
 fn render_title_bar(p: &Palette) -> impl IntoElement {
     gpui_kit::component::TitleBar::new()
+        // Linux close button (other platforms use on_window_should_close).
+        .on_close_window(|_, window, _| {
+            if crate::tray::active() {
+                window.minimize_window();
+            } else {
+                window.remove_window();
+            }
+        })
         .h(px(32.))
         .bg(p.bg_rail)
         .border_b_0()

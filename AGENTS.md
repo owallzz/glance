@@ -28,6 +28,7 @@ Run the tests and the linter before every commit; CI runs the same checks.
   - `voice.rs`: audio engine per room, mute/deafen, speaking rings, per-user volume, device and processing settings.
   - `streaming.rs`: Go Live (capture -> broadcast), own-stream preview, watching others (feed -> decoder -> tile).
   - `contacts.rs`: contact book (contacts.json), presence, calling/ringing contacts, incoming calls with ringtone and OS notification, missed calls, call history and the "call ended" add-contact prompt. Settings persist in settings.json (`app.rs`).
+  - `tray.rs`: tray icon (ksni on Linux, tray-icon on macOS/Windows), close-to-tray (minimize while the tray is up), start on login via auto-launch (release builds only, never with `GLANCE_DATA_DIR`).
   - `files.rs`: send (attach/drag & drop), offers, downloads with progress into Downloads (`GLANCE_DOWNLOAD_DIR` overrides), inline image previews.
   - `ui.rs`: shared widgets (Avatar, icon_button, pill, live_badge).
   - `video.rs`: `VideoView` tile. `spike.rs`: the render benchmark.
@@ -71,6 +72,8 @@ This repo must not contain personal or identifying information. Never commit:
 Check the diff for these before every commit.
 
 ## Gotchas
+- A gpui window can have helper X windows with the same title; when scripting, pick the one whose geometry matches the real window.
+- Stock GNOME has no StatusNotifierItem host: the tray doesn't appear and closing the window quits (by design).
 - Never `pkill -f` / `pgrep -f` with a pattern that appears in your own command (e.g. `glance bot`, a script name): it matches your shell and kills it. Use `pgrep -x glance` and pids you saved.
 - xdotool `mousemove --window` misplaces the pointer for our client-decorated window; compute absolute coordinates from `getwindowgeometry --shell` (as `scripts/shot.sh` does).
 - Linux capture needs PipeWire headers (`pipewire-devel`, or `brew install pipewire` on the immutable dev host) and clang for bindgen. zed-scap's own Wayland path is disabled: it needs libspa 0.8, which doesn't build against PipeWire 1.x.

@@ -12,6 +12,7 @@ mod session;
 mod spike;
 mod streaming;
 mod theme;
+mod tray;
 mod ui;
 mod video;
 mod voice;
@@ -123,7 +124,12 @@ fn main() {
                                 .filter(|_| a.starts_with("glance://"))
                         })
                     });
+                let hidden = args.iter().any(|a| a == "--hidden");
                 gpui_kit::open_window(options, cx, |window, cx| {
+                    // Started at login: stay out of the way (tray only).
+                    if hidden {
+                        window.minimize_window();
+                    }
                     cx.new(|cx| {
                         let mut app = app::GlanceApp::new(demo, net, window, cx);
                         if let Some(ticket) = join
