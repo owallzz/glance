@@ -155,3 +155,23 @@ async fn forged_ticket_is_rejected() {
             .all(|e| !matches!(e, RoomEvent::MemberJoined { .. }))
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn chat_sent_right_after_joining_arrives() {
+    let (na, nb) = (node().await, node().await);
+    let a = na
+        .create_room(profile("Ana"), MemberState::default())
+        .await
+        .unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+    b.send(Command::Chat("hi Ana!".into()));
+    let ev = expect(&a, "greeting at a", |e| matches!(e, RoomEvent::Chat { .. })).await;
+    assert!(
+        matches!(ev, RoomEvent::Chat { ref text, .. } if text == "hi Ana!"),
+        "{ev:?}"
+    );
+}

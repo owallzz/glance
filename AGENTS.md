@@ -8,6 +8,9 @@ glance: peer-to-peer screen sharing rooms (multi-sharer, voice, chat, webcam, co
 | Host env (immutable Fedora only) | `source scripts/env.sh` |
 | Build | `cargo build` |
 | Run | `cargo run -p glance-app` (`-- --demo` for a populated fake room, `-- --spike N W H FPS` for the video spike) |
+| Test peer | `cargo run -p glance-app -- bot <link> [name]` (headless: joins, greets, echoes chat, toggles mute) |
+| Second identity | `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app` |
+| Local only | `GLANCE_RELAY=off` (no relays, direct addresses only); `GLANCE_RELAY=<url>` for a custom relay |
 | Screenshot | `scripts/shot.sh out.png 2 --demo` (see `.claude/skills/run-glance`) |
 | Test | `cargo test --workspace` |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` |
@@ -17,14 +20,15 @@ Run the tests and the linter before every commit; CI runs the same checks.
 
 ## Layout
 - `crates/glance-app`: gpui-kit UI, binary `glance`.
+  - `net.rs`: tokio runtime, identity key + profile.json in the data dir, helpers to run network futures off the UI thread. `session.rs`: start/join rooms and apply `RoomEvent`s to UI state. `bot.rs`: headless test peer.
   - `app.rs`: root view `GlanceApp` (all UI state, rail, user panel, key actions). Screens are `impl GlanceApp` blocks in `home.rs`, `room.rs`, and `overlays.rs` (Go Live, settings).
   - `ui.rs`: shared widgets (Avatar, icon_button, pill, live_badge).
   - `video.rs`: `VideoView` tile. `spike.rs`: the render benchmark.
   - `theme.rs` + `assets/themes/glance.json`: design tokens and the gpui-kit component theme (dark + light).
 - `crates/glance-core`: view-model types the UI renders (`model.rs`), formatting helpers, `demo.rs` fake data. Room/contacts state machines land here (no I/O, unit-tested).
-- `crates/glance-net`: iroh endpoint, room mesh, media streams, contacts protocol.
+- `crates/glance-net`: `Node` (iroh endpoint + router) and the room mesh actor (`room.rs`). `tests/room_mesh.rs` runs 3 in-process peers. Media, contacts and files land here next.
 - `crates/glance-media`: `VideoFrame`, `TargetSize` and `FrameScaler` (scale frames to tile size), the test `pattern`. Capture, codecs and audio land here behind per-OS traits.
-- `crates/glance-proto`: wire messages, framing, tickets.
+- `crates/glance-proto`: tickets (`glance://join/...`), room control messages and join proofs, length-prefixed postcard framing. Breaking wire changes get a new ALPN.
 - `scripts/`: host build helpers and `shot.sh` (screenshots).
 - `.claude/skills/run-glance`: how to launch, screenshot and measure the app.
 
@@ -55,6 +59,8 @@ This repo must not contain personal or identifying information. Never commit:
 Check the diff for these before every commit.
 
 ## Gotchas
+- Test multi-person flows with one GUI window plus `glance bot` peers. Two GUI windows overlap and GNOME ignores scripted window moves, so xdotool clicks hit the wrong one.
+- The bot uses a fresh identity each run; the GUI uses the identity in its data dir. Two GUI instances need different `GLANCE_DATA_DIR`s.
 - The dev host is immutable Fedora without `-devel` packages: `source scripts/env.sh` first, or the fontconfig/xkbcommon build scripts fail.
 - gpui-kit 0.10 pins exact `gpui-pre-*` versions. Upgrade gpui-kit as a whole, never individual gpui crates.
 - Screenshots: use `scripts/shot.sh` (runs under XWayland). XWayland throttles background windows to ~1 fps, so measure video natively on Wayland.

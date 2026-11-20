@@ -15,7 +15,7 @@ use anyhow::Result;
 use glance_proto::{MemberState, ROOM_ALPN, RoomId, Ticket, WireProfile};
 use iroh::endpoint::{Connection, RelayMode, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, RelayMap, RelayUrl, SecretKey};
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayUrl, SecretKey, TransportAddr};
 
 pub use glance_proto::EndpointId;
 pub use room::{Command, RoomEvent, RoomHandle};
@@ -58,6 +58,31 @@ impl ProtocolHandler for RoomProtocol {
         }
         Ok(())
     }
+}
+
+/// The address to put in an invite link. With relays, the relay URL is
+/// enough (address lookup and hole punching find direct paths), which keeps
+/// links short. Without relays, keep a couple of the most useful direct
+/// addresses (private/public IPv4 first, then global IPv6).
+pub fn invite_addr(addr: EndpointAddr) -> EndpointAddr {
+    let relays: Vec<TransportAddr> = addr
+        .addrs
+        .iter()
+        .filter(|a| matches!(a, TransportAddr::Relay(_)))
+        .cloned()
+        .collect();
+    if !relays.is_empty() {
+        return EndpointAddr::from_parts(addr.id, relays.into_iter().take(1));
+    }
+    let mut ips: Vec<std::net::SocketAddr> = addr.ip_addrs().copied().collect();
+    ips.sort_by_key(|sa| match sa.ip() {
+        std::net::IpAddr::V4(v4) if v4.is_private() => 0,
+        std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_link_local() => 1,
+        std::net::IpAddr::V6(v6) if (v6.segments()[0] & 0xe000) == 0x2000 => 2,
+        std::net::IpAddr::V4(_) => 3,
+        std::net::IpAddr::V6(_) => 4,
+    });
+    EndpointAddr::from_parts(addr.id, ips.into_iter().take(2).map(TransportAddr::Ip))
 }
 
 impl Node {
@@ -106,7 +131,7 @@ impl Node {
         let ticket = Ticket {
             room: RoomId(rand::random()),
             secret: rand::random(),
-            host: self.endpoint().addr(),
+            host: invite_addr(self.endpoint().addr()),
         };
         Ok(self.start_room(ticket, profile, state, false))
     }

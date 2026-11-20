@@ -14,6 +14,15 @@ description: Build, launch and screenshot the glance app to check a UI change in
 3. Look at the PNG with the Read tool and compare against the Discord-style layout.
 4. Kill leftovers with `pgrep -x glance | xargs -r kill`. Never `pkill -f target/debug/glance`: it matches your own shell command and kills it.
 
+## Testing a live room (GUI + bots)
+
+1. Pre-create a profile so the first-run name card doesn't block: `mkdir -p /tmp/x/a && echo '{"name":"Ana","color":1752220}' > /tmp/x/a/profile.json`.
+2. Launch: `GLANCE_DATA_DIR=/tmp/x/a GLANCE_RELAY=off RUST_LOG=glance=info WAYLAND_DISPLAY= ./target/debug/glance > /tmp/x/a.log 2>&1 &`.
+3. Find the window (`xdotool search --name '^glance$'`), wait ~4 s for first paint, click "Start a room" at `423,241`. The link is logged as `room link: glance://join/...`.
+4. Add peers: `GLANCE_RELAY=off ./target/debug/glance bot "$link" Robo &` (repeat with other names). Bots greet, echo chat, and toggle mute every 5 s.
+5. Type into chat: click `1040,790`, then `xdotool type "..."` and `xdotool key Return`. Screenshot with `import -window <id>`.
+6. Drop `GLANCE_RELAY=off` to test the real n0 relay path.
+
 ## Measuring video (spike)
 
 `cargo build --release -p glance-app`, then run natively on Wayland (not XWayland, which throttles to ~1 fps):

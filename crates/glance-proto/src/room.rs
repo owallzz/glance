@@ -79,8 +79,9 @@ pub enum Control {
 
 /// Proof that `from` knows the room secret, bound to the pair of endpoints so
 /// it can't be replayed to someone else.
-pub fn join_proof(secret: &[u8; 32], room: RoomId, from: EndpointId, to: EndpointId) -> [u8; 32] {
-    let mut h = blake3::Hasher::new_keyed(secret);
+pub fn join_proof(secret: &[u8; 16], room: RoomId, from: EndpointId, to: EndpointId) -> [u8; 32] {
+    let key = blake3::derive_key("glance room secret v1", secret);
+    let mut h = blake3::Hasher::new_keyed(&key);
     h.update(b"glance-join-v1");
     h.update(&room.0);
     h.update(from.as_bytes());
@@ -90,7 +91,7 @@ pub fn join_proof(secret: &[u8; 32], room: RoomId, from: EndpointId, to: Endpoin
 
 /// Constant-time check of a received proof.
 pub fn verify_proof(
-    secret: &[u8; 32],
+    secret: &[u8; 16],
     room: RoomId,
     from: EndpointId,
     to: EndpointId,
@@ -108,13 +109,13 @@ mod tests {
     fn proof_is_bound_to_direction_and_secret() {
         let a = SecretKey::from_bytes(&[1; 32]).public();
         let b = SecretKey::from_bytes(&[2; 32]).public();
-        let room = RoomId([3; 16]);
-        let secret = [4; 32];
+        let room = RoomId([3; 8]);
+        let secret = [4; 16];
         let p = join_proof(&secret, room, a, b);
         assert!(verify_proof(&secret, room, a, b, &p));
         assert!(!verify_proof(&secret, room, b, a, &p));
-        assert!(!verify_proof(&[5; 32], room, a, b, &p));
-        assert!(!verify_proof(&secret, RoomId([0; 16]), a, b, &p));
+        assert!(!verify_proof(&[5; 16], room, a, b, &p));
+        assert!(!verify_proof(&secret, RoomId([0; 8]), a, b, &p));
     }
 
     #[test]

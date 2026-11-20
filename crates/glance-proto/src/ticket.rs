@@ -16,7 +16,7 @@ const VERSION: u8 = 1;
 
 /// Random room identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RoomId(pub [u8; 16]);
+pub struct RoomId(pub [u8; 8]);
 
 impl fmt::Debug for RoomId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -31,7 +31,8 @@ impl fmt::Debug for RoomId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ticket {
     pub room: RoomId,
-    pub secret: [u8; 32],
+    /// 128-bit room secret; only holders of the link know it.
+    pub secret: [u8; 16],
     /// Any current member to dial first (usually whoever made the link).
     pub host: EndpointAddr,
 }
@@ -50,7 +51,7 @@ pub enum TicketError {
 struct Wire {
     version: u8,
     room: RoomId,
-    secret: [u8; 32],
+    secret: [u8; 16],
     host: EndpointAddr,
 }
 
@@ -119,8 +120,8 @@ mod tests {
     fn ticket() -> Ticket {
         let key = SecretKey::from_bytes(&[7; 32]);
         Ticket {
-            room: RoomId([1; 16]),
-            secret: [2; 32],
+            room: RoomId([1; 8]),
+            secret: [2; 16],
             host: EndpointAddr::new(key.public()).with_ip_addr("192.0.2.1:4433".parse().unwrap()),
         }
     }
@@ -139,6 +140,20 @@ mod tests {
         let code = t.to_link().trim_start_matches(PREFIX).to_ascii_uppercase();
         let messy = format!("  {}\n{}  ", &code[..10], &code[10..]);
         assert_eq!(Ticket::parse(&messy).unwrap(), t);
+    }
+
+    #[test]
+    fn relay_only_link_is_short() {
+        let key = SecretKey::from_bytes(&[7; 32]);
+        let relay: iroh_base::RelayUrl = "https://euc1-1.relay.n0.iroh-canary.iroh.link./"
+            .parse()
+            .unwrap();
+        let t = Ticket {
+            room: RoomId([1; 8]),
+            secret: [2; 16],
+            host: EndpointAddr::from_parts(key.public(), [iroh_base::TransportAddr::Relay(relay)]),
+        };
+        assert!(t.to_link().len() < 200, "{}", t.to_link().len());
     }
 
     #[test]

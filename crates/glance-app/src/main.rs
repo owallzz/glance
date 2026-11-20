@@ -1,9 +1,12 @@
 //! glance: peer-to-peer screen sharing rooms.
 
 mod app;
+mod bot;
 mod home;
+mod net;
 mod overlays;
 mod room;
+mod session;
 mod spike;
 mod theme;
 mod ui;
@@ -15,6 +18,25 @@ use gpui_kit::*;
 actions!(glance, [Quit]);
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .init();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("bot") {
+        let Some(link) = args.get(1) else {
+            eprintln!("usage: glance bot <link> [name]");
+            std::process::exit(2);
+        };
+        let name = args.get(2).map(String::as_str).unwrap_or("Bot");
+        if let Err(e) = bot::run(link, name) {
+            eprintln!("glance bot: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(|cx: &mut App| {
@@ -46,8 +68,39 @@ fn main() {
                 .expect("failed to open window");
             } else {
                 let demo = args.iter().any(|a| a == "--demo");
+                let net = if demo {
+                    None
+                } else {
+                    match net::Net::start(net::data_dir()) {
+                        Ok(net) => Some(std::rc::Rc::new(net)),
+                        Err(e) => {
+                            eprintln!("glance: networking failed to start: {e:#}");
+                            None
+                        }
+                    }
+                };
+                let join = args
+                    .iter()
+                    .position(|a| a == "join")
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|link| glance_proto::Ticket::parse(link).ok())
+                    .or_else(|| {
+                        args.iter().find_map(|a| {
+                            glance_proto::Ticket::parse(a)
+                                .ok()
+                                .filter(|_| a.starts_with("glance://"))
+                        })
+                    });
                 gpui_kit::open_window(options, cx, |window, cx| {
-                    cx.new(|cx| app::GlanceApp::new(demo, window, cx))
+                    cx.new(|cx| {
+                        let mut app = app::GlanceApp::new(demo, net, window, cx);
+                        if let Some(ticket) = join
+                            && !app.needs_profile
+                        {
+                            app.join(ticket, cx);
+                        }
+                        app
+                    })
                 })
                 .expect("failed to open window");
             }

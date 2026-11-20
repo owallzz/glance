@@ -595,6 +595,7 @@ impl GlanceApp {
                     {
                         x.camera = !x.camera;
                     }
+                    this.push_state();
                     cx.notify();
                 })),
             )
@@ -622,6 +623,7 @@ impl GlanceApp {
                         {
                             x.stream = None;
                         }
+                        this.push_state();
                     } else {
                         this.go_live = Some(GoLive::default());
                     }
@@ -677,8 +679,16 @@ impl GlanceApp {
         let mut groups: Vec<(PeerId, Vec<ChatMessage>)> = Vec::new();
         for m in messages {
             let system = matches!(m.body, ChatBody::System(_));
+            // Consecutive messages from one author share a header; system
+            // lines always stand alone.
             match groups.last_mut() {
-                Some((author, list)) if *author == m.author && !system => list.push(m),
+                Some((author, list))
+                    if *author == m.author
+                        && !system
+                        && !matches!(list[0].body, ChatBody::System(_)) =>
+                {
+                    list.push(m)
+                }
                 _ => groups.push((m.author, vec![m])),
             }
         }

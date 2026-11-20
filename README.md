@@ -11,6 +11,8 @@ Requirements: a recent stable Rust toolchain, plus the gpui system libraries on 
 ```sh
 cargo run -p glance-app               # launches the `glance` binary
 cargo run -p glance-app -- --demo     # start in a fake room (UI preview)
+cargo run -p glance-app -- join <link> # open and join a room
+cargo run -p glance-app -- bot <link>  # headless test peer
 ```
 
 On an immutable Fedora host (Silverblue, Bazzite, ...) without `-devel` packages, source the helper first. It needs Homebrew's `fontconfig` for the pkg-config files:
@@ -19,6 +21,10 @@ On an immutable Fedora host (Silverblue, Bazzite, ...) without `-devel` packages
 source scripts/env.sh
 cargo run -p glance-app
 ```
+
+Start a room and the invite link is copied to your clipboard. Send it to someone; they paste it into the Join box (or run `glance join <link>`).
+
+To try it alone, run a second identity with `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app`, or add test peers with `glance bot <link>`.
 
 ## Test
 

@@ -271,6 +271,7 @@ impl GlanceApp {
                 source: source.to_string(),
             });
         }
+        self.push_state();
         cx.notify();
     }
 

@@ -18,3 +18,11 @@ image = { version = "0.25", default-features = false }
 flume = "0.11"
 glance-media.workspace = true
 glance-core.workspace = true
+glance-net.workspace = true
+glance-proto.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+iroh = "1.5"
+dirs = "6"
+serde = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = "0.1"

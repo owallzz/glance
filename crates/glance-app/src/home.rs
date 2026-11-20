@@ -3,9 +3,9 @@
 
 use glance_core::{Contact, ContactState, format};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::{Disableable, Sizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -219,6 +219,36 @@ impl GlanceApp {
                     .gap_3()
                     .border_b_1()
                     .border_color(p.bg_selected)
+                    .when(self.needs_profile, |d| {
+                        d.child(
+                            div()
+                                .p_4()
+                                .mb_2()
+                                .rounded(px(8.))
+                                .bg(p.bg_sidebar)
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(p.text_header)
+                                        .child("Welcome to glance! What should people call you?"),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap_2()
+                                        .child(div().flex_1().child(Input::new(&self.name_input)))
+                                        .child(
+                                            Button::new("save-name")
+                                                .primary()
+                                                .label("Continue")
+                                                .on_click(cx.listener(|this, _, _, cx| this.save_name(cx))),
+                                        ),
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .font_weight(FontWeight::BOLD)
@@ -238,18 +268,24 @@ impl GlanceApp {
                             .child(
                                 Button::new("start-room")
                                     .success()
+                                    .disabled(self.needs_profile || self.busy)
+                                    .loading(self.busy)
                                     .icon(IconName::Plus)
                                     .label("Start a room")
-                                    .on_click(cx.listener(|this, _, _, cx| this.start_room(false, cx))),
+                                    .on_click(cx.listener(|this, _, _, cx| this.start_room(cx))),
                             )
                             .child(div().flex_1().child(Input::new(&self.join_input)))
                             .child(
                                 Button::new("join-room")
                                     .primary()
+                                    .disabled(self.needs_profile || self.busy)
                                     .label("Join")
-                                    .on_click(cx.listener(|this, _, _, cx| this.start_room(true, cx))),
+                                    .on_click(cx.listener(|this, _, window, cx| this.join_from_input(window, cx))),
                             ),
-                    ),
+                    )
+                    .children(self.join_error.clone().map(|e| {
+                        div().text_sm().text_color(p.red).child(e)
+                    })),
             )
             // List
             .child(
@@ -310,12 +346,12 @@ impl GlanceApp {
                             .success()
                             .small()
                             .label("Join")
-                            .on_click(cx.listener(|this, _, _, cx| this.start_room(true, cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.start_room(cx))),
                     )
                 })
                 .child(
                     action(IconName::Phone, "Call", "call")
-                        .on_click(cx.listener(|this, _, _, cx| this.start_room(false, cx))),
+                        .on_click(cx.listener(|this, _, _, cx| this.start_room(cx))),
                 )
                 .child(action(IconName::Paperclip, "Send file", "file"))
                 .child(action(IconName::EllipsisVertical, "More", "more")),

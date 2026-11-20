@@ -163,7 +163,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
     - Native Wayland is required: XWayland throttles to about 1 fps in the background.
   - **Open:** fullscreen 4K on a 4K monitor still uploads full frames. If that's too heavy, patch `gpui-pre-wgpu` with a persistent texture plus YUV upload (see §6).
 - [x] **M2: UI shell with fake data.** Home (Start/Join), room view (participant sidebar with avatars, speaking rings, and LIVE badges), stage grid/focus/filmstrip, control bar, user panel, chat panel, Go Live modal, settings dialog. Fully clickable.
-- [ ] **M3: Rooms over iroh.** Create/join by ticket, mesh membership, presence, text chat, connection indicator. Two or three instances on one machine, plus `glance bot`.
+- [x] **M3: Rooms over iroh.** Create/join by ticket, mesh membership, presence, text chat, connection indicator. Two or three instances on one machine, plus `glance bot`.
 - [ ] **M3b: Contacts + ringing.** Persisted identity, end-of-call "Add contact", mutual requests, contacts home (Online/All/Pending/Blocked), presence/status, Call and Invite rings with incoming-call popup, missed calls, block/remove, tray + start on login + OS notifications. Tested with two local instances using separate data dirs.
 - [ ] **M3c: File sharing.** iroh-blobs store, drag/drop, paste and attach in chat, file cards with progress, inline image preview, multi-provider download, resume, send-to-contact.
 - [ ] **M4: First real screen share (Linux).** Portal+PipeWire and X11 capture, openh264 encode/decode, one sharer to many watchers, Watch/Stop watching, encode-only-when-watched.

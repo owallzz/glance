@@ -102,6 +102,9 @@ pub struct Room {
     pub focused: Option<PeerId>,
     pub watching: HashMap<PeerId, Entity<VideoView>>,
     pub started: Instant,
+    /// The live network room; `None` for the `--demo` room.
+    pub handle: Option<glance_net::RoomHandle>,
+    pub _events: Option<Task<()>>,
 }
 
 actions!(glance, [CloseOverlay, ToggleMute, ToggleDeafen]);
@@ -117,6 +120,12 @@ pub fn bind_keys(cx: &mut App) {
 
 pub struct GlanceApp {
     focus: FocusHandle,
+    pub net: Option<std::rc::Rc<crate::net::Net>>,
+    /// First run: ask for a display name before anything else.
+    pub needs_profile: bool,
+    pub name_input: Entity<InputState>,
+    pub join_error: Option<String>,
+    pub busy: bool,
     pub me: Profile,
     pub presence: Presence,
     pub muted: bool,
@@ -135,24 +144,68 @@ pub struct GlanceApp {
 }
 
 impl GlanceApp {
-    pub fn new(demo_room: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        demo_room: bool,
+        net: Option<std::rc::Rc<crate::net::Net>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Your name"));
+        cx.subscribe_in(&name_input, window, Self::on_name_input)
+            .detach();
         let join_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Paste a glance link or code"));
         let chat_input = cx.new(|cx| InputState::new(window, cx).placeholder("Message the room"));
         cx.subscribe_in(&chat_input, window, Self::on_chat_input)
             .detach();
+        cx.subscribe_in(&join_input, window, Self::on_join_input)
+            .detach();
+        let (me, needs_profile) = match (&net, demo_room) {
+            (Some(net), false) => {
+                let id = net.me();
+                match crate::net::load_profile(&net.data_dir) {
+                    Some(saved) => (
+                        Profile {
+                            id,
+                            name: saved.name,
+                            color: saved.color,
+                        },
+                        false,
+                    ),
+                    None => (
+                        Profile {
+                            id,
+                            name: String::new(),
+                            color: crate::net::default_color(&id),
+                        },
+                        true,
+                    ),
+                }
+            }
+            _ => (demo::me(), false),
+        };
+        let (contacts, calls) = if demo_room || net.is_none() {
+            (demo::contacts(), demo::recent_calls())
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let mut app = Self {
             focus,
-            me: demo::me(),
+            net,
+            needs_profile,
+            name_input,
+            join_error: None,
+            busy: false,
+            me,
             presence: Presence::Online,
             muted: false,
             deafened: false,
             screen: Screen::Home,
             contacts_tab: ContactsTab::Online,
-            contacts: demo::contacts(),
-            calls: demo::recent_calls(),
+            contacts,
+            calls,
             room: None,
             join_input,
             chat_input,
@@ -171,7 +224,7 @@ impl GlanceApp {
             link_copied: false,
         };
         if demo_room {
-            app.start_room(true, cx);
+            app.start_demo_room(cx);
         }
         app
     }
@@ -191,6 +244,9 @@ impl GlanceApp {
             let me = self.me.id;
             if let Some(room) = self.room.as_mut() {
                 let id = room.chat.last().map_or(1, |m| m.id + 1);
+                if let Some(handle) = &room.handle {
+                    handle.send(glance_net::Command::Chat(text.clone()));
+                }
                 room.chat.push(ChatMessage {
                     id,
                     author: me,
@@ -203,41 +259,26 @@ impl GlanceApp {
         }
     }
 
-    /// Start (or, in demo mode, fake-join) a room.
-    pub fn start_room(&mut self, demo_people: bool, cx: &mut Context<Self>) {
-        let participants = if demo_people {
-            demo::participants()
-        } else {
-            vec![demo::participants().remove(0)]
-        };
-        let chat = if demo_people {
-            demo::chat()
-        } else {
-            Vec::new()
-        };
+    /// The `--demo` room: fake participants, streams and chat.
+    pub fn start_demo_room(&mut self, cx: &mut Context<Self>) {
         self.room = Some(Room {
-            name: if demo_people {
-                "Sam's room".into()
-            } else {
-                "Your room".into()
-            },
-            link: "glance://join/demo-7f3k-q9x2".into(),
-            participants,
-            chat,
+            handle: None,
+            _events: None,
+            name: "Sam's room".into(),
+            link: "glance://join/demo".into(),
+            participants: demo::participants(),
+            chat: demo::chat(),
             chat_open: true,
             focused: None,
             watching: HashMap::new(),
             started: Instant::now(),
         });
         self.screen = Screen::Room;
-        self.link_copied = true;
-        cx.write_to_clipboard(ClipboardItem::new_string(
-            "glance://join/demo-7f3k-q9x2".into(),
-        ));
         cx.notify();
     }
 
     pub fn leave_room(&mut self, cx: &mut Context<Self>) {
+        let _guard = self.net.as_ref().map(|n| n.enter());
         self.room = None;
         self.screen = Screen::Home;
         self.go_live = None;
@@ -298,7 +339,7 @@ impl GlanceApp {
         self.sync_self();
     }
 
-    /// Mirror your own state into your participant row.
+    /// Mirror your own state into your participant row and tell the room.
     pub fn sync_self(&mut self) {
         let (me, muted, deafened) = (self.me.id, self.muted, self.deafened);
         if let Some(room) = self.room.as_mut()
@@ -307,6 +348,7 @@ impl GlanceApp {
             p.muted = muted;
             p.deafened = deafened;
         }
+        self.push_state();
     }
 
     pub fn profile_of(&self, id: PeerId) -> Option<Profile> {
@@ -422,7 +464,7 @@ impl GlanceApp {
                 .tooltip(|window, cx| Tooltip::new("Start a room").build(window, cx))
                 .on_click(cx.listener(|this, _, _, cx| {
                     if this.room.is_none() {
-                        this.start_room(false, cx);
+                        this.start_room(cx);
                     } else {
                         this.screen = Screen::Room;
                         cx.notify();
