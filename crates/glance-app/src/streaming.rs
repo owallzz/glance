@@ -108,13 +108,16 @@ impl GlanceApp {
         // Encoded packets go straight from the broadcast thread to the room.
         let commander = handle.commander();
         let sink = move |pkt: glance_media::codec::EncodedPacket| {
-            let _ = commander.send(Command::Video(Arc::new(VideoPacket {
-                ts_us: pkt.ts_us,
-                keyframe: pkt.keyframe,
-                width: pkt.width,
-                height: pkt.height,
-                data: pkt.data,
-            })));
+            let _ = commander.send(Command::Video(
+                glance_proto::Track::Screen,
+                Arc::new(VideoPacket {
+                    ts_us: pkt.ts_us,
+                    keyframe: pkt.keyframe,
+                    width: pkt.width,
+                    height: pkt.height,
+                    data: pkt.data,
+                }),
+            ));
         };
         let preview_target = TargetSize::default();
         let (preview_tx, preview_rx) = flume::bounded(2);
@@ -272,22 +275,31 @@ impl GlanceApp {
         };
         let view = cx.new(|_| VideoView::empty(TargetSize::default()));
         room.watching.insert(peer, view);
-        handle.send(Command::Watch(id));
+        handle.send(Command::Watch(id, glance_proto::Track::Screen));
         cx.notify();
     }
 
     /// A sharer's video stream arrived: decode it into their tile.
-    pub fn on_video_feed(&mut self, peer: PeerId, feed: VideoFeed, cx: &mut Context<Self>) {
+    pub fn on_video_feed(
+        &mut self,
+        peer: PeerId,
+        track: glance_proto::Track,
+        feed: VideoFeed,
+        cx: &mut Context<Self>,
+    ) {
         let Some(room) = self.room.as_mut() else {
             return;
         };
-        // A popped-out stream goes to its own window.
-        let Some(view) = room
-            .popouts
-            .get(&peer)
-            .or_else(|| room.watching.get(&peer))
-            .cloned()
-        else {
+        // Cameras go to camera tiles; a popped-out screen to its own window.
+        let view = match track {
+            glance_proto::Track::Camera => room.cameras.get(&peer).cloned(),
+            glance_proto::Track::Screen => room
+                .popouts
+                .get(&peer)
+                .or_else(|| room.watching.get(&peer))
+                .cloned(),
+        };
+        let Some(view) = view else {
             return; // stopped watching meanwhile; dropping the feed ends it
         };
         let Some(handle) = &room.handle else { return };
@@ -314,7 +326,7 @@ impl GlanceApp {
                     let now = std::time::Instant::now();
                     if last.is_none_or(|t| now - t >= std::time::Duration::from_secs(1)) {
                         last = Some(now);
-                        let _ = commander.send(Command::RequestKeyframe(id));
+                        let _ = commander.send(Command::RequestKeyframe(id, track));
                     }
                 }
             },

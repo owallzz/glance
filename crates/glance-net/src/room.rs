@@ -16,7 +16,8 @@ use std::sync::Arc;
 
 use glance_proto::{
     Control, EndpointAddr, EndpointId, HISTORY_LIMIT, Hello, HistoryBody, HistoryItem, MemberInfo,
-    MemberState, ROOM_ALPN, Ticket, UNI_VIDEO, VideoPacket, WireProfile, join_proof, verify_proof,
+    MemberState, ROOM_ALPN, Ticket, Track, UNI_VIDEO, VideoPacket, WireProfile, join_proof,
+    verify_proof,
 };
 use iroh::Endpoint;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -33,13 +34,13 @@ pub enum Command {
     SetProfile(WireProfile),
     Chat(String),
     Leave,
-    /// Ask a sharer to start/stop sending their screen.
-    Watch(EndpointId),
-    Unwatch(EndpointId),
-    /// Ask a sharer for a keyframe (decoder lost sync).
-    RequestKeyframe(EndpointId),
-    /// An encoded frame of our own stream, fanned out to watchers.
-    Video(Arc<VideoPacket>),
+    /// Ask a sharer to start/stop sending a track (screen or camera).
+    Watch(EndpointId, Track),
+    Unwatch(EndpointId, Track),
+    /// Ask a sharer for a keyframe on a track (decoder lost sync).
+    RequestKeyframe(EndpointId, Track),
+    /// An encoded frame of one of our tracks, fanned out to its watchers.
+    Video(Track, Arc<VideoPacket>),
     /// A voice frame (already postcard-encoded `AudioDatagram`), sent to
     /// everyone as a datagram.
     Audio(bytes::Bytes),
@@ -99,10 +100,14 @@ pub enum RoomEvent {
     /// A sharer started sending us video (after we asked to watch).
     Video {
         from: EndpointId,
+        track: Track,
         feed: VideoFeed,
     },
-    /// How many people are watching our stream.
-    Watchers(usize),
+    /// How many people are watching one of our tracks.
+    Watchers {
+        track: Track,
+        count: usize,
+    },
     /// Someone offered a file in chat.
     FileOffered {
         from: EndpointId,
@@ -116,10 +121,10 @@ pub enum RoomEvent {
         from: EndpointId,
         hash: [u8; 32],
     },
-    /// Our encoder should produce a keyframe soon (new or lagging viewer).
-    KeyframeNeeded,
-    /// A viewer couldn't keep up with our stream (lower the bitrate).
-    Congested,
+    /// A track's encoder should produce a keyframe soon (new or lagging viewer).
+    KeyframeNeeded(Track),
+    /// A viewer couldn't keep up with a track (lower its bitrate).
+    Congested(Track),
     /// The room actor stopped (after Leave).
     Closed,
 }
@@ -198,8 +203,10 @@ pub(crate) enum Inbound {
         conn_id: usize,
     },
     Cmd(Command),
+    /// Fallback from `expect_dial`.
+    DialIfMissing(EndpointAddr),
     /// A viewer's video stream ended (generation identifies which one).
-    WatcherGone(EndpointId, u64),
+    WatcherGone(EndpointId, Track, u64),
 }
 
 /// Someone watching our stream.
@@ -215,6 +222,9 @@ struct Watcher {
 const WATCHER_QUEUE: usize = 90;
 
 struct Peer {
+    /// A connection this one replaced (duplicate dial); its in-flight
+    /// frames are still accepted until it closes.
+    previous_conn: Option<usize>,
     profile: WireProfile,
     state: MemberState,
     addr: EndpointAddr,
@@ -234,7 +244,7 @@ struct Actor {
     inbound: flume::Sender<Inbound>,
     events: flume::Sender<RoomEvent>,
     chat_seq: u64,
-    watchers: HashMap<EndpointId, Watcher>,
+    watchers: HashMap<(EndpointId, Track), Watcher>,
     watcher_generation: u64,
     audio_sink: AudioSink,
     history: std::collections::VecDeque<HistoryItem>,
@@ -368,9 +378,16 @@ impl Actor {
                 }
                 self.dialing.remove(&id);
                 self.register(conn, send, recv, addr, profile, state, self.me, None);
+                // Avoid duplicate connections: only the smaller id dials. The
+                // bigger side is dialed when its peer hears about us (the
+                // host sends Introduce); `expect` falls back after a delay.
                 for m in members {
                     if m.addr.id != self.me && !self.peers.contains_key(&m.addr.id) {
-                        self.dial(m.addr, false);
+                        if self.me < m.addr.id {
+                            self.dial(m.addr, false);
+                        } else {
+                            self.expect_dial(m.addr);
+                        }
                     }
                 }
             }
@@ -391,19 +408,24 @@ impl Actor {
                     .is_some_and(|p| p.conn.stable_id() == conn_id)
                 {
                     self.peers.remove(&id);
-                    self.remove_watcher(id);
+                    self.remove_peer_watchers(id);
                     let _ = self.events.send(RoomEvent::MemberLeft { id });
                 }
             }
-            Inbound::WatcherGone(id, generation) => {
+            Inbound::WatcherGone(id, track, generation) => {
                 // Only if it's still the same stream (a re-watch may have
                 // replaced it already).
                 if self
                     .watchers
-                    .get(&id)
+                    .get(&(id, track))
                     .is_some_and(|w| w.generation == generation)
                 {
-                    self.remove_watcher(id);
+                    self.remove_watcher(id, track);
+                }
+            }
+            Inbound::DialIfMissing(addr) => {
+                if !self.peers.contains_key(&addr.id) {
+                    self.dial(addr, false);
                 }
             }
             Inbound::Cmd(cmd) => return self.on_command(cmd),
@@ -466,6 +488,7 @@ impl Actor {
         first: Option<Control>,
     ) {
         let id = conn.remote_id();
+        let mut previous_conn = None;
         if let Some(existing) = self.peers.get(&id) {
             // Keep the connection dialed by the smaller id.
             let winner = self.me.min(id);
@@ -476,7 +499,14 @@ impl Actor {
                 }
                 return;
             }
-            existing.conn.close(3u32.into(), b"duplicate");
+            // Replace gracefully: messages already sent on the old
+            // connection still get read; close it a little later.
+            previous_conn = Some(existing.conn.stable_id());
+            let old = existing.conn.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                old.close(3u32.into(), b"duplicate");
+            });
         }
         let (tx, rx) = mpsc::unbounded_channel();
         if let Some(first) = first {
@@ -498,6 +528,7 @@ impl Actor {
         self.peers.insert(
             id,
             Peer {
+                previous_conn,
                 profile: profile.clone(),
                 state: state.clone(),
                 addr,
@@ -517,7 +548,7 @@ impl Actor {
         let Some(peer) = self.peers.get_mut(&from) else {
             return;
         };
-        if peer.conn.stable_id() != conn_id {
+        if peer.conn.stable_id() != conn_id && peer.previous_conn != Some(conn_id) {
             return; // stale connection
         }
         match msg {
@@ -544,15 +575,19 @@ impl Actor {
             }
             Control::Introduce(info) => {
                 let id = info.addr.id;
-                if id != self.me && !self.peers.contains_key(&id) && self.me < id {
-                    self.dial(info.addr, false);
+                if id != self.me && !self.peers.contains_key(&id) {
+                    if self.me < id {
+                        self.dial(info.addr, false);
+                    } else {
+                        self.expect_dial(info.addr);
+                    }
                 }
             }
             Control::Leave => {
                 if let Some(p) = self.peers.remove(&from) {
                     p.conn.close(0u32.into(), b"left");
                 }
-                self.remove_watcher(from);
+                self.remove_peer_watchers(from);
                 let _ = self.events.send(RoomEvent::MemberLeft { id: from });
             }
             Control::File { sent_at, file } => {
@@ -567,11 +602,11 @@ impl Actor {
             Control::HaveFile(hash) => {
                 let _ = self.events.send(RoomEvent::FileProvider { from, hash });
             }
-            Control::Watch => self.add_watcher(from),
-            Control::Unwatch => self.remove_watcher(from),
-            Control::KeyframeRequest => {
-                if self.watchers.contains_key(&from) {
-                    let _ = self.events.send(RoomEvent::KeyframeNeeded);
+            Control::Watch(track) => self.add_watcher(from, track),
+            Control::Unwatch(track) => self.remove_watcher(from, track),
+            Control::KeyframeRequest(track) => {
+                if self.watchers.contains_key(&(from, track)) {
+                    let _ = self.events.send(RoomEvent::KeyframeNeeded(track));
                 }
             }
             Control::Ping(n) => {
@@ -584,18 +619,26 @@ impl Actor {
     fn on_command(&mut self, cmd: Command) -> bool {
         match cmd {
             Command::SetState(state) => {
-                let stopped_streaming = self.state.stream.is_some() && state.stream.is_none();
+                let stopped_screen = self.state.stream.is_some() && state.stream.is_none();
+                let stopped_camera = self.state.camera && !state.camera;
                 self.state = state.clone();
                 self.broadcast(Control::State(state));
-                if stopped_streaming {
-                    self.watchers.clear();
-                    let _ = self.events.send(RoomEvent::Watchers(0));
+                for (stopped, track) in [
+                    (stopped_screen, Track::Screen),
+                    (stopped_camera, Track::Camera),
+                ] {
+                    if stopped {
+                        self.watchers.retain(|(_, t), _| *t != track);
+                        let _ = self.events.send(RoomEvent::Watchers { track, count: 0 });
+                    }
                 }
             }
-            Command::Watch(id) => self.send_to(id, Control::Watch),
-            Command::Unwatch(id) => self.send_to(id, Control::Unwatch),
-            Command::RequestKeyframe(id) => self.send_to(id, Control::KeyframeRequest),
-            Command::Video(pkt) => self.fan_out(pkt),
+            Command::Watch(id, track) => self.send_to(id, Control::Watch(track)),
+            Command::Unwatch(id, track) => self.send_to(id, Control::Unwatch(track)),
+            Command::RequestKeyframe(id, track) => {
+                self.send_to(id, Control::KeyframeRequest(track))
+            }
+            Command::Video(track, pkt) => self.fan_out(track, pkt),
             Command::OfferFile(file) => {
                 let sent_at = now_ms();
                 let (me, name, color) = (self.me, self.profile.name.clone(), self.profile.color);
@@ -667,9 +710,20 @@ impl Actor {
         }
     }
 
-    /// A peer asked to watch: open a video stream to them.
-    fn add_watcher(&mut self, id: EndpointId) {
-        if self.state.stream.is_none() || self.watchers.contains_key(&id) {
+    fn track_live(&self, track: Track) -> bool {
+        match track {
+            Track::Screen => self.state.stream.is_some(),
+            Track::Camera => self.state.camera,
+        }
+    }
+
+    fn watcher_count(&self, track: Track) -> usize {
+        self.watchers.keys().filter(|(_, t)| *t == track).count()
+    }
+
+    /// A peer asked to watch a track: open a video stream to them.
+    fn add_watcher(&mut self, id: EndpointId, track: Track) {
+        if !self.track_live(track) || self.watchers.contains_key(&(id, track)) {
             return;
         }
         let Some(peer) = self.peers.get(&id) else {
@@ -678,31 +732,46 @@ impl Actor {
         let (tx, rx) = mpsc::channel(WATCHER_QUEUE);
         self.watcher_generation += 1;
         let generation = self.watcher_generation;
-        spawn_video_writer(peer.conn.clone(), id, generation, rx, self.inbound.clone());
-        self.watchers.insert(
+        spawn_video_writer(
+            peer.conn.clone(),
             id,
+            track,
+            generation,
+            rx,
+            self.inbound.clone(),
+        );
+        self.watchers.insert(
+            (id, track),
             Watcher {
                 tx,
                 generation,
                 need_key: true,
             },
         );
-        let _ = self.events.send(RoomEvent::Watchers(self.watchers.len()));
-        let _ = self.events.send(RoomEvent::KeyframeNeeded);
+        let count = self.watcher_count(track);
+        let _ = self.events.send(RoomEvent::Watchers { track, count });
+        let _ = self.events.send(RoomEvent::KeyframeNeeded(track));
     }
 
-    fn remove_watcher(&mut self, id: EndpointId) {
-        if self.watchers.remove(&id).is_some() {
-            let _ = self.events.send(RoomEvent::Watchers(self.watchers.len()));
+    fn remove_watcher(&mut self, id: EndpointId, track: Track) {
+        if self.watchers.remove(&(id, track)).is_some() {
+            let count = self.watcher_count(track);
+            let _ = self.events.send(RoomEvent::Watchers { track, count });
         }
     }
 
-    /// Send one encoded frame to every watcher. Viewers that can't keep up
-    /// skip to the next keyframe instead of building a backlog.
-    fn fan_out(&mut self, pkt: Arc<VideoPacket>) {
+    fn remove_peer_watchers(&mut self, id: EndpointId) {
+        for track in [Track::Screen, Track::Camera] {
+            self.remove_watcher(id, track);
+        }
+    }
+
+    /// Send one encoded frame to every watcher of its track. Viewers that
+    /// can't keep up skip to the next keyframe instead of building a backlog.
+    fn fan_out(&mut self, track: Track, pkt: Arc<VideoPacket>) {
         let mut want_key = false;
-        for w in self.watchers.values_mut() {
-            if w.need_key && !pkt.keyframe {
+        for ((_, t), w) in self.watchers.iter_mut() {
+            if *t != track || (w.need_key && !pkt.keyframe) {
                 continue;
             }
             match w.tx.try_send(pkt.clone()) {
@@ -715,8 +784,8 @@ impl Actor {
             }
         }
         if want_key {
-            let _ = self.events.send(RoomEvent::Congested);
-            let _ = self.events.send(RoomEvent::KeyframeNeeded);
+            let _ = self.events.send(RoomEvent::Congested(track));
+            let _ = self.events.send(RoomEvent::KeyframeNeeded(track));
         }
     }
 
@@ -724,6 +793,16 @@ impl Actor {
         for p in self.peers.values() {
             let _ = p.tx.send(msg.clone());
         }
+    }
+
+    /// They should dial us; if they haven't within a few seconds (e.g. their
+    /// outbound path is blocked), dial them ourselves.
+    fn expect_dial(&mut self, addr: EndpointAddr) {
+        let inbound = self.inbound.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            let _ = inbound.send(Inbound::DialIfMissing(addr));
+        });
     }
 
     fn dial(&mut self, addr: EndpointAddr, host: bool) {
@@ -826,13 +905,14 @@ fn spawn_writer(mut send: SendStream, mut rx: mpsc::UnboundedReceiver<Control>) 
         while let Some(msg) = rx.recv().await {
             let leaving = matches!(msg, Control::Leave);
             if write_frame(&mut send, &msg).await.is_err() {
-                break;
+                return;
             }
             if leaving {
-                let _ = send.finish();
                 break;
             }
         }
+        // Finish (not reset) so everything written still arrives.
+        let _ = send.finish();
     });
 }
 
@@ -877,6 +957,7 @@ fn now_ms() -> u64 {
 fn spawn_video_writer(
     conn: Connection,
     to: EndpointId,
+    track: Track,
     generation: u64,
     mut rx: mpsc::Receiver<Arc<VideoPacket>>,
     inbound: flume::Sender<Inbound>,
@@ -884,7 +965,7 @@ fn spawn_video_writer(
     tokio::spawn(async move {
         let result: Result<()> = async {
             let mut send = conn.open_uni().await.context("open video stream")?;
-            send.write_all(&[UNI_VIDEO])
+            send.write_all(&[UNI_VIDEO, track.to_byte()])
                 .await
                 .context("write stream kind")?;
             while let Some(pkt) = rx.recv().await {
@@ -896,7 +977,7 @@ fn spawn_video_writer(
         .await;
         if let Err(e) = result {
             debug!("video stream to {to} ended: {e:#}");
-            let _ = inbound.send(Inbound::WatcherGone(to, generation));
+            let _ = inbound.send(Inbound::WatcherGone(to, track, generation));
         }
     });
 }
@@ -911,14 +992,18 @@ fn spawn_uni_acceptor(
 ) {
     tokio::spawn(async move {
         while let Ok(mut recv) = conn.accept_uni().await {
-            let mut kind = [0u8; 1];
-            if recv.read_exact(&mut kind).await.is_err() || kind[0] != UNI_VIDEO {
+            let mut header = [0u8; 2];
+            if recv.read_exact(&mut header).await.is_err() || header[0] != UNI_VIDEO {
                 continue;
             }
+            let Some(track) = Track::from_byte(header[1]) else {
+                continue;
+            };
             let (tx, rx) = flume::bounded(120);
             if events
                 .send(RoomEvent::Video {
                     from,
+                    track,
                     feed: VideoFeed(rx),
                 })
                 .is_err()
@@ -945,7 +1030,8 @@ fn spawn_uni_acceptor(
                             let now = tokio::time::Instant::now();
                             if last_request.is_none_or(|t| now - t >= Duration::from_secs(1)) {
                                 last_request = Some(now);
-                                let _ = inbound.send(Inbound::Cmd(Command::RequestKeyframe(from)));
+                                let _ = inbound
+                                    .send(Inbound::Cmd(Command::RequestKeyframe(from, track)));
                             }
                         }
                     }

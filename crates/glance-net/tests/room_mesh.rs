@@ -215,24 +215,30 @@ async fn video_reaches_watchers_starting_at_a_keyframe() {
     expect_members(&b, "b", &[na.id()]).await;
     expect_members(&c, "c", &[na.id()]).await;
 
-    b.send(Command::Watch(na.id()));
-    c.send(Command::Watch(na.id()));
+    b.send(Command::Watch(na.id(), glance_proto::Track::Screen));
+    c.send(Command::Watch(na.id(), glance_proto::Track::Screen));
     let mut watchers = 0;
     while watchers < 2 {
-        if let RoomEvent::Watchers(n) =
-            expect(&a, "watchers", |e| matches!(e, RoomEvent::Watchers(_))).await
+        if let RoomEvent::Watchers { count: n, .. } =
+            expect(&a, "watchers", |e| matches!(e, RoomEvent::Watchers { .. })).await
         {
             watchers = n;
         }
     }
 
     // A non-keyframe first: viewers must skip it.
-    a.send(Command::Video(packet(1, false)));
-    a.send(Command::Video(packet(2, true)));
-    a.send(Command::Video(packet(3, false)));
+    a.send(Command::Video(
+        glance_proto::Track::Screen,
+        packet(1, false),
+    ));
+    a.send(Command::Video(glance_proto::Track::Screen, packet(2, true)));
+    a.send(Command::Video(
+        glance_proto::Track::Screen,
+        packet(3, false),
+    ));
 
     for (room, who) in [(&b, "b"), (&c, "c")] {
-        let RoomEvent::Video { from, feed } = expect(room, &format!("video at {who}"), |e| {
+        let RoomEvent::Video { from, feed, .. } = expect(room, &format!("video at {who}"), |e| {
             matches!(e, RoomEvent::Video { .. })
         })
         .await
@@ -257,12 +263,18 @@ async fn video_reaches_watchers_starting_at_a_keyframe() {
     assert_eq!(link.host.id, nc.id());
     assert_eq!(link.room, a.ticket.room);
 
-    b.send(Command::Unwatch(na.id()));
+    b.send(Command::Unwatch(na.id(), glance_proto::Track::Screen));
     let ev = expect(&a, "watcher count drops", |e| {
-        matches!(e, RoomEvent::Watchers(1))
+        matches!(e, RoomEvent::Watchers { count: 1, .. })
     })
     .await;
-    assert_eq!(ev, RoomEvent::Watchers(1));
+    assert_eq!(
+        ev,
+        RoomEvent::Watchers {
+            track: glance_proto::Track::Screen,
+            count: 1
+        }
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -443,9 +455,12 @@ async fn rewatching_survives_the_old_stream_closing() {
         .await
         .unwrap();
     expect_members(&b, "b", &[na.id()]).await;
-    b.send(Command::Watch(na.id()));
-    expect(&a, "watcher", |e| matches!(e, RoomEvent::Watchers(1))).await;
-    a.send(Command::Video(packet(1, true)));
+    b.send(Command::Watch(na.id(), glance_proto::Track::Screen));
+    expect(&a, "watcher", |e| {
+        matches!(e, RoomEvent::Watchers { count: 1, .. })
+    })
+    .await;
+    a.send(Command::Video(glance_proto::Track::Screen, packet(1, true)));
     let RoomEvent::Video { feed: first, .. } =
         expect(&b, "first feed", |e| matches!(e, RoomEvent::Video { .. })).await
     else {
@@ -453,8 +468,8 @@ async fn rewatching_survives_the_old_stream_closing() {
     };
     // Pop-out style: drop the old feed, unwatch and watch again right away.
     drop(first);
-    b.send(Command::Unwatch(na.id()));
-    b.send(Command::Watch(na.id()));
+    b.send(Command::Unwatch(na.id(), glance_proto::Track::Screen));
+    b.send(Command::Watch(na.id(), glance_proto::Track::Screen));
     let RoomEvent::Video { feed: second, .. } =
         expect(&b, "second feed", |e| matches!(e, RoomEvent::Video { .. })).await
     else {
@@ -465,7 +480,7 @@ async fn rewatching_survives_the_old_stream_closing() {
         let cmd = a.commander();
         tokio::spawn(async move {
             for n in 2..40u8 {
-                let _ = cmd.send(Command::Video(packet(n, true)));
+                let _ = cmd.send(Command::Video(glance_proto::Track::Screen, packet(n, true)));
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         })
@@ -482,4 +497,71 @@ async fn rewatching_survives_the_old_stream_closing() {
     }
     pump.await.unwrap();
     assert!(got >= 10, "new stream died after {got} packets");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn screen_and_camera_tracks_are_independent() {
+    use glance_proto::Track;
+    let (na, nb) = (node().await, node().await);
+    let state = MemberState {
+        camera: true,
+        ..live()
+    };
+    let a = na.create_room(profile("Ana"), state).await.unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+    b.send(Command::Watch(na.id(), Track::Screen));
+    b.send(Command::Watch(na.id(), Track::Camera));
+    // Keep sending on both tracks until each feed has received a packet.
+    let pump = {
+        let cmd = a.commander();
+        tokio::spawn(async move {
+            for _ in 0..400 {
+                let _ = cmd.send(Command::Video(Track::Screen, packet(10, true)));
+                let _ = cmd.send(Command::Video(Track::Camera, packet(20, true)));
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+    };
+    let mut feeds = std::collections::HashMap::new();
+    while feeds.len() < 2 {
+        let RoomEvent::Video { track, feed, .. } =
+            expect(&b, "video feeds", |e| matches!(e, RoomEvent::Video { .. })).await
+        else {
+            unreachable!()
+        };
+        feeds.insert(track, feed);
+    }
+    let screen = tokio::time::timeout(Duration::from_secs(5), feeds[&Track::Screen].0.recv_async())
+        .await
+        .unwrap()
+        .unwrap();
+    let camera = tokio::time::timeout(Duration::from_secs(5), feeds[&Track::Camera].0.recv_async())
+        .await
+        .unwrap()
+        .unwrap();
+    pump.abort();
+    assert_eq!((screen.ts_us, camera.ts_us), (10, 20));
+    // Turning the camera off drops only camera watchers.
+    a.send(Command::SetState(live()));
+    let ev = expect(&a, "camera watchers cleared", |e| {
+        matches!(
+            e,
+            RoomEvent::Watchers {
+                track: Track::Camera,
+                count: 0
+            }
+        )
+    })
+    .await;
+    assert_eq!(
+        ev,
+        RoomEvent::Watchers {
+            track: Track::Camera,
+            count: 0
+        }
+    );
 }

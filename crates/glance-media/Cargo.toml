@@ -15,6 +15,7 @@ cpal = "0.18"
 nnnoiseless = { version = "0.5", default-features = false }
 aec-rs = "1"
 rtrb = "0.3"
+nokhwa = { version = "0.10", features = ["input-native"] }
 anyhow.workspace = true
 tracing = "0.1"
 

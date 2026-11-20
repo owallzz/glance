@@ -181,6 +181,9 @@ impl GlanceApp {
             _voice_task: None,
             volume_open: None,
             popouts: Default::default(),
+            cameras: Default::default(),
+            camera_broadcast: None,
+            _camera_task: None,
             files: Default::default(),
             history_names: Default::default(),
             met: Default::default(),
@@ -303,27 +306,28 @@ impl GlanceApp {
                     });
                 }
             }
-            RoomEvent::Video { from, feed } => {
-                self.on_video_feed(peer_id(from), feed, cx);
+            RoomEvent::Video { from, track, feed } => {
+                self.on_video_feed(peer_id(from), track, feed, cx);
             }
             RoomEvent::History(items) => self.on_history(items),
             RoomEvent::FileOffered { from, file, .. } => {
                 self.on_file_offered(from, file, cx);
             }
             RoomEvent::FileProvider { from, hash } => self.on_file_provider(from, hash),
-            RoomEvent::Watchers(n) => {
-                if let Some(b) = &room.broadcast {
-                    b.watchers.store(n, std::sync::atomic::Ordering::Relaxed);
+            RoomEvent::Watchers { track, count } => {
+                if let Some(b) = room.control(track) {
+                    b.watchers
+                        .store(count, std::sync::atomic::Ordering::Relaxed);
                 }
             }
-            RoomEvent::Congested => {
-                if let Some(b) = &room.broadcast {
+            RoomEvent::Congested(track) => {
+                if let Some(b) = room.control(track) {
                     b.congestion
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
-            RoomEvent::KeyframeNeeded => {
-                if let Some(b) = &room.broadcast {
+            RoomEvent::KeyframeNeeded(track) => {
+                if let Some(b) = room.control(track) {
                     b.keyframe.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
@@ -335,6 +339,7 @@ impl GlanceApp {
         }
         // Participant count changed or not: cheap to re-send.
         self.push_presence();
+        self.sync_cameras(cx);
         // Testing aid: GLANCE_AUTOWATCH=1 watches every stream automatically.
         if std::env::var_os("GLANCE_AUTOWATCH").is_some() {
             let me = self.me.id;

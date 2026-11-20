@@ -513,6 +513,14 @@ impl GlanceApp {
         match kind {
             TileKind::Person(person) => {
                 let speaking = person.speaking;
+                if let Some(cam) = room.cameras.get(&peer).cloned() {
+                    return tile
+                        .bg(gpui_kit::black())
+                        .when(speaking, |d| d.border_2().border_color(p.green))
+                        .child(cam)
+                        .child(name_tag(p, &person.profile.name, person.muted))
+                        .into_any_element();
+                }
                 tile.bg(crate::ui::color(person.profile.color).opacity(0.35))
                     .bg(p.bg_sidebar)
                     .when(speaking, |d| d.border_2().border_color(p.green))
@@ -761,15 +769,7 @@ impl GlanceApp {
                     camera,
                     false,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(room) = this.room.as_mut()
-                        && let Some(x) = room.participants.iter_mut().find(|x| x.profile.id == me)
-                    {
-                        x.camera = !x.camera;
-                    }
-                    this.push_state();
-                    cx.notify();
-                })),
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_camera(cx))),
             )
             .child(
                 ctrl(

@@ -20,6 +20,7 @@ pub fn run(
     tone: bool,
     file: Option<std::path::PathBuf>,
     ring_back: bool,
+    camera: bool,
 ) -> Result<()> {
     let ticket = Ticket::parse(link).context("parse room link")?;
     // A fresh identity each run, so a bot never collides with your app.
@@ -37,6 +38,7 @@ pub fn run(
     });
     let initial = MemberState {
         stream: live.clone(),
+        camera,
         ..Default::default()
     };
     let room = net.block_on(net.join_room(ticket, profile.clone(), initial))?;
@@ -60,19 +62,49 @@ pub fn run(
             },
             None,
             move |pkt| {
-                let _ = commander.send(Command::Video(std::sync::Arc::new(
-                    glance_proto::VideoPacket {
+                let _ = commander.send(Command::Video(
+                    glance_proto::Track::Screen,
+                    std::sync::Arc::new(glance_proto::VideoPacket {
                         ts_us: pkt.ts_us,
                         keyframe: pkt.keyframe,
                         width: pkt.width,
                         height: pkt.height,
                         data: pkt.data,
-                    },
-                )));
+                    }),
+                ));
             },
         );
         control
     });
+    // --camera: a synthetic camera on the camera track.
+    let camera_broadcast = camera.then(|| {
+        let commander = room.commander();
+        let (control, _ended) = glance_media::pipeline::start_broadcast(
+            glance_media::capture::test_pattern(640, 360, 24),
+            glance_media::pipeline::BroadcastConfig {
+                max_height: None,
+                fps: 24,
+            },
+            None,
+            move |pkt| {
+                let _ = commander.send(Command::Video(
+                    glance_proto::Track::Camera,
+                    std::sync::Arc::new(glance_proto::VideoPacket {
+                        ts_us: pkt.ts_us,
+                        keyframe: pkt.keyframe,
+                        width: pkt.width,
+                        height: pkt.height,
+                        data: pkt.data,
+                    }),
+                ));
+            },
+        );
+        control
+    });
+    let control = |t: glance_proto::Track| match t {
+        glance_proto::Track::Screen => broadcast.as_ref(),
+        glance_proto::Track::Camera => camera_broadcast.as_ref(),
+    };
     // Voice: a tone (or silence) in, mixed output discarded; we log who we
     // hear speaking so tests can check audio flows both ways.
     let commander = room.commander();
@@ -198,19 +230,20 @@ pub fn run(
                             }
                         });
                     }
-                    RoomEvent::Watchers(n) => {
-                        if let Some(b) = &broadcast {
-                            b.watchers.store(*n, std::sync::atomic::Ordering::Relaxed);
+                    RoomEvent::Watchers { track, count } => {
+                        if let Some(b) = control(*track) {
+                            b.watchers
+                                .store(*count, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
-                    RoomEvent::Congested => {
-                        if let Some(b) = &broadcast {
+                    RoomEvent::Congested(track) => {
+                        if let Some(b) = control(*track) {
                             b.congestion
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
-                    RoomEvent::KeyframeNeeded => {
-                        if let Some(b) = &broadcast {
+                    RoomEvent::KeyframeNeeded(track) => {
+                        if let Some(b) = control(*track) {
                             b.keyframe.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
@@ -300,6 +333,7 @@ pub fn run(
                 room.send(Command::SetState(MemberState {
                     muted,
                     stream: live.clone(),
+                    camera,
                     ..Default::default()
                 }));
             })

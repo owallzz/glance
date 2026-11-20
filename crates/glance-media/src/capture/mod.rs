@@ -100,7 +100,7 @@ pub fn request_permission() -> bool {
 /// A running capture. Dropping it (or calling [`Capture::stop`]) ends it.
 pub struct Capture {
     pub frames: flume::Receiver<VideoFrame>,
-    stop: Arc<AtomicBool>,
+    pub(crate) stop: Arc<AtomicBool>,
     /// What the user picked, once known (the portal reports it after the dialog).
     pub ended: flume::Receiver<String>,
 }

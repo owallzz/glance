@@ -172,7 +172,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - [x] **M5: Everyone shares at once.** Multiple simultaneous streams, keyframe requests and per-viewer backpressure (done in M4), plus bitrate adaptation, stats overlay, fullscreen and pop-out.
 - [x] **M6: Voice.** cpal + Opus + AEC/NS/VAD, jitter buffer, mixer, mute/deafen, speaking ring, per-user volume, device selection, sounds.
 - [ ] **M7: Stream audio.** System/app audio with screen shares (Linux PipeWire monitor), per-stream volume.
-- [ ] **M8: Webcam.** Camera tiles via nokhwa, sharing the video pipeline.
+- [x] **M8: Webcam.** Camera tiles via nokhwa, sharing the video pipeline.
 - [ ] **M9: macOS + Windows backends.** SCK/WGC capture plus audio, VideoToolbox/Media Foundation encode/decode, URL scheme registration, permissions prompts.
 - [ ] **M10: Hardware codecs on Linux + quality presets.** VA-API/NVENC encode/decode with openh264 fallback, up to 4K60/ultrawide/Source, plus a fused I420→BGRA scale+convert at tile size on the decode side.
 - [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.

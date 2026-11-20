@@ -101,6 +101,8 @@ pub struct Settings {
     pub dark: bool,
     /// `None` = system default.
     pub input_device: Option<String>,
+    /// Camera index (`None` = first camera).
+    pub camera_device: Option<u32>,
     pub output_device: Option<String>,
 }
 
@@ -117,6 +119,7 @@ impl Default for Settings {
             dark: true,
             input_device: None,
             output_device: None,
+            camera_device: None,
         }
     }
 }
@@ -190,6 +193,19 @@ impl GlanceApp {
     }
 }
 
+impl Room {
+    /// Our running broadcast for a track.
+    pub fn control(
+        &self,
+        track: glance_proto::Track,
+    ) -> Option<&glance_media::pipeline::BroadcastControl> {
+        match track {
+            glance_proto::Track::Screen => self.broadcast.as_ref(),
+            glance_proto::Track::Camera => self.camera_broadcast.as_ref(),
+        }
+    }
+}
+
 /// Everything about the room you're in.
 pub struct Room {
     pub name: String,
@@ -212,6 +228,11 @@ pub struct Room {
     pub volume_open: Option<PeerId>,
     /// Streams shown in their own windows.
     pub popouts: HashMap<PeerId, Entity<VideoView>>,
+    /// Camera tiles (everyone's camera is shown automatically, ours too).
+    pub cameras: HashMap<PeerId, Entity<VideoView>>,
+    /// Our camera broadcast, if the camera is on.
+    pub camera_broadcast: Option<glance_media::pipeline::BroadcastControl>,
+    pub _camera_task: Option<Task<()>>,
     /// Files offered in this room.
     pub files: crate::files::FileMap,
     /// Names of history authors who may have left.
@@ -273,6 +294,7 @@ pub struct GlanceApp {
     pub immersive: Option<PeerId>,
     pub _tray: Option<crate::tray::Tray>,
     pub _tray_task: Option<Task<()>>,
+    pub camera_list: Option<Vec<glance_media::camera::CameraInfo>>,
     /// Audio devices, listed when the voice settings open.
     pub audio_devices: Option<(
         Vec<glance_media::audio::device::DeviceInfo>,
@@ -357,6 +379,7 @@ impl GlanceApp {
             link_copied: false,
             volumes: HashMap::new(),
             audio_devices: None,
+            camera_list: None,
             book: Default::default(),
             live: Default::default(),
             incoming_call: None,
@@ -431,6 +454,9 @@ impl GlanceApp {
             _voice_task: None,
             volume_open: None,
             popouts: HashMap::new(),
+            cameras: HashMap::new(),
+            camera_broadcast: None,
+            _camera_task: None,
             files: Default::default(),
             history_names: HashMap::new(),
             met: HashMap::new(),
@@ -450,8 +476,13 @@ impl GlanceApp {
     pub fn leave_room(&mut self, cx: &mut Context<Self>) {
         self.record_call_end();
         self.invite_open = false;
-        if let Some(b) = self.room.as_ref().and_then(|r| r.broadcast.as_ref()) {
-            b.stop();
+        if let Some(room) = self.room.as_ref() {
+            for b in [room.broadcast.as_ref(), room.camera_broadcast.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                b.stop();
+            }
         }
         let _guard = self.net.as_ref().map(|n| n.enter());
         self.room = None;
@@ -502,7 +533,10 @@ impl GlanceApp {
                 && let Some(handle) = &room.handle
                 && let Ok(id) = glance_net::EndpointId::from_bytes(&peer.0)
             {
-                handle.send(glance_net::Command::Unwatch(id));
+                handle.send(glance_net::Command::Unwatch(
+                    id,
+                    glance_proto::Track::Screen,
+                ));
             }
             room.watching.remove(&peer);
             if room.focused == Some(peer) {
@@ -758,6 +792,7 @@ impl GlanceApp {
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings_open = true;
                     this.audio_devices = None; // re-list devices on open
+                    this.camera_list = None;
                     cx.notify();
                 })),
             )

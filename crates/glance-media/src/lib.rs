@@ -5,6 +5,7 @@
 //! Windows Graphics Capture).
 
 pub mod audio;
+pub mod camera;
 pub mod capture;
 pub mod codec;
 pub mod frame;

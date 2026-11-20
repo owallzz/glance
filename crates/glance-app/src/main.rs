@@ -2,6 +2,7 @@
 
 mod app;
 mod bot;
+mod camera;
 mod contacts;
 mod files;
 mod home;
@@ -33,7 +34,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
             eprintln!(
-                "usage: glance bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back]"
+                "usage: glance bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]"
             );
             std::process::exit(2);
         };
@@ -59,7 +60,8 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .map(std::path::PathBuf::from);
         let ring_back = args.iter().any(|a| a == "--ring-back");
-        if let Err(e) = bot::run(link, name, stream, tone, file, ring_back) {
+        let camera = args.iter().any(|a| a == "--camera");
+        if let Err(e) = bot::run(link, name, stream, tone, file, ring_back, camera) {
             eprintln!("glance bot: {e:#}");
             std::process::exit(1);
         }

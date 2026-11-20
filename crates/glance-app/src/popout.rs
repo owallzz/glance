@@ -106,7 +106,10 @@ impl GlanceApp {
         if let Some(h) = self.room.as_ref().and_then(|r| r.handle.as_ref())
             && let Ok(id) = glance_net::EndpointId::from_bytes(&peer.0)
         {
-            h.send(glance_net::Command::Unwatch(id));
+            h.send(glance_net::Command::Unwatch(
+                id,
+                glance_proto::Track::Screen,
+            ));
         }
         if live {
             self.watch(peer, cx);
@@ -118,7 +121,7 @@ impl GlanceApp {
         if let Some(h) = self.room.as_ref().and_then(|r| r.handle.as_ref())
             && let Ok(id) = glance_net::EndpointId::from_bytes(&peer.0)
         {
-            h.send(glance_net::Command::Watch(id));
+            h.send(glance_net::Command::Watch(id, glance_proto::Track::Screen));
         }
     }
 }

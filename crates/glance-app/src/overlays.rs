@@ -474,6 +474,34 @@ impl GlanceApp {
                     )
                 });
                 let (inputs, outputs) = devices.clone();
+                let cameras = self
+                    .camera_list
+                    .get_or_insert_with(glance_media::camera::list_cameras)
+                    .clone();
+                let camera_rows = std::iter::once((None, "First available camera".to_string()))
+                    .chain(cameras.into_iter().map(|c| (Some(c.index), c.name)))
+                    .enumerate()
+                    .map(|(i, (value, name))| {
+                        let is_sel = value == self.settings.camera_device;
+                        let hover = p.bg_hover;
+                        div()
+                            .id(SharedString::from(format!("cam-{i}")))
+                            .px_3()
+                            .py_1()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .truncate()
+                            .text_color(if is_sel { p.text_header } else { p.text_normal })
+                            .when(is_sel, |d| d.bg(p.bg_selected))
+                            .hover(move |s| s.bg(hover))
+                            .child(name)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.settings.camera_device = value;
+                                this.save_settings();
+                                cx.notify();
+                            }))
+                    })
+                    .collect::<Vec<_>>();
                 let device_list = |id: &'static str,
                                    label: &'static str,
                                    list: Vec<glance_media::audio::device::DeviceInfo>,
@@ -565,6 +593,26 @@ impl GlanceApp {
                         self.settings.output_device.clone(),
                         false,
                     ))
+                    .child(
+                        div()
+                            .py_4()
+                            .border_b_1()
+                            .border_color(p.bg_selected)
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(section_label(p, "CAMERA"))
+                            .child(
+                                div()
+                                    .id("camera-devices")
+                                    .max_h(px(140.))
+                                    .overflow_y_scroll()
+                                    .p_1()
+                                    .rounded(px(4.))
+                                    .bg(p.bg_input)
+                                    .children(camera_rows),
+                            ),
+                    )
                     .child(processing(
                         "ns",
                         "Noise suppression",

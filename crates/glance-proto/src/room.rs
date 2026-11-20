@@ -77,12 +77,12 @@ pub enum Control {
     Ping(u64),
     Pong(u64),
     Leave,
-    /// Viewer -> sharer: start sending me your screen.
-    Watch,
+    /// Viewer -> sharer: start sending me this track.
+    Watch(Track),
     /// Viewer -> sharer: stop sending it.
-    Unwatch,
-    /// Viewer -> sharer: I lost packets; send a keyframe.
-    KeyframeRequest,
+    Unwatch(Track),
+    /// Viewer -> sharer: I lost packets on this track; send a keyframe.
+    KeyframeRequest(Track),
     /// A file offered in chat (fetch it over iroh-blobs by hash).
     File {
         sent_at: u64,
@@ -132,7 +132,32 @@ pub struct AudioDatagram {
     pub data: Vec<u8>,
 }
 
-/// First byte of a unidirectional stream: what it carries.
+/// A member's video sources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Track {
+    Screen,
+    Camera,
+}
+
+impl Track {
+    pub fn to_byte(self) -> u8 {
+        match self {
+            Track::Screen => 0,
+            Track::Camera => 1,
+        }
+    }
+
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            0 => Some(Track::Screen),
+            1 => Some(Track::Camera),
+            _ => None,
+        }
+    }
+}
+
+/// First byte of a unidirectional stream: what it carries. A video stream's
+/// second byte is its [`Track`].
 pub const UNI_VIDEO: u8 = 1;
 
 /// One encoded picture on a video stream (sharer -> viewer).
@@ -185,6 +210,14 @@ mod tests {
         assert!(!verify_proof(&secret, room, b, a, &p));
         assert!(!verify_proof(&[5; 16], room, a, b, &p));
         assert!(!verify_proof(&secret, RoomId([0; 8]), a, b, &p));
+    }
+
+    #[test]
+    fn track_bytes_round_trip() {
+        for t in [Track::Screen, Track::Camera] {
+            assert_eq!(Track::from_byte(t.to_byte()), Some(t));
+        }
+        assert_eq!(Track::from_byte(9), None);
     }
 
     #[test]

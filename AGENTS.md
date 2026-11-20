@@ -8,7 +8,7 @@ glance: peer-to-peer screen sharing rooms (multi-sharer, voice, chat, webcam, co
 | Host env (immutable Fedora only) | `source scripts/env.sh` |
 | Build | `cargo build` |
 | Run | `cargo run -p glance-app` (`-- --demo` for a populated fake room, `-- --spike N W H FPS` for the video spike) |
-| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back]` (headless: joins, greets, echoes chat, toggles mute, accepts contact requests and answers rings by joining; `--ring-back` instead rings a new contact back once they leave; `--stream` shares a test pattern through the real encoder; `--tone` talks with a sine tone and prints who it hears speaking) |
+| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]` (headless: joins, greets, echoes chat, toggles mute, accepts contact requests and answers rings by joining; `--ring-back` instead rings a new contact back once they leave; `--stream` shares a test pattern through the real encoder; `--tone` talks with a sine tone and prints who it hears speaking) |
 | Capture probe | `cargo run --release -p glance-media --example capture_probe [secs] [max_height]` (captures, encodes, prints fps and encode cost) |
 | Second identity | `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app` |
 | Auto-watch | `GLANCE_AUTOWATCH=1` watches every stream automatically (lets a second instance test viewing without clicks) |
@@ -31,12 +31,13 @@ Run the tests and the linter before every commit; CI runs the same checks.
   - `tray.rs`: tray icon (ksni on Linux, tray-icon on macOS/Windows), close-to-tray (minimize while the tray is up), start on login via auto-launch (release builds only, never with `GLANCE_DATA_DIR`).
   - `files.rs`: send (attach/drag & drop), offers, downloads with progress into Downloads (`GLANCE_DOWNLOAD_DIR` overrides), inline image previews.
   - `popout.rs`: fullscreen (immersive) viewing and pop-out windows (a popped-out stream gets its own Watch/feed; closing the window brings it back).
+  - `camera.rs`: webcam on/off (camera track broadcast at 640×360@24) and auto-watching everyone's camera into person tiles.
   - `ui.rs`: shared widgets (Avatar, icon_button, pill, live_badge).
   - `video.rs`: `VideoView` tile. `spike.rs`: the render benchmark.
   - `theme.rs` + `assets/themes/glance.json`: design tokens and the gpui-kit component theme (dark + light).
 - `crates/glance-core`: view-model types the UI renders (`model.rs`), the persistent contact book with its state transitions (`contacts.rs`), formatting helpers, `demo.rs` fake data. Room/contacts state machines land here (no I/O, unit-tested).
 - `crates/glance-net`: `Node` (iroh endpoint + router) and the room mesh actor (`room.rs`): membership, chat, state, voice as QUIC datagrams straight to an audio sink, chat/file history for late joiners, and video fan-out. `contacts.rs`: always-on contacts actor (ALPN `glance/contacts/1`): requests, presence, ring/answer, join requests; blocked peers refused, non-contacts can only send requests. `files.rs`: iroh-blobs store (on disk in the data dir), add/download/export, `unique_path` sanitizes peer-supplied names. (one QUIC uni stream per watcher, per-watcher queue that skips to keyframes when full). `tests/room_mesh.rs` runs in-process peers.
-- `crates/glance-media`: voice (`audio/`: cpal devices via lock-free rings, speexdsp echo cancellation + RNNoise suppression, Opus with FEC/DTX, jitter buffer, mixer/engine thread), frames and scaling (`frame.rs`), H.264 via OpenH264 (`codec.rs`), capture (`capture/`: Wayland = portal + PipeWire in `wayland.rs`; X11/macOS/Windows = zed-scap in `scap_backend.rs`), and `pipeline.rs` (broadcast: capture -> scale -> encode only while watched; decoder thread for viewers).
+- `crates/glance-media`: voice (`audio/`: cpal devices via lock-free rings, speexdsp echo cancellation + RNNoise suppression, Opus with FEC/DTX, jitter buffer, mixer/engine thread), webcam capture via nokhwa (`camera.rs`), frames and scaling (`frame.rs`), H.264 via OpenH264 (`codec.rs`), capture (`capture/`: Wayland = portal + PipeWire in `wayland.rs`; X11/macOS/Windows = zed-scap in `scap_backend.rs`), and `pipeline.rs` (broadcast: capture -> scale -> encode only while watched; decoder thread for viewers).
 - `crates/glance-proto`: tickets (`glance://join/...`), room control messages and join proofs, length-prefixed postcard framing. Breaking wire changes get a new ALPN.
 - `scripts/`: host build helpers and `shot.sh` (screenshots).
 - `.claude/skills/run-glance`: how to launch, screenshot and measure the app.
@@ -73,6 +74,9 @@ This repo must not contain personal or identifying information. Never commit:
 Check the diff for these before every commit.
 
 ## Gotchas
+- Don't open the real webcam in automated tests (it turns the user's camera light on); use `glance bot --camera` (synthetic camera) instead. Listing cameras is fine.
+- Video is per track (`Track::Screen`, `Track::Camera`): watchers are keyed by (peer, track) and each uni stream starts with `[UNI_VIDEO, track]`.
+- Room connections: only the smaller endpoint id dials (newcomers always dial the link's host); a duplicate is replaced gracefully (old connection's frames still accepted, closed after 5 s).
 - When editing with scripted search/replace, assert that each pattern matched. `cargo fmt` reflows code, and a silent miss once hid a real bug (pop-out feeds never routed).
 - Every request that makes a sharer send a keyframe must be rate-limited (≤1/s): keyframes are large, and a flood makes congestion worse.
 - A gpui window can have helper X windows with the same title; when scripting, pick the one whose geometry matches the real window.

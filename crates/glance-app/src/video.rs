@@ -26,6 +26,10 @@ pub struct VideoView {
     bytes: Option<Arc<std::sync::atomic::AtomicU64>>,
     /// Extra text for the stats label (e.g. "Live to 2 · 3.1 Mbps").
     pub label: Option<SharedString>,
+    /// Fill the tile, cropping edges (cameras), instead of letterboxing.
+    pub cover: bool,
+    /// Hide the stats label (cameras).
+    pub show_stats: bool,
     current: Option<Arc<RenderImage>>,
     current_size: (u32, u32),
     stale: Vec<Arc<RenderImage>>,
@@ -53,6 +57,8 @@ impl VideoView {
         Self {
             bytes: None,
             label: None,
+            cover: false,
+            show_stats: true,
             current: None,
             current_size: (0, 0),
             stale: Vec::new(),
@@ -154,22 +160,28 @@ impl Render for VideoView {
             .children(self.current.clone().map(|image| {
                 img(ImageSource::Render(image))
                     .size_full()
-                    .object_fit(ObjectFit::Contain)
+                    .object_fit(if self.cover {
+                        ObjectFit::Cover
+                    } else {
+                        ObjectFit::Contain
+                    })
             }))
-            .child(
-                div()
-                    .absolute()
-                    .top_2()
-                    .left_2()
-                    .max_w(relative(0.55))
-                    .truncate()
-                    .px_2()
-                    .rounded(px(4.))
-                    .bg(gpui_kit::black().opacity(0.6))
-                    .text_xs()
-                    .text_color(gpui_kit::white())
-                    .child(stats_text),
-            )
+            .when(self.show_stats, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_2()
+                        .left_2()
+                        .max_w(relative(0.55))
+                        .truncate()
+                        .px_2()
+                        .rounded(px(4.))
+                        .bg(gpui_kit::black().opacity(0.6))
+                        .text_xs()
+                        .text_color(gpui_kit::white())
+                        .child(stats_text),
+                )
+            })
     }
 }
 
