@@ -15,10 +15,10 @@ tracing = "0.1"
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 scap = { package = "zed-scap", version = "=0.0.8-zed", default-features = false }
 
-# zed-scap asks for windows-capture "1.3.6" (any 1.x), but 1.5 changed its
-# API and breaks zed-scap's build. Pin the version it was written against.
+# zed-scap asks for windows-capture "1.3.6" (any 1.x), but it uses APIs
+# from 1.4 and 1.5 changed Settings::new. 1.4.4 is the compatible release.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-capture = "=1.3.6"
+windows-capture = "=1.4.4"
 
 # Linux: X11 via zed-scap; Wayland via our own portal + PipeWire code
 # (zed-scap's Wayland path needs libspa 0.8, which doesn't build against
