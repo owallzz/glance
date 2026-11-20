@@ -53,6 +53,8 @@ struct Shared {
     levels: Mutex<HashMap<PeerKey, (u8, Instant)>>,
     removed: Mutex<Vec<PeerKey>>,
     dsp: Mutex<Option<(bool, bool)>>,
+    /// UI sounds waiting to be mixed in (played even when deafened).
+    effects: Mutex<std::collections::VecDeque<f32>>,
 }
 
 pub struct AudioEngine {
@@ -93,6 +95,19 @@ impl AudioEngine {
 
     pub fn set_muted(&self, muted: bool) {
         self.shared.muted.store(muted, Ordering::Relaxed);
+    }
+
+    /// Play a UI sound through the speakers (mixed with voices).
+    pub fn play(&self, sound: super::sounds::Sound) {
+        let samples = super::sounds::samples(sound);
+        let mut q = self.shared.effects.lock().unwrap();
+        // Overlap with anything still playing rather than queueing behind it.
+        for (i, s) in samples.into_iter().enumerate() {
+            match q.get_mut(i) {
+                Some(slot) => *slot += s,
+                None => q.push_back(s),
+            }
+        }
     }
 
     pub fn set_deafened(&self, deafened: bool) {
@@ -320,6 +335,19 @@ fn run(
         if shared.deafened.load(Ordering::Relaxed) {
             mix.fill(0.0);
         }
+        {
+            let mut fx = shared.effects.lock().unwrap();
+            if !fx.is_empty() {
+                for m in mix.iter_mut() {
+                    match fx.pop_front() {
+                        Some(s) => *m = (*m + s).clamp(-1.0, 1.0),
+                        None => break,
+                    }
+                }
+            }
+        }
+        // (Sounds are in the echo canceller's reference, so the mic doesn't
+        // send them back.)
         far_end.copy_from_slice(&mix);
         if spk_live {
             let queued = spk_tx.buffer().capacity() - spk_tx.slots();

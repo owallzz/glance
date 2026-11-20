@@ -949,11 +949,20 @@ impl GlanceApp {
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.pick_files_to_send(cx))),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .child(Input::new(&self.chat_input).appearance(false)),
-                        ),
+                        .child(div().flex_1().child(
+                            Input::new(&self.chat_input).appearance(false).on_paste({
+                                // Pasted files or images are sent; text pastes as usual.
+                                let app = cx.entity().downgrade();
+                                move |item, _, cx| {
+                                    let paths = crate::files::pasted_files(item);
+                                    if paths.is_empty() {
+                                        return false;
+                                    }
+                                    let _ = app.update(cx, |app, cx| app.send_files(paths, cx));
+                                    true
+                                }
+                            }),
+                        )),
                 ),
             )
     }

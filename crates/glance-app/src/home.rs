@@ -430,6 +430,12 @@ impl GlanceApp {
                     this.contact_menu = None;
                 })),
             )
+            .child(menu_item("nick", "Nickname", false).on_click(cx.listener(
+                move |this, _, window, cx| {
+                    this.contact_menu = None;
+                    this.edit_nickname(pid, window, cx);
+                },
+            )))
             .child(
                 menu_item("rm", "Remove contact", true).on_click(cx.listener(
                     move |this, _, _, cx| {
@@ -478,11 +484,41 @@ impl GlanceApp {
                     .child(div().text_sm().text_color(p.text_muted).child(status)),
             )
             .child(actions);
+        let editing = self.editing_nickname == Some(pid);
+        let nickname_row = div()
+            .ml(px(52.))
+            .mb_2()
+            .flex()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .child(Input::new(&self.nickname_input).small()),
+            )
+            .child(
+                Button::new(SharedString::from(format!("nick-save-{id}")))
+                    .small()
+                    .primary()
+                    .label("Save")
+                    .on_click(cx.listener(|this, _, _, cx| this.save_nickname(cx))),
+            )
+            .child(
+                Button::new(SharedString::from(format!("nick-cancel-{id}")))
+                    .small()
+                    .ghost()
+                    .label("Cancel")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.editing_nickname = None;
+                        cx.notify();
+                    })),
+            );
         div()
             .flex()
             .flex_col()
             .child(row)
             .when(menu_open, |d| d.child(menu))
+            .when(editing, |d| d.child(nickname_row))
             .into_any_element()
     }
 

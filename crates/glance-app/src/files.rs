@@ -28,6 +28,48 @@ pub struct FileEntry {
     pub _progress_task: Option<Task<()>>,
 }
 
+/// Files to send from a paste: copied files as they are, and pasted images
+/// (screenshots) saved as files first. Empty for plain text.
+pub fn pasted_files(item: &ClipboardItem) -> Vec<PathBuf> {
+    pasted_files_into(item, &crate::net::data_dir().join("pasted"))
+}
+
+fn pasted_files_into(item: &ClipboardItem, dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in item.entries() {
+        match entry {
+            ClipboardEntry::ExternalPaths(p) => out.extend(p.paths().iter().cloned()),
+            ClipboardEntry::Image(img) => {
+                if let Some(path) = save_pasted_image(img, dir) {
+                    out.push(path);
+                }
+            }
+            ClipboardEntry::String(_) => {}
+        }
+    }
+    out
+}
+
+/// Write a pasted image where the blob store can keep referencing it.
+fn save_pasted_image(img: &Image, dir: &std::path::Path) -> Option<PathBuf> {
+    let ext = match img.format {
+        ImageFormat::Png => "png",
+        ImageFormat::Jpeg => "jpg",
+        ImageFormat::Webp => "webp",
+        ImageFormat::Gif => "gif",
+        ImageFormat::Svg => "svg",
+        ImageFormat::Bmp => "bmp",
+        ImageFormat::Tiff => "tiff",
+        ImageFormat::Ico => "ico",
+        ImageFormat::Pnm => "ppm",
+    };
+    std::fs::create_dir_all(dir).ok()?;
+    let name = format!("Pasted image {}.{ext}", now_ms());
+    let path = glance_net::files::unique_path(dir, &name);
+    std::fs::write(&path, &img.bytes).ok()?;
+    Some(path)
+}
+
 pub fn download_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("GLANCE_DOWNLOAD_DIR") {
         return PathBuf::from(dir);
@@ -270,3 +312,23 @@ impl GlanceApp {
 }
 
 pub type FileMap = HashMap<[u8; 32], FileEntry>;
+
+#[cfg(test)]
+mod tests {
+    use super::pasted_files_into;
+    use gpui_kit::{ClipboardItem, Image, ImageFormat};
+
+    #[test]
+    fn pasting_text_sends_nothing_and_images_become_files() {
+        let dir = std::env::temp_dir().join(format!("glance-paste-{}", std::process::id()));
+        let text = ClipboardItem::new_string("hello".into());
+        assert!(pasted_files_into(&text, &dir).is_empty());
+        let png = crate::tray::icon_png(16);
+        let img = ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png, png.clone()));
+        let files = pasted_files_into(&img, &dir);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].extension().and_then(|e| e.to_str()), Some("png"));
+        assert_eq!(std::fs::read(&files[0]).unwrap(), png);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -625,6 +625,7 @@ impl GlanceApp {
                                     this.settings.noise_suppression = *v;
                                 }
                                 this.apply_audio_processing();
+                                this.save_settings();
                                 cx.notify();
                             },
                         )),
@@ -680,6 +681,12 @@ impl GlanceApp {
                         "Stops others hearing themselves through your speakers.",
                         self.settings.echo_cancel,
                         true,
+                    ))
+                    .child(toggle!(
+                        "sounds",
+                        "Sounds",
+                        "Play a chime when people join or leave, and when you mute or deafen.",
+                        sounds
                     ))
                     .into_any_element()
             }

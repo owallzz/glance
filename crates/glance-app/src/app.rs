@@ -10,7 +10,7 @@ use glance_core::{
 use glance_media::TargetSize;
 use glance_media::pattern::spawn_pattern;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::InputState;
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -97,6 +97,8 @@ pub struct Settings {
     #[serde(skip)]
     pub page: SettingsPage,
     pub noise_suppression: bool,
+    /// Join/leave and mute/deafen sounds.
+    pub sounds: bool,
     pub echo_cancel: bool,
     pub tray: bool,
     pub autostart: bool,
@@ -121,6 +123,7 @@ impl Default for Settings {
         Self {
             page: SettingsPage::Voice,
             noise_suppression: true,
+            sounds: true,
             echo_cancel: true,
             tray: true,
             autostart: true,
@@ -372,6 +375,9 @@ pub struct GlanceApp {
     pub name_input: Entity<InputState>,
     /// Settings → Connection: custom relay URL.
     pub relay_input: Entity<InputState>,
+    /// Contacts home: the nickname field and whose nickname it edits.
+    pub nickname_input: Entity<InputState>,
+    pub editing_nickname: Option<PeerId>,
     /// Feedback under the relay field.
     pub relay_note: Option<String>,
     pub join_error: Option<String>,
@@ -436,6 +442,19 @@ impl GlanceApp {
         let join_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Paste a glance link or code"));
         let chat_input = cx.new(|cx| InputState::new(window, cx).placeholder("Message the room"));
+        let nickname_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Nickname (blank to use their name)")
+        });
+        cx.subscribe_in(
+            &nickname_input,
+            window,
+            |this: &mut Self, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.save_nickname(cx);
+                }
+            },
+        )
+        .detach();
         let relay_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("https://relay.example.com (blank = default relays)")
@@ -486,6 +505,8 @@ impl GlanceApp {
             name_input,
             relay_input,
             relay_note: None,
+            nickname_input,
+            editing_nickname: None,
             join_error: None,
             busy: false,
             me,
@@ -683,17 +704,39 @@ impl GlanceApp {
     }
 
     pub fn set_muted(&mut self, muted: bool) {
+        use glance_media::audio::sounds::Sound;
+        let was_deafened = self.deafened;
         self.muted = muted;
         if !muted {
             self.deafened = false;
         }
+        self.chime(match (muted, was_deafened) {
+            (false, true) => Sound::Undeafen,
+            (false, false) => Sound::Unmute,
+            (true, _) => Sound::Mute,
+        });
         self.sync_self();
     }
 
     pub fn set_deafened(&mut self, deafened: bool) {
+        use glance_media::audio::sounds::Sound;
         self.deafened = deafened;
         self.muted = deafened || self.muted;
+        self.chime(if deafened {
+            Sound::Deafen
+        } else {
+            Sound::Undeafen
+        });
         self.sync_self();
+    }
+
+    /// Play a UI sound if sounds are on and voice is running.
+    pub fn chime(&self, sound: glance_media::audio::sounds::Sound) {
+        if self.settings.sounds
+            && let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref())
+        {
+            engine.play(sound);
+        }
     }
 
     /// Mirror your own state into your participant row and tell the room.

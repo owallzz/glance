@@ -274,6 +274,32 @@ impl GlanceApp {
         cx.notify();
     }
 
+    /// Open the nickname field under a contact.
+    pub fn edit_nickname(&mut self, peer: PeerId, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self
+            .book
+            .get(&peer.0)
+            .and_then(|c| c.nickname.clone())
+            .unwrap_or_default();
+        self.nickname_input.update(cx, |s, cx| {
+            s.set_value(current, window, cx);
+            s.focus(window, cx);
+        });
+        self.editing_nickname = Some(peer);
+        cx.notify();
+    }
+
+    pub fn save_nickname(&mut self, cx: &mut Context<Self>) {
+        let Some(peer) = self.editing_nickname.take() else {
+            return;
+        };
+        let text = self.nickname_input.read(cx).value().trim().to_string();
+        self.book
+            .set_nickname(&peer.0, (!text.is_empty()).then_some(text));
+        self.save_book();
+        cx.notify();
+    }
+
     pub fn toggle_favorite(&mut self, peer: PeerId, cx: &mut Context<Self>) {
         let fav = self.book.get(&peer.0).is_some_and(|c| c.favorite);
         self.book.set_favorite(&peer.0, !fav);

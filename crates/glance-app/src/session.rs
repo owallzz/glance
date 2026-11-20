@@ -196,8 +196,14 @@ impl GlanceApp {
     }
 
     fn on_room_event(&mut self, ev: RoomEvent, cx: &mut Context<Self>) {
+        let sounds = self.settings.sounds;
         let Some(room) = self.room.as_mut() else {
             return;
+        };
+        let chime = |room: &Room, s: glance_media::audio::sounds::Sound| {
+            if sounds && let Some(engine) = &room.audio {
+                engine.play(s);
+            }
         };
         let system = |room: &mut Room, author: PeerId, text: String| {
             let id = room.chat.last().map_or(1, |m| m.id + 1);
@@ -236,6 +242,7 @@ impl GlanceApp {
                     room.name = format!("{}'s room", profile.name);
                 }
                 system(room, id, format!("{} joined", profile.name));
+                chime(room, glance_media::audio::sounds::Sound::Join);
             }
             RoomEvent::MemberUpdated { id, state } => {
                 let id = peer_id(id);
@@ -275,6 +282,7 @@ impl GlanceApp {
                         room.focused = None;
                     }
                     system(room, id, format!("{} left", p.profile.name));
+                    chime(room, glance_media::audio::sounds::Sound::Leave);
                 }
             }
             RoomEvent::Chat {
