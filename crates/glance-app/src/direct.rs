@@ -36,6 +36,86 @@ pub struct DirectFile {
 /// Keep the home list short.
 const KEEP: usize = 30;
 
+/// One file in `direct_files.json` (the list survives restarts; transfers
+/// in progress come back as not downloaded).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Saved {
+    peer: [u8; 32],
+    incoming: bool,
+    hash: [u8; 32],
+    name: String,
+    size: u64,
+    mime: String,
+    /// "available", "done" or "sent".
+    state: String,
+    path: Option<PathBuf>,
+}
+
+const SAVE_FILE: &str = "direct_files.json";
+
+/// The saved list, newest first. Files saved as downloaded whose copy has
+/// gone from disk become downloadable again.
+pub fn load(dir: &std::path::Path) -> Vec<DirectFile> {
+    let Ok(text) = std::fs::read_to_string(dir.join(SAVE_FILE)) else {
+        return Vec::new();
+    };
+    let saved: Vec<Saved> = serde_json::from_str(&text).unwrap_or_default();
+    saved
+        .into_iter()
+        .take(KEEP)
+        .map(|s| {
+            let exists = s.path.as_ref().is_some_and(|p| p.exists());
+            let transfer = match s.state.as_str() {
+                "sent" => Transfer::Sent,
+                "done" if exists => Transfer::Done,
+                _ => Transfer::Available,
+            };
+            let path = match transfer {
+                Transfer::Available => None,
+                _ => s.path,
+            };
+            DirectFile {
+                peer: PeerId(s.peer),
+                incoming: s.incoming,
+                offer: FileOffer {
+                    hash: s.hash,
+                    name: s.name,
+                    size: s.size,
+                    mime: s.mime,
+                    transfer,
+                },
+                path,
+                abort: None,
+                _task: None,
+            }
+        })
+        .collect()
+}
+
+fn save(dir: &std::path::Path, files: &[DirectFile]) -> std::io::Result<()> {
+    let saved: Vec<Saved> = files
+        .iter()
+        .map(|d| Saved {
+            peer: d.peer.0,
+            incoming: d.incoming,
+            hash: d.offer.hash,
+            name: d.offer.name.clone(),
+            size: d.offer.size,
+            mime: d.offer.mime.clone(),
+            state: match d.offer.transfer {
+                Transfer::Sent => "sent",
+                Transfer::Done => "done",
+                _ => "available",
+            }
+            .into(),
+            path: d.path.clone(),
+        })
+        .collect();
+    let tmp = dir.join(format!("{SAVE_FILE}.tmp"));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&saved)?)?;
+    std::fs::rename(tmp, dir.join(SAVE_FILE))
+}
+
 impl GlanceApp {
     /// "Send file" on a contact: pick files and send each one.
     pub fn send_file_to_contact(&mut self, to: PeerId, cx: &mut Context<Self>) {
@@ -127,6 +207,15 @@ impl GlanceApp {
     fn push_direct(&mut self, file: DirectFile) {
         self.direct_files.insert(0, file);
         self.direct_files.truncate(KEEP);
+        self.save_direct();
+    }
+
+    fn save_direct(&self) {
+        if let Some(net) = &self.net
+            && let Err(e) = save(&net.data_dir, &self.direct_files)
+        {
+            tracing::warn!("saving the direct files list failed: {e}");
+        }
     }
 
     fn direct_mut(&mut self, hash: [u8; 32]) -> Option<&mut DirectFile> {
@@ -183,6 +272,9 @@ impl GlanceApp {
                                 d.abort = None;
                             }
                         }
+                    }
+                    if finished {
+                        app.save_direct();
                     }
                     cx.notify();
                 });
@@ -304,5 +396,73 @@ fn offer(file: WireFile, transfer: Transfer) -> FileOffer {
         size: file.size,
         mime: file.mime,
         transfer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DirectFile, load, save};
+    use glance_core::{FileOffer, PeerId, Transfer};
+    use std::path::PathBuf;
+
+    fn file(n: u8, incoming: bool, transfer: Transfer, path: Option<PathBuf>) -> DirectFile {
+        DirectFile {
+            peer: PeerId([n; 32]),
+            incoming,
+            offer: FileOffer {
+                hash: [n; 32],
+                name: format!("f{n}.txt"),
+                size: 10,
+                mime: "text/plain".into(),
+                transfer,
+            },
+            path,
+            abort: None,
+            _task: None,
+        }
+    }
+
+    #[test]
+    fn list_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("glance-direct-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let kept = dir.join("kept.txt");
+        std::fs::write(&kept, "x").unwrap();
+        let files = vec![
+            file(
+                1,
+                false,
+                Transfer::Sent,
+                Some(PathBuf::from("/original.txt")),
+            ),
+            file(2, true, Transfer::Done, Some(kept.clone())),
+            file(3, true, Transfer::Done, Some(dir.join("deleted.txt"))),
+            file(
+                4,
+                true,
+                Transfer::Downloading {
+                    done: 3,
+                    bytes_per_sec: 1,
+                },
+                None,
+            ),
+        ];
+        save(&dir, &files).unwrap();
+        let back = load(&dir);
+        let states: Vec<_> = back.iter().map(|d| d.offer.transfer.clone()).collect();
+        assert_eq!(
+            states,
+            [
+                Transfer::Sent,
+                Transfer::Done,
+                Transfer::Available,
+                Transfer::Available
+            ]
+        );
+        assert_eq!(back[1].path.as_deref(), Some(kept.as_path()));
+        assert!(back[2].path.is_none());
+        assert_eq!(back[0].peer, PeerId([1; 32]));
+        assert!(!back[0].incoming && back[3].incoming);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -499,6 +499,10 @@ impl GlanceApp {
             .as_ref()
             .map(|n| Settings::load(&n.data_dir))
             .unwrap_or_default();
+        let direct_files = net
+            .as_ref()
+            .map(|n| crate::direct::load(&n.data_dir))
+            .unwrap_or_default();
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let mut app = Self {
@@ -538,7 +542,7 @@ impl GlanceApp {
             _contacts_task: None,
             presence_menu: false,
             contact_menu: None,
-            direct_files: Vec::new(),
+            direct_files,
             auto_idle: false,
             invite_open: false,
             _tray: None,
