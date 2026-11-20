@@ -1,8 +1,13 @@
 //! Capture, encode/decode and audio pipelines with per-OS backends.
 //!
-//! So far: the decoded-frame type and display-size scaling (M1).
+//! Frames and display-size scaling, H.264 encode/decode (OpenH264), and
+//! screen capture (zed-scap: portal+PipeWire on Wayland, X11, ScreenCaptureKit,
+//! Windows Graphics Capture).
 
+pub mod capture;
+pub mod codec;
 pub mod frame;
 pub mod pattern;
+pub mod pipeline;
 
 pub use frame::{FrameScaler, TargetSize, VideoFrame, fit_within};

@@ -77,6 +77,22 @@ impl Default for FrameScaler {
 }
 
 impl FrameScaler {
+    /// Scale a borrowed frame to exactly `size` (always allocates).
+    pub fn resize_ref(&mut self, frame: &VideoFrame, size: (u32, u32)) -> Option<VideoFrame> {
+        let (w, h) = size;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let src = ImageRef::new(frame.width, frame.height, &frame.bgra, PixelType::U8x4).ok()?;
+        let mut dst = Image::new(w, h, PixelType::U8x4);
+        self.resizer.resize(&src, &mut dst, &self.options).ok()?;
+        Some(VideoFrame {
+            width: w,
+            height: h,
+            bgra: dst.into_vec(),
+        })
+    }
+
     /// Return `frame` scaled to fit `target`, or unchanged when it already
     /// fits or the target is unknown. Channel order is preserved, so BGRA in
     /// gives BGRA out.
