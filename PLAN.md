@@ -176,7 +176,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - Opus at 64 kbps (music mode), sent as datagrams only to people watching the screen; receivers mix it as a separate source with its own volume.
 - [x] **M8: Webcam.** Camera tiles via nokhwa, sharing the video pipeline.
 - [ ] **M9: macOS + Windows backends.** Done so far: single instance with link hand-off, `glance://` registration on Linux/Windows, macOS open-URL events. SCK/WGC capture plus audio, VideoToolbox/Media Foundation encode/decode, URL scheme registration, permissions prompts.
-- [ ] **M10: Hardware codecs on Linux + quality presets.** VA-API/NVENC encode/decode with openh264 fallback, up to 4K60/ultrawide/Source, plus a fused I420→BGRA scale+convert at tile size on the decode side.
+- [ ] **M10: Hardware codecs on Linux + quality presets.** Done so far: OpenH264 now encodes in parallel slices (our own wrapper; the crate forced one slice), so 1440p60 streams at a full 60 fps (11 ms/frame) and 4K reaches ~40 fps; viewers scale Y/U/V planes to the tile before converting (4K into a 1080p tile ~17 ms). Streams are capped at 3840x2160 (what OpenH264 takes), so 5120x1440 goes out as 3840x1080. Remaining: hardware encoders for 4K60. VA-API/NVENC encode/decode with openh264 fallback, up to 4K60/ultrawide/Source, plus a fused I420→BGRA scale+convert at tile size on the decode side.
 - [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.
 
 ## 5. Running and testing

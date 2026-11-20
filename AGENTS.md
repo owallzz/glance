@@ -12,6 +12,7 @@ glance: peer-to-peer screen sharing rooms (multi-sharer, voice, chat, webcam, co
 | Capture probe | `cargo run --release -p glance-media --example capture_probe [secs] [max_height]` (captures, encodes, prints fps and encode cost) |
 | Second identity | `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app` |
 | Auto-watch | `GLANCE_AUTOWATCH=1` watches every stream automatically (lets a second instance test viewing without clicks; a bot with it prints `hearing stream audio from ...`) |
+| Encoder speed | `cargo run --release -p glance-media --example encode_bench -- 3840x2160 120 --pattern` (encode ms/frame, decode+scale to a 1080p tile; `GLANCE_H264_THREADS=1` for single-threaded, `GLANCE_H264_LOG=1` for OpenH264's own log) |
 | Audio share probe | `cargo run -p glance-media --example stream_audio_probe -- [app-name]` lists shareable audio and captures it for 3 s. To test without sound playing aloud, route a tone into a temporary null sink: `pw-cli -m create-node adapter '{ factory.name=support.null-audio-sink node.name=glance-test-sink media.class=Audio/Sink object.linger=false }' &` then `pw-play --target glance-test-sink --properties '{ application.name="ToneApp" }' tone.wav &` |
 | Skip portal | `GLANCE_PW_NODE=<id>` reads an existing PipeWire node instead of opening the share dialog (pair with a Mutter screencast for tests) |
 | Local only | `GLANCE_RELAY=off` (no relays, direct addresses only); `GLANCE_RELAY=<url>` for a custom relay |

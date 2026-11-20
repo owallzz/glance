@@ -398,6 +398,10 @@ mod tests {
             ((3840, 2160), glance_core::Resolution::P1080),
             ((5120, 1440), glance_core::Resolution::P1440),
             ((1367, 769), glance_core::Resolution::Source),
+            ((5120, 1440), glance_core::Resolution::Source),
+            ((5120, 1440), glance_core::Resolution::P2160),
+            ((2160, 3840), glance_core::Resolution::Source),
+            ((3440, 1440), glance_core::Resolution::P1080),
         ] {
             assert_eq!(output_size(src, r.max_height()), r.output_size(src));
         }

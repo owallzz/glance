@@ -359,7 +359,6 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-
 pub struct GlanceApp {
     pub focus: FocusHandle,
     pub net: Option<std::rc::Rc<crate::net::Net>>,

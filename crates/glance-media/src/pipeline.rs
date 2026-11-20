@@ -20,6 +20,13 @@ pub fn output_size(src: (u32, u32), max_height: Option<u32>) -> (u32, u32) {
         Some(cap) => fit_within(src, (u32::MAX, cap)),
         None => src,
     };
+    // Never bigger than the encoder can take (either orientation).
+    let limit = crate::codec::MAX_ENCODE;
+    let (w, h) = if w >= h {
+        fit_within((w, h), limit)
+    } else {
+        fit_within((w, h), (limit.1, limit.0))
+    };
     ((w & !1).max(2), (h & !1).max(2))
 }
 
@@ -362,6 +369,11 @@ mod tests {
         assert_eq!(output_size((1366, 768), None), (1366, 768));
         assert_eq!(output_size((1367, 769), None), (1366, 768));
         assert_eq!(output_size((5120, 1440), Some(1080)), (3840, 1080));
+        // Above what the encoder takes: scaled down, keeping the shape.
+        assert_eq!(output_size((5120, 1440), None), (3840, 1080));
+        assert_eq!(output_size((5120, 1440), Some(2160)), (3840, 1080));
+        assert_eq!(output_size((7680, 4320), None), (3840, 2160));
+        assert_eq!(output_size((2160, 3840), None), (2160, 3840));
         assert_eq!(output_size((1280, 720), Some(1440)), (1280, 720));
     }
 

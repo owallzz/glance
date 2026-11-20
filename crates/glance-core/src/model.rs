@@ -239,25 +239,42 @@ impl Resolution {
     /// Output size for a source of `src` pixels: scaled down to the cap,
     /// keeping aspect ratio, never upscaled, dimensions even (for H.264).
     pub fn output_size(self, src: (u32, u32)) -> (u32, u32) {
-        let (w, h) = src;
-        let (w, h) = match self.max_height() {
-            Some(cap) if h > cap => {
-                let scaled_w = (w as u64 * cap as u64 / h as u64) as u32;
-                (scaled_w, cap)
-            }
-            _ => (w, h),
+        // Mirrors glance-media's `pipeline::output_size` (a test checks).
+        let s = match self.max_height() {
+            Some(cap) => fit(src, (u32::MAX, cap)),
+            None => src,
         };
-        (w & !1, h & !1)
+        // The software encoder's limit, either orientation.
+        let limit = if s.0 >= s.1 {
+            (3840, 2160)
+        } else {
+            (2160, 3840)
+        };
+        let (w, h) = fit(s, limit);
+        ((w & !1).max(2), (h & !1).max(2))
     }
 
-    /// Needs a hardware encoder to hold 60 fps.
+    /// Whether software encoding may not keep up (measured: 1440p60 encodes
+    /// in ~11 ms on a desktop CPU, 4K in ~24 ms, so 4K tops out near 40 fps).
     pub fn needs_hardware(self, fps: u32) -> bool {
         match self {
-            Resolution::P720 => false,
-            Resolution::P1080 => fps > 60,
-            _ => true,
+            Resolution::P720 | Resolution::P1080 | Resolution::P1440 => fps > 60,
+            Resolution::P2160 | Resolution::Source => fps > 30,
         }
     }
+}
+
+/// Scale `src` down to fit `bounds`, keeping its shape (never up).
+fn fit(src: (u32, u32), bounds: (u32, u32)) -> (u32, u32) {
+    let ((sw, sh), (bw, bh)) = (src, bounds);
+    if sw == 0 || sh == 0 || (sw <= bw && sh <= bh) {
+        return src;
+    }
+    let scale = (bw as f64 / sw as f64).min(bh as f64 / sh as f64);
+    (
+        ((sw as f64 * scale).round() as u32).clamp(1, bw),
+        ((sh as f64 * scale).round() as u32).clamp(1, bh),
+    )
 }
 
 pub const FRAME_RATES: [u32; 4] = [15, 30, 60, 144];
@@ -302,10 +319,16 @@ mod tests {
     fn resolution_output_sizes() {
         assert_eq!(Resolution::P1080.output_size((3840, 2160)), (1920, 1080));
         assert_eq!(Resolution::P2160.output_size((1920, 1080)), (1920, 1080));
-        assert_eq!(Resolution::P1440.output_size((5120, 1440)), (5120, 1440));
+        // Wider than 3840 is beyond the software encoder: scaled to fit.
+        assert_eq!(Resolution::P1440.output_size((5120, 1440)), (3840, 1080));
+        assert_eq!(Resolution::Source.output_size((5120, 1440)), (3840, 1080));
+        assert_eq!(Resolution::Source.output_size((3440, 1440)), (3440, 1440));
         assert_eq!(Resolution::P1080.output_size((5120, 1440)), (3840, 1080));
         assert_eq!(Resolution::Source.output_size((1367, 769)), (1366, 768));
-        assert!(Resolution::P2160.needs_hardware(30));
+        assert!(Resolution::P2160.needs_hardware(60));
+        assert!(!Resolution::P2160.needs_hardware(30));
+        assert!(!Resolution::P1440.needs_hardware(60));
+        assert!(Resolution::P1440.needs_hardware(144));
         assert!(!Resolution::P720.needs_hardware(60));
     }
 
