@@ -19,7 +19,7 @@ impl Pattern {
         let sw = width as usize * 2;
         let mut strip = vec![0u8; sw * 4 * 64];
         for (y, row) in strip.chunks_exact_mut(sw * 4).enumerate() {
-            for (x, px) in row.chunks_exact_mut(4).enumerate() {
+            for (x, px) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let band = ((x + y) / 96) as u8;
                 px.copy_from_slice(&[
                     band.wrapping_mul(37).wrapping_add(seed),
