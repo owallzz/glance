@@ -15,3 +15,5 @@ pub mod nvenc;
     clippy::all
 )]
 mod nvenc_sys;
+#[cfg(target_os = "macos")]
+pub mod videotoolbox;

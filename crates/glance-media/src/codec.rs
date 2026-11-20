@@ -49,6 +49,8 @@ enum Backend {
     Software(Box<SoftwareEncoder>),
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     Nvenc(crate::hw::nvenc::NvencEncoder),
+    #[cfg(target_os = "macos")]
+    VideoToolbox(crate::hw::videotoolbox::VtEncoder),
 }
 
 /// Which encoders [`VideoEncoder::with_choice`] may use.
@@ -82,6 +84,10 @@ pub fn hardware_encoder() -> Option<&'static str> {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if crate::hw::nvenc::available() {
             return Some("NVIDIA NVENC");
+        }
+        #[cfg(target_os = "macos")]
+        if crate::hw::videotoolbox::available() {
+            return Some("Apple VideoToolbox");
         }
         None
     })
@@ -120,6 +126,11 @@ impl VideoEncoder {
                 Ok(e) => return Ok(Self::wrap(Backend::Nvenc(e), width, height)),
                 Err(e) => hw_error = Some(e),
             }
+            #[cfg(target_os = "macos")]
+            match crate::hw::videotoolbox::VtEncoder::new(width, height, fps, bitrate_bps, true) {
+                Ok(e) => return Ok(Self::wrap(Backend::VideoToolbox(e), width, height)),
+                Err(e) => hw_error = Some(e),
+            }
             if choice == EncoderChoice::Hardware {
                 return Err(hw_error.unwrap_or_else(|| anyhow::anyhow!("no hardware encoder")));
             }
@@ -151,11 +162,19 @@ impl VideoEncoder {
             Backend::Software(_) => "OpenH264 (software)",
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             Backend::Nvenc(_) => "NVIDIA NVENC",
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(_) => "Apple VideoToolbox",
         }
     }
 
     pub fn is_hardware(&self) -> bool {
-        !matches!(self.backend, Backend::Software(_))
+        match &self.backend {
+            Backend::Software(_) => false,
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            Backend::Nvenc(_) => true,
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(e) => e.is_hardware(),
+        }
     }
 
     /// Change the target bitrate on the fly (no new keyframe).
@@ -164,6 +183,12 @@ impl VideoEncoder {
             Backend::Software(e) => e.set_bitrate(bps),
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             Backend::Nvenc(e) => {
+                if let Err(e) = e.set_bitrate(bps) {
+                    tracing::warn!("{e:#}");
+                }
+            }
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(e) => {
                 if let Err(e) = e.set_bitrate(bps) {
                     tracing::warn!("{e:#}");
                 }
@@ -177,6 +202,8 @@ impl VideoEncoder {
             Backend::Software(e) => e.raw.force_intra_frame(),
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             Backend::Nvenc(_) => self.keyframe = true,
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(_) => self.keyframe = true,
         }
     }
 
@@ -199,6 +226,11 @@ impl VideoEncoder {
             Backend::Nvenc(e) => {
                 let key = std::mem::take(&mut self.keyframe);
                 Some(e.encode(&frame.bgra, ts_us, key)?)
+            }
+            #[cfg(target_os = "macos")]
+            Backend::VideoToolbox(e) => {
+                let key = std::mem::take(&mut self.keyframe);
+                e.encode(&frame.bgra, ts_us, key)?
             }
         };
         Ok(out.map(|(keyframe, data)| EncodedPacket {
@@ -759,6 +791,54 @@ mod tests {
             VideoEncoder::with_choice(320, 240, 30, 1_000_000, EncoderChoice::Software).unwrap();
         assert!(!enc.is_hardware());
         assert_eq!(enc.backend_name(), "OpenH264 (software)");
+    }
+
+    /// VideoToolbox (Apple's software encoder is allowed, so this runs on CI
+    /// VMs without a GPU encoder too) must produce streams OpenH264 decodes.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn videotoolbox_stream_decodes_with_openh264() {
+        use crate::hw::videotoolbox::VtEncoder;
+        let (w, h) = (1280, 720);
+        let mut enc = VtEncoder::new(w, h, 30, bitrate_for(w, h, 30), false).unwrap();
+        let mut dec = VideoDecoder::new().unwrap();
+        let mut pattern = Pattern::new(w, h, 4);
+        let (mut keys, mut decoded, mut last) = (Vec::new(), 0, None);
+        for i in 0..20u64 {
+            let frame = pattern.next_frame();
+            let Some((key, data)) = enc.encode(&frame.bgra, i * 33_333, i == 10).unwrap() else {
+                continue;
+            };
+            keys.push((i, key));
+            if let Some(out) = dec.decode(&data, (0, 0)).unwrap() {
+                decoded += 1;
+                last = Some((frame, out));
+            }
+        }
+        assert_eq!(keys.first(), Some(&(0, true)), "{keys:?}");
+        assert!(keys.contains(&(10, true)), "forced keyframe: {keys:?}");
+        assert!(decoded >= 15, "decoded {decoded}");
+        let (input, out) = last.unwrap();
+        assert_eq!((out.width, out.height), (w, h));
+        let i = (((h / 2) * w + w / 2) * 4) as usize;
+        for c in 0..3 {
+            let d = (input.bgra[i + c] as i32 - out.bgra[i + c] as i32).abs();
+            assert!(d < 60, "channel {c} off by {d}");
+        }
+        enc.set_bitrate(500_000).unwrap();
+        // A keyframe on its own (a viewer joining late) decodes too.
+        let (key, data) = enc
+            .encode(&pattern.next_frame().bgra, 21 * 33_333, true)
+            .unwrap()
+            .unwrap();
+        assert!(key);
+        assert!(
+            VideoDecoder::new()
+                .unwrap()
+                .decode(&data, (0, 0))
+                .unwrap()
+                .is_some()
+        );
     }
 
     /// Runs only where a hardware encoder exists (not in CI).

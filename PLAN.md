@@ -182,6 +182,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - If the GPU encoder fails mid-stream, glance falls back to software. There's a Settings → Streaming toggle, and the Go Live warning only shows without a GPU encoder.
   - Viewers scale the Y/U/V planes to the tile and convert to BGRA in parallel (rayon): 4K into a 1080p tile takes about 13 ms (OpenH264 decode is about 9.5 ms of that).
   - Streams are capped at 3840x2160, so 5120x1440 goes out as 3840x1080.
+  - **VideoToolbox** (macOS, `hw/videotoolbox.rs`): a hardware session with low-latency rate control, Constrained Baseline, and AVCC converted to Annex-B with SPS/PPS before keyframes. Tested in CI with Apple's software encoder; not yet run on a real Mac.
   - Remaining: VA-API (AMD/Intel on Linux), Media Foundation (AMD/Intel on Windows), and hardware decode.
 - [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.
 
