@@ -115,7 +115,19 @@ impl Node {
                 .relay_mode(RelayMode::Custom(RelayMap::from(url.clone()))),
             Relay::Disabled => Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Disabled),
         };
+        // Notice a peer that vanished (crash, sleep, network gone) within
+        // ~10 s instead of QUIC's default 30 s, so they leave the room
+        // promptly. Keep-alives every 2 s keep healthy idle links up.
+        let transport = iroh::endpoint::QuicTransportConfig::builder()
+            .max_idle_timeout(Some(
+                Duration::from_secs(10)
+                    .try_into()
+                    .expect("10 s fits a QUIC idle timeout"),
+            ))
+            .keep_alive_interval(Duration::from_secs(2))
+            .build();
         let endpoint = builder
+            .transport_config(transport)
             .secret_key(config.secret_key)
             .bind()
             .await

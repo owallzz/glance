@@ -6,10 +6,12 @@ mod camera;
 mod contacts;
 mod files;
 mod home;
+mod instance;
 mod net;
 mod overlays;
 mod popout;
 mod room;
+mod scheme;
 mod session;
 mod spike;
 mod streaming;
@@ -68,83 +70,108 @@ fn main() {
         return;
     }
 
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::AllAssets)
-        .run(|cx: &mut App| {
-            gpui_kit::init(cx);
-            theme::init(ThemeMode::Dark, cx);
+    // A second launch (e.g. a clicked glance:// link) hands off to the
+    // running app instead of starting another copy of the same identity.
+    let normal_launch = !args.iter().any(|a| a == "--spike" || a == "--demo");
+    let (instance_tx, instance_rx) = flume::unbounded::<instance::Request>();
+    if normal_launch {
+        let dir = net::data_dir();
+        if instance::hand_off(&dir, &instance::Request::from_args(&args)) {
+            return;
+        }
+        if let Err(e) = instance::listen(&dir, instance_tx.clone()) {
+            tracing::warn!("single-instance listener failed: {e}");
+        }
+        scheme::register();
+    }
 
-            cx.on_action(|_: &Quit, cx| cx.quit());
-            cx.bind_keys([KeyBinding::new("ctrl-q", Quit, None)]);
-            app::bind_keys(cx);
-
-            let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
-            // We draw our own Discord-style title bar (drag area, minimize,
-            // maximize, close). Wayland compositors like GNOME don't provide
-            // one, and on Windows/macOS it replaces the system bar.
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(720.), px(480.))),
-                window_decorations: Some(WindowDecorations::Client),
-                // The OS still shows this in the taskbar and Alt+Tab.
-                titlebar: Some(TitlebarOptions {
-                    title: Some("glance".into()),
-                    ..gpui_kit::component::TitleBar::title_bar_options()
-                }),
-                app_id: Some("glance".into()),
-                ..gpui_kit::component::TitleBar::window_options()
-            };
-            let args: Vec<String> = std::env::args().skip(1).collect();
-            if args.first().map(String::as_str) == Some("--spike") {
-                let num = |i: usize, d: u32| args.get(i).and_then(|v| v.parse().ok()).unwrap_or(d);
-                let (n, w, h, fps) = (num(1, 1), num(2, 1920), num(3, 1080), num(4, 60));
-                gpui_kit::open_window(options, cx, |_, cx| {
-                    cx.new(|cx| spike::Spike::new(n as usize, w, h, fps, cx))
-                })
-                .expect("failed to open window");
-            } else {
-                let demo = args.iter().any(|a| a == "--demo");
-                let net = if demo {
-                    None
-                } else {
-                    match net::Net::start(net::data_dir()) {
-                        Ok(net) => Some(std::rc::Rc::new(net)),
-                        Err(e) => {
-                            eprintln!("glance: networking failed to start: {e:#}");
-                            None
-                        }
-                    }
-                };
-                let join = args
-                    .iter()
-                    .position(|a| a == "join")
-                    .and_then(|i| args.get(i + 1))
-                    .and_then(|link| glance_proto::Ticket::parse(link).ok())
-                    .or_else(|| {
-                        args.iter().find_map(|a| {
-                            glance_proto::Ticket::parse(a)
-                                .ok()
-                                .filter(|_| a.starts_with("glance://"))
-                        })
-                    });
-                let hidden = args.iter().any(|a| a == "--hidden");
-                gpui_kit::open_window(options, cx, |window, cx| {
-                    // Started at login: stay out of the way (tray only).
-                    if hidden {
-                        window.minimize_window();
-                    }
-                    cx.new(|cx| {
-                        let mut app = app::GlanceApp::new(demo, net, window, cx);
-                        if let Some(ticket) = join
-                            && !app.needs_profile
-                        {
-                            app.join(ticket, cx);
-                        }
-                        app
-                    })
-                })
-                .expect("failed to open window");
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
+    // macOS delivers clicked links as open-URL events, not arguments.
+    let url_tx = instance_tx.clone();
+    app.on_open_urls(move |urls| {
+        for url in urls {
+            if url.starts_with("glance://") {
+                let _ = url_tx.send(instance::Request::Join(url));
             }
-            cx.activate(true);
-        });
+        }
+    });
+    app.run(move |cx: &mut App| {
+        gpui_kit::init(cx);
+        theme::init(ThemeMode::Dark, cx);
+
+        cx.on_action(|_: &Quit, cx| cx.quit());
+
+        cx.bind_keys([KeyBinding::new("ctrl-q", Quit, None)]);
+        app::bind_keys(cx);
+
+        let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+        // We draw our own Discord-style title bar (drag area, minimize,
+        // maximize, close). Wayland compositors like GNOME don't provide
+        // one, and on Windows/macOS it replaces the system bar.
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(720.), px(480.))),
+            window_decorations: Some(WindowDecorations::Client),
+            // The OS still shows this in the taskbar and Alt+Tab.
+            titlebar: Some(TitlebarOptions {
+                title: Some("glance".into()),
+                ..gpui_kit::component::TitleBar::title_bar_options()
+            }),
+            app_id: Some("glance".into()),
+            ..gpui_kit::component::TitleBar::window_options()
+        };
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.first().map(String::as_str) == Some("--spike") {
+            let num = |i: usize, d: u32| args.get(i).and_then(|v| v.parse().ok()).unwrap_or(d);
+            let (n, w, h, fps) = (num(1, 1), num(2, 1920), num(3, 1080), num(4, 60));
+            gpui_kit::open_window(options, cx, |_, cx| {
+                cx.new(|cx| spike::Spike::new(n as usize, w, h, fps, cx))
+            })
+            .expect("failed to open window");
+        } else {
+            let demo = args.iter().any(|a| a == "--demo");
+            let net = if demo {
+                None
+            } else {
+                match net::Net::start(net::data_dir()) {
+                    Ok(net) => Some(std::rc::Rc::new(net)),
+                    Err(e) => {
+                        eprintln!("glance: networking failed to start: {e:#}");
+                        None
+                    }
+                }
+            };
+            let join = args
+                .iter()
+                .position(|a| a == "join")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|link| glance_proto::Ticket::parse(link).ok())
+                .or_else(|| {
+                    args.iter().find_map(|a| {
+                        glance_proto::Ticket::parse(a)
+                            .ok()
+                            .filter(|_| a.starts_with("glance://"))
+                    })
+                });
+            let hidden = args.iter().any(|a| a == "--hidden");
+            gpui_kit::open_window(options, cx, |window, cx| {
+                // Started at login: stay out of the way (tray only).
+                if hidden {
+                    window.minimize_window();
+                }
+                cx.new(|cx| {
+                    let mut app = app::GlanceApp::new(demo, net, window, cx);
+                    app.listen_for_handoffs(instance_rx.clone(), window, cx);
+                    if let Some(ticket) = join
+                        && !app.needs_profile
+                    {
+                        app.join(ticket, cx);
+                    }
+                    app
+                })
+            })
+            .expect("failed to open window");
+        }
+        cx.activate(true);
+    });
 }

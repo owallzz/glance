@@ -188,6 +188,49 @@ impl GlanceApp {
         }));
     }
 
+    /// Requests from later launches (clicked links): bring the window up and
+    /// join the linked room unless we're already in it.
+    pub fn listen_for_handoffs(
+        &mut self,
+        rx: flume::Receiver<crate::instance::Request>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(req) = rx.recv_async().await {
+                let alive = this.update_in(cx, |app, window, cx| {
+                    window.activate_window();
+                    if let crate::instance::Request::Join(link) = req {
+                        app.join_link(&link, cx);
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Join a room from a link, unless it's the room we're already in.
+    pub fn join_link(&mut self, link: &str, cx: &mut Context<Self>) {
+        let Ok(ticket) = glance_proto::Ticket::parse(link) else {
+            return;
+        };
+        if self.needs_profile {
+            return;
+        }
+        let current = self
+            .room
+            .as_ref()
+            .and_then(|r| glance_proto::Ticket::parse(&r.link).ok());
+        if current.is_some_and(|t| t.room == ticket.room) {
+            return;
+        }
+        self.join(ticket, cx);
+    }
+
     pub fn save_settings(&self) {
         if let Some(net) = &self.net
             && let Err(e) = self.settings.save(&net.data_dir)

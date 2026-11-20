@@ -88,7 +88,9 @@ Check the diff for these before every commit.
 - GNOME only sends screencast frames when the screen changes; the broadcaster re-encodes the last frame when a keyframe is requested.
 - Measure video performance with release builds; glance crates run unoptimized in dev and the encoder pipeline is several times slower.
 - Test multi-person flows with one GUI window plus `glance bot` peers. Two GUI windows overlap and GNOME ignores scripted window moves, so xdotool clicks hit the wrong one.
-- The bot uses a fresh identity each run; the GUI uses the identity in its data dir. Two GUI instances need different `GLANCE_DATA_DIR`s.
+- The bot uses a fresh identity each run; the GUI uses the identity in its data dir. Two GUI instances need different `GLANCE_DATA_DIR`s: a second launch with the same data dir hands its arguments (a `glance://` link, or just "show") to the running one through `instance.json` and exits (`instance.rs`).
+- `glance://` registration (`scheme.rs`: desktop entry on Linux, HKCU registry on Windows, Info.plist on macOS) and start-on-login only happen in release builds without `GLANCE_DATA_DIR`, so dev builds never take over the handler.
+- QUIC idle timeout is 10 s with 2 s keep-alives (`glance-net/src/lib.rs`): a crashed peer leaves rooms after ~10 s.
 - The dev host is immutable Fedora without `-devel` packages: `source scripts/env.sh` first, or the fontconfig/xkbcommon build scripts fail.
 - gpui-kit 0.10 pins exact `gpui-pre-*` versions. Upgrade gpui-kit as a whole, never individual gpui crates.
 - Screenshots: use `scripts/shot.sh` (runs under XWayland). XWayland throttles background windows to ~1 fps, so measure video natively on Wayland.

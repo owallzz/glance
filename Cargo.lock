@@ -2999,6 +2999,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "winreg",
 ]
 
 [[package]]
