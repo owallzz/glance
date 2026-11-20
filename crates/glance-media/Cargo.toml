@@ -32,6 +32,18 @@ screencapturekit = "=0.2.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "=1.4.4"
+# Process loopback (system audio without glance's own sound).
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+] }
+# `#[implement]` expands to `::windows_core` paths.
+windows-core = "0.62"
 
 # Linux: X11 via zed-scap; Wayland via our own portal + PipeWire code
 # (zed-scap's Wayland path needs libspa 0.8, which doesn't build against

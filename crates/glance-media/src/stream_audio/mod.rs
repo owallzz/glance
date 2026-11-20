@@ -50,10 +50,16 @@ pub fn stream_key(peer: [u8; 32]) -> [u8; 32] {
 }
 
 /// Whether "Entire system" also picks up the call's own audio (other
-/// people's voices). macOS and Linux leave glance's own playback out;
-/// Windows loopback can't yet.
+/// people's voices). macOS and Linux leave glance's own playback out, and
+/// so does Windows 10 2004 and later (process loopback); older Windows
+/// can't.
 pub fn system_includes_call_audio() -> bool {
-    cfg!(target_os = "windows")
+    #[cfg(target_os = "windows")]
+    {
+        !windows::process_loopback_supported()
+    }
+    #[cfg(not(target_os = "windows"))]
+    false
 }
 
 /// Whether this platform can share audio at all.
