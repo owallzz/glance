@@ -8,7 +8,7 @@ glance: peer-to-peer screen sharing rooms (multi-sharer, voice, chat, webcam, co
 | Host env (immutable Fedora only) | `source scripts/env.sh` |
 | Build | `cargo build` |
 | Run | `cargo run -p glance-app` (`-- --demo` for a populated fake room, `-- --spike N W H FPS` for the video spike) |
-| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH]` (headless: joins, greets, echoes chat, toggles mute; `--stream` shares a test pattern through the real encoder; `--tone` talks with a sine tone and prints who it hears speaking) |
+| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back]` (headless: joins, greets, echoes chat, toggles mute, accepts contact requests and answers rings by joining; `--ring-back` instead rings a new contact back once they leave; `--stream` shares a test pattern through the real encoder; `--tone` talks with a sine tone and prints who it hears speaking) |
 | Capture probe | `cargo run --release -p glance-media --example capture_probe [secs] [max_height]` (captures, encodes, prints fps and encode cost) |
 | Second identity | `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app` |
 | Auto-watch | `GLANCE_AUTOWATCH=1` watches every stream automatically (lets a second instance test viewing without clicks) |
@@ -27,12 +27,13 @@ Run the tests and the linter before every commit; CI runs the same checks.
   - `app.rs`: root view `GlanceApp` (all UI state, rail, user panel, key actions). Screens are `impl GlanceApp` blocks in `home.rs`, `room.rs`, and `overlays.rs` (Go Live, settings).
   - `voice.rs`: audio engine per room, mute/deafen, speaking rings, per-user volume, device and processing settings.
   - `streaming.rs`: Go Live (capture -> broadcast), own-stream preview, watching others (feed -> decoder -> tile).
+  - `contacts.rs`: contact book (contacts.json), presence, calling/ringing contacts, incoming calls with ringtone and OS notification, missed calls, call history and the "call ended" add-contact prompt. Settings persist in settings.json (`app.rs`).
   - `files.rs`: send (attach/drag & drop), offers, downloads with progress into Downloads (`GLANCE_DOWNLOAD_DIR` overrides), inline image previews.
   - `ui.rs`: shared widgets (Avatar, icon_button, pill, live_badge).
   - `video.rs`: `VideoView` tile. `spike.rs`: the render benchmark.
   - `theme.rs` + `assets/themes/glance.json`: design tokens and the gpui-kit component theme (dark + light).
-- `crates/glance-core`: view-model types the UI renders (`model.rs`), formatting helpers, `demo.rs` fake data. Room/contacts state machines land here (no I/O, unit-tested).
-- `crates/glance-net`: `Node` (iroh endpoint + router) and the room mesh actor (`room.rs`): membership, chat, state, voice as QUIC datagrams straight to an audio sink, chat/file history for late joiners, and video fan-out. `files.rs`: iroh-blobs store (on disk in the data dir), add/download/export, `unique_path` sanitizes peer-supplied names. (one QUIC uni stream per watcher, per-watcher queue that skips to keyframes when full). `tests/room_mesh.rs` runs in-process peers.
+- `crates/glance-core`: view-model types the UI renders (`model.rs`), the persistent contact book with its state transitions (`contacts.rs`), formatting helpers, `demo.rs` fake data. Room/contacts state machines land here (no I/O, unit-tested).
+- `crates/glance-net`: `Node` (iroh endpoint + router) and the room mesh actor (`room.rs`): membership, chat, state, voice as QUIC datagrams straight to an audio sink, chat/file history for late joiners, and video fan-out. `contacts.rs`: always-on contacts actor (ALPN `glance/contacts/1`): requests, presence, ring/answer, join requests; blocked peers refused, non-contacts can only send requests. `files.rs`: iroh-blobs store (on disk in the data dir), add/download/export, `unique_path` sanitizes peer-supplied names. (one QUIC uni stream per watcher, per-watcher queue that skips to keyframes when full). `tests/room_mesh.rs` runs in-process peers.
 - `crates/glance-media`: voice (`audio/`: cpal devices via lock-free rings, speexdsp echo cancellation + RNNoise suppression, Opus with FEC/DTX, jitter buffer, mixer/engine thread), frames and scaling (`frame.rs`), H.264 via OpenH264 (`codec.rs`), capture (`capture/`: Wayland = portal + PipeWire in `wayland.rs`; X11/macOS/Windows = zed-scap in `scap_backend.rs`), and `pipeline.rs` (broadcast: capture -> scale -> encode only while watched; decoder thread for viewers).
 - `crates/glance-proto`: tickets (`glance://join/...`), room control messages and join proofs, length-prefixed postcard framing. Breaking wire changes get a new ALPN.
 - `scripts/`: host build helpers and `shot.sh` (screenshots).

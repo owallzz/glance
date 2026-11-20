@@ -252,6 +252,11 @@ async fn video_reaches_watchers_starting_at_a_keyframe() {
         assert_eq!((second.ts_us, second.data.len()), (3, 4000));
     }
 
+    // Any member's link works on its own: Cy's link names Cy as host.
+    let link = glance_proto::Ticket::parse(&c.link()).unwrap();
+    assert_eq!(link.host.id, nc.id());
+    assert_eq!(link.room, a.ticket.room);
+
     b.send(Command::Unwatch(na.id()));
     let ev = expect(&a, "watcher count drops", |e| {
         matches!(e, RoomEvent::Watchers(1))

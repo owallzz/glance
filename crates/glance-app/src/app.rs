@@ -33,9 +33,10 @@ pub enum ContactsTab {
     Blocked,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsPage {
     Account,
+    #[default]
     Voice,
     Streaming,
     Contacts,
@@ -85,8 +86,11 @@ pub struct GoLive {
     pub error: Option<String>,
 }
 
-/// Settings toggles (persisted in M11).
+/// User settings, saved as settings.json in the data dir.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Settings {
+    #[serde(skip)]
     pub page: SettingsPage,
     pub noise_suppression: bool,
     pub echo_cancel: bool,
@@ -98,6 +102,52 @@ pub struct Settings {
     /// `None` = system default.
     pub input_device: Option<String>,
     pub output_device: Option<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            page: SettingsPage::Voice,
+            noise_suppression: true,
+            echo_cancel: true,
+            tray: true,
+            autostart: true,
+            let_contacts_join: false,
+            auto_preview: true,
+            dark: true,
+            input_device: None,
+            output_device: None,
+        }
+    }
+}
+
+impl Settings {
+    pub fn load(dir: &std::path::Path) -> Self {
+        std::fs::read_to_string(dir.join("settings.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, dir: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let tmp = dir.join("settings.json.tmp");
+        std::fs::write(
+            &tmp,
+            serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?,
+        )?;
+        std::fs::rename(tmp, dir.join("settings.json"))
+    }
+}
+
+impl GlanceApp {
+    pub fn save_settings(&self) {
+        if let Some(net) = &self.net
+            && let Err(e) = self.settings.save(&net.data_dir)
+        {
+            tracing::warn!("saving settings failed: {e}");
+        }
+    }
 }
 
 /// Everything about the room you're in.
@@ -124,6 +174,9 @@ pub struct Room {
     pub files: crate::files::FileMap,
     /// Names of history authors who may have left.
     pub history_names: HashMap<PeerId, (String, u32)>,
+    /// Everyone who was in this call at some point (for call history and
+    /// "add contact" afterwards).
+    pub met: HashMap<PeerId, Profile>,
     pub _events: Option<Task<()>>,
 }
 
@@ -162,6 +215,18 @@ pub struct GlanceApp {
     pub settings: Settings,
     /// Per-user volume (kept across rooms for this session).
     pub volumes: HashMap<PeerId, f32>,
+    pub book: glance_core::contacts::ContactBook,
+    pub live: crate::contacts::Live,
+    pub incoming_call: Option<crate::contacts::IncomingCall>,
+    /// People from the last call who aren't contacts yet.
+    pub last_call: Vec<Profile>,
+    pub _contacts_task: Option<Task<()>>,
+    /// Status picker under your avatar.
+    pub presence_menu: bool,
+    /// Contact whose "more" menu is open.
+    pub contact_menu: Option<PeerId>,
+    /// "Invite" panel in a room.
+    pub invite_open: bool,
     /// Audio devices, listed when the voice settings open.
     pub audio_devices: Option<(
         Vec<glance_media::audio::device::DeviceInfo>,
@@ -216,6 +281,10 @@ impl GlanceApp {
         } else {
             (Vec::new(), Vec::new())
         };
+        let settings = net
+            .as_ref()
+            .map(|n| Settings::load(&n.data_dir))
+            .unwrap_or_default();
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let mut app = Self {
@@ -238,22 +307,22 @@ impl GlanceApp {
             chat_input,
             go_live: None,
             settings_open: false,
-            settings: Settings {
-                page: SettingsPage::Voice,
-                noise_suppression: true,
-                echo_cancel: true,
-                tray: true,
-                autostart: true,
-                let_contacts_join: false,
-                auto_preview: true,
-                dark: true,
-                input_device: None,
-                output_device: None,
-            },
+            settings,
             link_copied: false,
             volumes: HashMap::new(),
             audio_devices: None,
+            book: Default::default(),
+            live: Default::default(),
+            incoming_call: None,
+            last_call: Vec::new(),
+            _contacts_task: None,
+            presence_menu: false,
+            contact_menu: None,
+            invite_open: false,
         };
+        if !demo_room {
+            app.start_contacts(cx);
+        }
         if demo_room {
             app.start_demo_room(cx);
         }
@@ -302,6 +371,7 @@ impl GlanceApp {
             volume_open: None,
             files: Default::default(),
             history_names: HashMap::new(),
+            met: HashMap::new(),
             name: "Sam's room".into(),
             link: "glance://join/demo".into(),
             participants: demo::participants(),
@@ -316,6 +386,8 @@ impl GlanceApp {
     }
 
     pub fn leave_room(&mut self, cx: &mut Context<Self>) {
+        self.record_call_end();
+        self.invite_open = false;
         if let Some(b) = self.room.as_ref().and_then(|r| r.broadcast.as_ref()) {
             b.stop();
         }
@@ -323,6 +395,7 @@ impl GlanceApp {
         self.room = None;
         self.screen = Screen::Home;
         self.go_live = None;
+        self.push_presence();
         cx.notify();
     }
 
@@ -553,8 +626,17 @@ impl GlanceApp {
             .gap_2()
             .bg(p.bg_user_panel)
             .child(
-                Avatar::new(&self.me, 32.)
-                    .status(presence_color(p, self.presence), p.bg_user_panel),
+                div()
+                    .id("my-avatar")
+                    .cursor_pointer()
+                    .child(
+                        Avatar::new(&self.me, 32.)
+                            .status(presence_color(p, self.presence), p.bg_user_panel),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.presence_menu = !this.presence_menu;
+                        cx.notify();
+                    })),
             )
             .child(
                 div()
@@ -670,8 +752,17 @@ impl Render for GlanceApp {
         if self.go_live.is_some() {
             content = content.child(self.render_go_live(&p, cx));
         }
+        if self.invite_open && self.room.is_some() {
+            content = content.child(self.render_invite(&p, cx));
+        }
+        if self.presence_menu {
+            content = content.child(self.render_presence_menu(&p, cx));
+        }
         if self.settings_open {
             content = content.child(self.render_settings(&p, cx));
+        }
+        if self.incoming_call.is_some() {
+            content = content.child(self.render_incoming_call(&p, cx));
         }
         root = root.child(content);
         root

@@ -126,13 +126,20 @@ pub enum RoomEvent {
 pub struct RoomHandle {
     pub ticket: Ticket,
     pub me: EndpointId,
+    endpoint: Endpoint,
     commands: flume::Sender<Command>,
     pub events: flume::Receiver<RoomEvent>,
 }
 
 impl RoomHandle {
+    /// An invite link with *us* as the host, so it keeps working after
+    /// whoever created the room leaves.
     pub fn link(&self) -> String {
-        self.ticket.to_link()
+        Ticket {
+            host: crate::invite_addr(self.endpoint.addr()),
+            ..self.ticket.clone()
+        }
+        .to_link()
     }
 
     pub fn send(&self, cmd: Command) {
@@ -243,6 +250,7 @@ pub(crate) fn spawn(
     let (ev_tx, ev_rx) = flume::unbounded();
     let me = endpoint.id();
     let handle_ticket = ticket.clone();
+    let endpoint_for_handle = endpoint.clone();
     let mut actor = Actor {
         endpoint,
         me,
@@ -281,6 +289,7 @@ pub(crate) fn spawn(
     let handle = RoomHandle {
         ticket: handle_ticket,
         me,
+        endpoint: endpoint_for_handle,
         commands: cmd_tx,
         events: ev_rx,
     };

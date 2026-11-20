@@ -11,7 +11,9 @@ use glance_media::capture::{Source, SourceKind};
 
 use crate::app::{GlanceApp, SettingsPage};
 use crate::theme::Palette;
-use crate::ui::{Avatar, icon, pill, section_label};
+use crate::ui::{Avatar, icon, pill, presence_color, section_label};
+use gpui_kit::component::Disableable;
+use gpui_kit::component::Sizable;
 
 impl GlanceApp {
     pub fn render_go_live(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -430,6 +432,7 @@ impl GlanceApp {
                         .checked(self.settings.$field)
                         .on_click(cx.listener(|this, v: &bool, _, cx| {
                             this.settings.$field = *v;
+                            this.on_settings_changed();
                             cx.notify();
                         })),
                 )
@@ -498,6 +501,7 @@ impl GlanceApp {
                                         this.settings.output_device = value.clone();
                                     }
                                     this.start_voice(cx);
+                                    this.save_settings();
                                     cx.notify();
                                 }))
                         });
@@ -648,6 +652,303 @@ impl GlanceApp {
             .child(body)
             .into_any_element()
     }
+}
+
+impl GlanceApp {
+    /// Apply settings that affect running systems.
+    pub fn on_settings_changed(&mut self) {
+        self.push_presence();
+        self.apply_audio_processing();
+        self.save_settings();
+    }
+
+    /// "Invite people": copy the link, or ring contacts into the room.
+    pub fn render_invite(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let link = self
+            .room
+            .as_ref()
+            .map(|r| r.link.clone())
+            .unwrap_or_default();
+        let in_room: Vec<glance_core::PeerId> = self
+            .room
+            .as_ref()
+            .map(|r| r.participants.iter().map(|x| x.profile.id).collect())
+            .unwrap_or_default();
+        let callable: Vec<glance_core::Contact> = self
+            .contacts
+            .iter()
+            .filter(|c| {
+                c.state == glance_core::ContactState::Mutual && !in_room.contains(&c.profile.id)
+            })
+            .cloned()
+            .collect();
+        let live = self.room.as_ref().is_some_and(|r| r.handle.is_some());
+        modal_backdrop("invite-backdrop").child(
+            div()
+                .id("invite")
+                .occlude()
+                .w(px(440.))
+                .rounded(px(8.))
+                .bg(p.bg_content)
+                .p_4()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(p.text_header)
+                                .child("Invite people"),
+                        )
+                        .child(close_button("invite-close", p).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.invite_open = false;
+                                cx.notify();
+                            },
+                        ))),
+                )
+                .child(section_label(p, "SEND A LINK (COPIED)"))
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(4.))
+                        .bg(p.bg_input)
+                        .text_sm()
+                        .text_color(p.text_normal)
+                        .truncate()
+                        .child(link),
+                )
+                .when(live, |d| {
+                    d.child(section_label(p, "RING A CONTACT")).child(
+                        div()
+                            .id("invite-contacts")
+                            .max_h(px(260.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .when(callable.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(p.text_muted)
+                                        .child("Contacts you add after calls show up here."),
+                                )
+                            })
+                            .children(callable.into_iter().map(|c| {
+                                let pid = c.profile.id;
+                                let can = c.presence.can_ring();
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .py_1()
+                                    .child(
+                                        Avatar::new(&c.profile, 28.)
+                                            .status(presence_color(p, c.presence), p.bg_content),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_color(p.text_normal)
+                                            .child(c.display_name().to_string()),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "ring-{}",
+                                            pid.short()
+                                        )))
+                                        .small()
+                                        .success()
+                                        .disabled(!can)
+                                        .label(if can { "Ring" } else { c.presence.label() })
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.call_contacts(vec![pid], cx);
+                                                this.invite_open = false;
+                                            }),
+                                        ),
+                                    )
+                            })),
+                    )
+                }),
+        )
+    }
+
+    /// Someone is calling: Join / Decline.
+    pub fn render_incoming_call(
+        &mut self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let call = self.incoming_call.as_ref().expect("incoming call");
+        let caller = self.profile_of(call.from).unwrap_or(glance_core::Profile {
+            id: call.from,
+            name: "A contact".into(),
+            color: 0x80848e,
+        });
+        let others: Vec<String> = call
+            .members
+            .iter()
+            .filter(|m| **m != caller.name)
+            .cloned()
+            .collect();
+        let subtitle = if others.is_empty() {
+            "is calling you".to_string()
+        } else {
+            format!("is calling you · with {}", others.join(", "))
+        };
+        modal_backdrop("call-backdrop").child(
+            div()
+                .id("incoming-call")
+                .occlude()
+                .w(px(300.))
+                .rounded(px(12.))
+                .bg(p.bg_rail)
+                .p_6()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_3()
+                .child(Avatar::new(&caller, 80.).ring(Some(p.green)))
+                .child(
+                    div()
+                        .text_xl()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(p.text_header)
+                        .child(caller.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(p.text_muted)
+                        .text_center()
+                        .child(subtitle),
+                )
+                .child(
+                    div()
+                        .pt_2()
+                        .flex()
+                        .gap_6()
+                        .child(
+                            round_button("decline-call", IconName::PhoneOff, p.red, "Decline")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.answer_call(false, cx)),
+                                ),
+                        )
+                        .child(
+                            round_button("accept-call", IconName::Phone, p.green, "Join")
+                                .on_click(cx.listener(|this, _, _, cx| this.answer_call(true, cx))),
+                        ),
+                ),
+        )
+    }
+
+    /// Status picker shown above the user panel.
+    pub fn render_presence_menu(
+        &mut self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use glance_core::Presence;
+        let item = |id: &'static str, presence: Presence, desc: &'static str| {
+            let hover = p.bg_hover;
+            div()
+                .id(id)
+                .px_3()
+                .py_2()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .size(px(10.))
+                        .rounded_full()
+                        .bg(crate::ui::presence_color(p, presence)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(p.text_header)
+                                .child(presence.label()),
+                        )
+                        .child(div().text_xs().text_color(p.text_muted).child(desc)),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.presence_menu = false;
+                    this.set_presence(presence, cx);
+                }))
+        };
+        div()
+            .id("presence-backdrop")
+            .absolute()
+            .inset_0()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.presence_menu = false;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("presence-menu")
+                    .occlude()
+                    .absolute()
+                    .left(px(80.))
+                    .bottom(px(60.))
+                    .w(px(240.))
+                    .p_2()
+                    .rounded(px(8.))
+                    .bg(p.bg_rail)
+                    .flex()
+                    .flex_col()
+                    .child(item("st-online", Presence::Online, "Contacts can call you"))
+                    .child(item(
+                        "st-idle",
+                        Presence::Idle,
+                        "Away, but calls still ring",
+                    ))
+                    .child(item(
+                        "st-dnd",
+                        Presence::DoNotDisturb,
+                        "Calls are silent and become missed calls",
+                    ))
+                    .child(item(
+                        "st-invisible",
+                        Presence::Invisible,
+                        "Appear offline to contacts",
+                    )),
+            )
+    }
+}
+
+fn round_button(id: &'static str, glyph: IconName, bg: Hsla, tip: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .size(px(56.))
+        .rounded_full()
+        .bg(bg)
+        .cursor_pointer()
+        .hover(|s| s.opacity(0.85))
+        .flex()
+        .items_center()
+        .justify_center()
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+        })
+        .child(icon(glyph, 26., gpui_kit::white()))
 }
 
 fn modal_backdrop(id: &'static str) -> Stateful<Div> {

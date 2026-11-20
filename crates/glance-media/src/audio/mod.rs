@@ -10,6 +10,7 @@ pub mod dsp;
 pub mod engine;
 pub mod jitter;
 pub mod resample;
+pub mod ringtone;
 
 pub use engine::{AudioEngine, EngineConfig, InputKind, OutputKind, PeerKey};
 

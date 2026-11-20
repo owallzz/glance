@@ -287,6 +287,7 @@ impl GlanceApp {
                         div().text_sm().text_color(p.red).child(e)
                     })),
             )
+            .children(self.render_call_ended(p, cx))
             // List
             .child(
                 div()
@@ -330,33 +331,111 @@ impl GlanceApp {
             .rounded_full()
             .bg(p.bg_sidebar)
         };
-        let actions = match c.state {
-            ContactState::Incoming => div()
-                .flex()
-                .gap_2()
-                .child(action(IconName::Check, "Accept", "accept"))
-                .child(action(IconName::X, "Ignore", "ignore")),
-            ContactState::Outgoing => div().flex().child(action(IconName::X, "Cancel", "cancel")),
-            _ => div()
-                .flex()
-                .gap_2()
-                .when(c.joinable && c.in_call.is_some(), |d| {
-                    d.child(
-                        Button::new(SharedString::from(format!("join-{id}")))
-                            .success()
-                            .small()
-                            .label("Join")
-                            .on_click(cx.listener(|this, _, _, cx| this.start_room(cx))),
-                    )
-                })
-                .child(
-                    action(IconName::Phone, "Call", "call")
-                        .on_click(cx.listener(|this, _, _, cx| this.start_room(cx))),
-                )
-                .child(action(IconName::Paperclip, "Send file", "file"))
-                .child(action(IconName::EllipsisVertical, "More", "more")),
+        let pid = c.profile.id;
+        let can_ring = c.presence.can_ring();
+        let actions =
+            match c.state {
+                ContactState::Incoming => {
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(action(IconName::Check, "Accept", "accept").on_click(
+                            cx.listener(move |this, _, _, cx| this.accept_contact(pid, cx)),
+                        ))
+                        .child(action(IconName::X, "Ignore", "ignore").on_click(
+                            cx.listener(move |this, _, _, cx| this.remove_contact(pid, cx)),
+                        ))
+                }
+                ContactState::Outgoing => div().flex().child(
+                    action(IconName::X, "Cancel request", "cancel")
+                        .on_click(cx.listener(move |this, _, _, cx| this.remove_contact(pid, cx))),
+                ),
+                ContactState::Blocked => div().flex().child(
+                    Button::new(SharedString::from(format!("unblock-{id}")))
+                        .small()
+                        .label("Unblock")
+                        .on_click(cx.listener(move |this, _, _, cx| this.unblock_contact(pid, cx))),
+                ),
+                ContactState::Mutual => div()
+                    .flex()
+                    .gap_2()
+                    .when(c.joinable && c.in_call.is_some(), |d| {
+                        d.child(
+                            Button::new(SharedString::from(format!("join-{id}")))
+                                .success()
+                                .small()
+                                .label("Join")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.request_join(pid);
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(can_ring, |d| {
+                        d.child(action(IconName::Phone, "Call", "call").on_click(
+                            cx.listener(move |this, _, _, cx| this.call_contacts(vec![pid], cx)),
+                        ))
+                    })
+                    .child(action(IconName::EllipsisVertical, "More", "more").on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.contact_menu = if this.contact_menu == Some(pid) {
+                                None
+                            } else {
+                                Some(pid)
+                            };
+                            cx.notify();
+                        }),
+                    )),
+            };
+        let menu_open = self.contact_menu == Some(pid);
+        let favorite = c.favorite;
+        let menu_item = |key: &str, label: &'static str, danger: bool| {
+            let hover = p.bg_hover;
+            div()
+                .id(SharedString::from(format!("{key}-{id}")))
+                .px_3()
+                .py_1()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .text_sm()
+                .text_color(if danger { p.red } else { p.text_normal })
+                .hover(move |s| s.bg(hover))
+                .child(label)
         };
-        div()
+        let menu = div()
+            .ml(px(52.))
+            .mb_2()
+            .p_1()
+            .rounded(px(6.))
+            .bg(p.bg_rail)
+            .flex()
+            .gap_1()
+            .child(
+                menu_item(
+                    "fav",
+                    if favorite { "Unfavorite" } else { "Favorite" },
+                    false,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_favorite(pid, cx);
+                    this.contact_menu = None;
+                })),
+            )
+            .child(
+                menu_item("rm", "Remove contact", true).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.remove_contact(pid, cx);
+                        this.contact_menu = None;
+                    },
+                )),
+            )
+            .child(menu_item("block", "Block", true).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.block_contact(pid, cx);
+                    this.contact_menu = None;
+                },
+            )));
+        let row = div()
             .id(SharedString::from(format!("contact-{id}")))
             .h(px(62.))
             .px_2()
@@ -389,8 +468,76 @@ impl GlanceApp {
                     )
                     .child(div().text_sm().text_color(p.text_muted).child(status)),
             )
-            .child(actions)
+            .child(actions);
+        div()
+            .flex()
+            .flex_col()
+            .child(row)
+            .when(menu_open, |d| d.child(menu))
             .into_any_element()
+    }
+
+    /// After a call: offer to add the people you met.
+    fn render_call_ended(&mut self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.last_call.is_empty() {
+            return None;
+        }
+        let people = self.last_call.clone();
+        Some(
+            div()
+                .mx_6()
+                .mt_4()
+                .p_4()
+                .rounded(px(8.))
+                .bg(p.bg_sidebar)
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.text_header)
+                                .child("Call ended. Add the people you talked to?"),
+                        )
+                        .child(
+                            icon_button("dismiss-call", IconName::X, "Dismiss", p.interactive, p)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.last_call.clear();
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .children(people.into_iter().map(|person| {
+                    let pid = person.id;
+                    let sent = self.book.state(&pid.0).is_some();
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(Avatar::new(&person, 28.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_color(p.text_normal)
+                                .child(person.name.clone()),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("add-{}", pid.short())))
+                                .small()
+                                .primary()
+                                .disabled(sent)
+                                .label(if sent { "Request sent" } else { "Add contact" })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.add_contact(person.clone(), cx)
+                                })),
+                        )
+                }))
+                .into_any_element(),
+        )
     }
 
     fn render_active_now(&self, p: &Palette) -> impl IntoElement {

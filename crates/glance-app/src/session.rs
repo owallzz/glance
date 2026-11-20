@@ -88,6 +88,7 @@ impl GlanceApp {
                         cx.write_to_clipboard(ClipboardItem::new_string(link));
                         app.link_copied = true;
                         app.attach_room(handle, "Your room".into(), cx);
+                        app.ring_pending();
                     }
                     Err(e) => app.join_error = Some(format!("Couldn't start a room: {e:#}")),
                 }
@@ -181,9 +182,12 @@ impl GlanceApp {
             volume_open: None,
             files: Default::default(),
             history_names: Default::default(),
+            met: Default::default(),
         });
         self.screen = Screen::Room;
         self.start_voice(cx);
+        self.push_presence();
+        self.refresh_contacts();
     }
 
     fn on_room_event(&mut self, ev: RoomEvent, cx: &mut Context<Self>) {
@@ -220,6 +224,8 @@ impl GlanceApp {
                     is_contact: false,
                 };
                 apply_state(&mut p, state);
+                p.is_contact = self.book.is_mutual(&id.0);
+                room.met.insert(id, p.profile.clone());
                 room.participants.push(p);
                 if room.name == "Room" && room.participants.len() == 2 {
                     room.name = format!("{}'s room", profile.name);
@@ -320,6 +326,8 @@ impl GlanceApp {
             }
             RoomEvent::Closed => {}
         }
+        // Participant count changed or not: cheap to re-send.
+        self.push_presence();
         // Testing aid: GLANCE_AUTOWATCH=1 watches every stream automatically.
         if std::env::var_os("GLANCE_AUTOWATCH").is_some() {
             let me = self.me.id;

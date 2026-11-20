@@ -19,6 +19,7 @@ pub fn run(
     stream: Option<(u32, u32, u32)>,
     tone: bool,
     file: Option<std::path::PathBuf>,
+    ring_back: bool,
 ) -> Result<()> {
     let ticket = Ticket::parse(link).context("parse room link")?;
     // A fresh identity each run, so a bot never collides with your app.
@@ -38,7 +39,15 @@ pub fn run(
         stream: live.clone(),
         ..Default::default()
     };
-    let room = net.block_on(net.join_room(ticket, profile, initial))?;
+    let room = net.block_on(net.join_room(ticket, profile.clone(), initial))?;
+    // Contacts: accept every request; answer rings by joining that room
+    // (this process relaunches itself into the new room).
+    let contacts = net.contacts();
+    contacts.send(glance_net::contacts::ContactCommand::SetProfile(
+        profile.clone(),
+    ));
+    let relations = std::cell::RefCell::new(std::collections::HashMap::new());
+    let rang = std::cell::Cell::new(false);
     println!("bot joined as {name}; me = {}", room.me.fmt_short());
     // Share a moving test pattern through the real encoder and network path.
     let broadcast = stream.map(|(w, h, fps)| {
@@ -202,6 +211,61 @@ pub fn run(
                     _ => {}
                 }
                 println!("{ev:?}");
+            })
+            .recv(&contacts.events, |ev| {
+                use glance_net::contacts::{ContactCommand, ContactEvent, Relation};
+                let Ok(ev) = ev else { return };
+                match &ev {
+                    ContactEvent::RequestReceived { id, profile } => {
+                        relations.borrow_mut().insert(*id, Relation::Mutual);
+                        contacts.send(ContactCommand::SetRelations(relations.borrow().clone()));
+                        contacts.send(ContactCommand::Accept(*id));
+                        println!("accepted contact {}", profile.name);
+                    }
+                    ContactEvent::Ring {
+                        from,
+                        call_id,
+                        link,
+                        ..
+                    } if !ring_back => {
+                        println!("ringing: call {call_id}, joining {link}");
+                        contacts.send(ContactCommand::Answer {
+                            to: *from,
+                            call_id: *call_id,
+                            accepted: true,
+                        });
+                        std::thread::sleep(Duration::from_millis(300));
+                        if let Ok(exe) = std::env::current_exe() {
+                            let mut args: Vec<String> = std::env::args().skip(1).collect();
+                            if args.len() > 1 {
+                                args[1] = link.clone();
+                            }
+                            let _ = std::process::Command::new(exe).args(args).spawn();
+                        }
+                        std::process::exit(0);
+                    }
+                    // --ring-back: once a new contact leaves the call, ring
+                    // them back into ours (tests the incoming-call UI).
+                    ContactEvent::Presence { id, info }
+                        if ring_back
+                            && !rang.get()
+                            && info.in_call.is_none()
+                            && relations.borrow().contains_key(id) =>
+                    {
+                        rang.set(true);
+                        println!("ringing back");
+                        contacts.send(ContactCommand::Ring {
+                            to: *id,
+                            call_id: 42,
+                            link: room.link(),
+                            members: vec![name.to_string()],
+                        });
+                    }
+                    ContactEvent::RingAnswered { accepted, .. } => {
+                        println!("ring answered: {accepted}")
+                    }
+                    other => println!("contacts: {other:?}"),
+                }
             })
             .recv(&tick, |_| {
                 let now = engine.speaking_peers();

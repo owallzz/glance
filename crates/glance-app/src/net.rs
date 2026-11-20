@@ -181,6 +181,10 @@ impl Net {
         }
     }
 
+    pub fn contacts(&self) -> glance_net::contacts::ContactsHandle {
+        self.node.contacts().clone()
+    }
+
     /// Add a file to our store (hash it) so it can be offered.
     pub fn add_file(&self, path: PathBuf) -> impl Future<Output = Result<([u8; 32], u64)>> + use<> {
         let node = self.node.clone();

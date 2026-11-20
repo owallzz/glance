@@ -24,6 +24,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 iroh = "1.5"
 dirs = "6"
 mime_guess = "2"
+notify-rust = "4"
+rand = "0.9"
 serde = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = "0.1"

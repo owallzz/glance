@@ -5,6 +5,7 @@
 //! active room. [`Node::create_room`] / [`Node::join_room`] return a
 //! [`RoomHandle`]: send it [`Command`]s and read [`RoomEvent`]s.
 
+pub mod contacts;
 pub mod files;
 mod io;
 pub mod room;
@@ -48,6 +49,23 @@ pub struct Node {
     router: Router,
     room_slot: RoomSlot,
     files: files::FileStore,
+    contacts: contacts::ContactsHandle,
+}
+
+#[derive(Debug, Clone)]
+struct ContactsProtocol(flume::Sender<contacts::Inbound>);
+
+impl ProtocolHandler for ContactsProtocol {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        if self
+            .0
+            .send(contacts::Inbound::Incoming(connection.clone()))
+            .is_err()
+        {
+            connection.close(1u32.into(), b"shutting down");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -104,7 +122,9 @@ impl Node {
             .map_err(|e| anyhow::anyhow!("bind endpoint: {e}"))?;
         let room_slot: RoomSlot = Arc::default();
         let files = files::FileStore::open(config.files_dir.as_deref()).await?;
+        let (contacts, contacts_tx) = contacts::spawn(endpoint.clone());
         let router = Router::builder(endpoint)
+            .accept(glance_proto::CONTACTS_ALPN, ContactsProtocol(contacts_tx))
             .accept(ROOM_ALPN, RoomProtocol(room_slot.clone()))
             .accept(
                 iroh_blobs::ALPN,
@@ -115,11 +135,16 @@ impl Node {
             router,
             room_slot,
             files,
+            contacts,
         })
     }
 
     pub fn endpoint(&self) -> &Endpoint {
         self.router.endpoint()
+    }
+
+    pub fn contacts(&self) -> &contacts::ContactsHandle {
+        &self.contacts
     }
 
     pub fn files(&self) -> &files::FileStore {

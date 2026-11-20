@@ -3,6 +3,8 @@
 
 use glance_core::{ChatBody, ChatMessage, FileOffer, Participant, PeerId, Route, Transfer, format};
 use gpui_kit::assets::IconName;
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -99,6 +101,7 @@ impl GlanceApp {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
                             this.link_copied = true;
+                            this.invite_open = true;
                             cx.notify();
                         })),
                     ),
@@ -285,6 +288,45 @@ impl GlanceApp {
             .as_ref()
             .is_some_and(|r| r.volume_open == Some(id))
             && id != self.me.id;
+        // "Add contact" for people you aren't connected with yet.
+        let contact_state = self.book.state(&id.0);
+        let in_live_room = self.room.as_ref().is_some_and(|r| r.handle.is_some());
+        let person_profile = person.profile.clone();
+        let contact_action = div().ml(px(20.)).mr_2().mb_1().when(in_live_room, |d| {
+            d.child(match contact_state {
+                None => Button::new(SharedString::from(format!("addc-{}", id.short())))
+                    .small()
+                    .primary()
+                    .label("Add contact")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.add_contact(person_profile.clone(), cx)
+                    }))
+                    .into_any_element(),
+                Some(glance_core::contacts::StoredState::Outgoing) => div()
+                    .text_xs()
+                    .text_color(p.text_muted)
+                    .child("Contact request sent")
+                    .into_any_element(),
+                Some(glance_core::contacts::StoredState::Incoming) => {
+                    Button::new(SharedString::from(format!("acceptc-{}", id.short())))
+                        .small()
+                        .success()
+                        .label("Accept contact request")
+                        .on_click(cx.listener(move |this, _, _, cx| this.accept_contact(id, cx)))
+                        .into_any_element()
+                }
+                Some(glance_core::contacts::StoredState::Mutual) => div()
+                    .text_xs()
+                    .text_color(p.text_muted)
+                    .child("In your contacts")
+                    .into_any_element(),
+                Some(glance_core::contacts::StoredState::Blocked) => div()
+                    .text_xs()
+                    .text_color(p.red)
+                    .child("Blocked")
+                    .into_any_element(),
+            })
+        });
         let vol = self.user_volume(id);
         let step = |delta: f32, label: &'static str, key: &str| {
             div()
@@ -331,6 +373,7 @@ impl GlanceApp {
                         .child(step(-0.1, "−", "vol-down"))
                         .child(step(0.1, "+", "vol-up")),
                 )
+                .child(contact_action)
             })
             .into_any_element()
     }
@@ -725,6 +768,7 @@ impl GlanceApp {
                         cx.write_to_clipboard(ClipboardItem::new_string(link));
                         this.link_copied = true;
                     }
+                    this.invite_open = true;
                     cx.notify();
                 })),
             )
