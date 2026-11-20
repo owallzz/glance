@@ -181,9 +181,41 @@ impl GlanceApp {
     }
 
     pub fn set_presence(&mut self, presence: Presence, cx: &mut Context<Self>) {
+        // A status the user picked replaces any automatic Idle.
+        self.auto_idle = false;
         self.presence = presence;
         self.push_presence();
         cx.notify();
+    }
+
+    /// Switch to Idle after 10 minutes without input, and back on return.
+    pub fn watch_idle(&mut self, cx: &mut Context<Self>) {
+        let Some(net) = self.net.clone() else { return };
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(20))
+                    .await;
+                let Some(idle) = net.run(crate::idle::idle_time()).await.flatten() else {
+                    continue;
+                };
+                let alive = this.update(cx, |app, cx| {
+                    let online = app.presence == Presence::Online;
+                    match crate::idle::decide(idle, online, app.auto_idle) {
+                        crate::idle::AutoAway::GoIdle => {
+                            app.set_presence(Presence::Idle, cx);
+                            app.auto_idle = true;
+                        }
+                        crate::idle::AutoAway::ComeBack => app.set_presence(Presence::Online, cx),
+                        crate::idle::AutoAway::Stay => {}
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     // ---- actions from the UI ----

@@ -34,9 +34,11 @@ png = "0.18"
 auto-launch = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 ksni = { version = "0.3", default-features = false, features = ["tokio"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+user-idle = { version = "0.6", default-features = false }
 tray-icon = "0.26"
 
 [target.'cfg(target_os = "windows")'.dependencies]

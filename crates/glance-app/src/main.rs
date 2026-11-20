@@ -7,6 +7,7 @@ mod contacts;
 mod direct;
 mod files;
 mod home;
+mod idle;
 mod instance;
 mod net;
 mod overlays;

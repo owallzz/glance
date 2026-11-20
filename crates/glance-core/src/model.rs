@@ -196,7 +196,7 @@ pub struct ChatMessage {
 }
 
 /// Stream resolution choices in the Go Live picker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Resolution {
     P720,
     P1080,

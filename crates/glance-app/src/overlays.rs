@@ -686,7 +686,16 @@ impl GlanceApp {
             SettingsPage::Streaming => div()
                 .flex()
                 .flex_col()
-                .child(info_row(p, "Default quality", "1080p · 60 FPS".into()))
+                .child(info_row(
+                    p,
+                    "Default quality",
+                    format!(
+                        "{} · {} FPS (the last quality you went live with)",
+                        self.settings.stream_resolution.label(),
+                        self.settings.stream_fps
+                    )
+                    .into(),
+                ))
                 .child(info_row(
                     p,
                     "Video encoder",

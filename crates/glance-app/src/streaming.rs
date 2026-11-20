@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use glance_core::{PeerId, Resolution, StreamInfo};
+use glance_core::{PeerId, StreamInfo};
 use glance_media::TargetSize;
 use glance_media::capture::{self, Selection, SourceKind};
 use glance_media::pipeline::{BroadcastConfig, output_size, spawn_decoder, start_broadcast};
@@ -29,8 +29,8 @@ impl GlanceApp {
             source: 0,
             sources,
             system_picker,
-            resolution: Resolution::P1080,
-            fps: 60,
+            resolution: self.settings.stream_resolution,
+            fps: self.settings.stream_fps,
             error: None,
             audio_sources: Vec::new(),
             audio: None,
@@ -251,6 +251,11 @@ impl GlanceApp {
             });
         }
         self.go_live = None;
+        if (self.settings.stream_resolution, self.settings.stream_fps) != (resolution, fps) {
+            self.settings.stream_resolution = resolution;
+            self.settings.stream_fps = fps;
+            self.save_settings();
+        }
         self.push_state();
         cx.notify();
     }

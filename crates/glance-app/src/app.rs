@@ -111,6 +111,9 @@ pub struct Settings {
     /// Custom relay server (`None` = the default public relays). Read at
     /// startup; `GLANCE_RELAY` overrides it.
     pub relay_url: Option<String>,
+    /// The quality last used to Go Live (the picker starts there).
+    pub stream_resolution: Resolution,
+    pub stream_fps: u32,
 }
 
 impl Default for Settings {
@@ -128,6 +131,8 @@ impl Default for Settings {
             output_device: None,
             camera_device: None,
             relay_url: None,
+            stream_resolution: Resolution::P1080,
+            stream_fps: 60,
         }
     }
 }
@@ -401,6 +406,8 @@ pub struct GlanceApp {
     pub contact_menu: Option<PeerId>,
     /// Files sent to / received from contacts outside calls (newest first).
     pub direct_files: Vec<crate::direct::DirectFile>,
+    /// We switched to Idle automatically (and switch back on activity).
+    pub auto_idle: bool,
     /// "Invite" panel in a room.
     pub invite_open: bool,
     /// Stream shown full-window (fullscreen viewing).
@@ -508,6 +515,7 @@ impl GlanceApp {
             presence_menu: false,
             contact_menu: None,
             direct_files: Vec::new(),
+            auto_idle: false,
             invite_open: false,
             _tray: None,
             _tray_task: None,
@@ -532,6 +540,7 @@ impl GlanceApp {
         crate::tray::sync_autostart(app.settings.autostart && app.net.is_some());
         if !demo_room {
             app.start_contacts(cx);
+            app.watch_idle(cx);
         }
         if demo_room {
             app.start_demo_room(cx);
