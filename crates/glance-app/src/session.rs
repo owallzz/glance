@@ -176,8 +176,12 @@ impl GlanceApp {
             _events: Some(task),
             broadcast: None,
             _broadcast_task: None,
+            audio: None,
+            _voice_task: None,
+            volume_open: None,
         });
         self.screen = Screen::Room;
+        self.start_voice(cx);
     }
 
     fn on_room_event(&mut self, ev: RoomEvent, cx: &mut Context<Self>) {
@@ -249,6 +253,9 @@ impl GlanceApp {
             RoomEvent::MemberLeft { id } => {
                 let id = peer_id(id);
                 if let Some(ix) = room.participants.iter().position(|p| p.profile.id == id) {
+                    if let Some(engine) = &room.audio {
+                        engine.remove_peer(id.0);
+                    }
                     let p = room.participants.remove(ix);
                     room.watching.remove(&id);
                     if room.focused == Some(id) {

@@ -26,3 +26,4 @@ dirs = "6"
 serde = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = "0.1"
+bytes = "1"

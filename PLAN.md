@@ -170,7 +170,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - Measured on Linux (release build): real 2560×1440 capture at about 52 fps with moving content. Software encode at 1080p takes 18–25 ms per frame. The viewer gets a steady 30 fps from a 1080p30 stream at about 22% of one core.
   - Not yet checked on real macOS/Windows hardware (CI builds and tests only).
 - [ ] **M5: Everyone shares at once.** Multiple simultaneous streams, keyframe requests and per-viewer backpressure (done in M4), plus bitrate adaptation, stats overlay, fullscreen and pop-out.
-- [ ] **M6: Voice.** cpal + Opus + AEC/NS/VAD, jitter buffer, mixer, mute/deafen, speaking ring, per-user volume, device selection, sounds.
+- [x] **M6: Voice.** cpal + Opus + AEC/NS/VAD, jitter buffer, mixer, mute/deafen, speaking ring, per-user volume, device selection, sounds.
 - [ ] **M7: Stream audio.** System/app audio with screen shares (Linux PipeWire monitor), per-stream volume.
 - [ ] **M8: Webcam.** Camera tiles via nokhwa, sharing the video pipeline.
 - [ ] **M9: macOS + Windows backends.** SCK/WGC capture plus audio, VideoToolbox/Media Foundation encode/decode, URL scheme registration, permissions prompts.

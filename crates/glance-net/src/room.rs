@@ -40,7 +40,16 @@ pub enum Command {
     RequestKeyframe(EndpointId),
     /// An encoded frame of our own stream, fanned out to watchers.
     Video(Arc<VideoPacket>),
+    /// A voice frame (already postcard-encoded `AudioDatagram`), sent to
+    /// everyone as a datagram.
+    Audio(bytes::Bytes),
+    /// Where incoming voice datagrams go (bypasses the UI event channel).
+    SetAudioSink(Option<flume::Sender<(EndpointId, glance_proto::AudioDatagram)>>),
 }
+
+/// Shared slot for the voice sink, read by every connection's datagram task.
+type AudioSink =
+    Arc<std::sync::Mutex<Option<flume::Sender<(EndpointId, glance_proto::AudioDatagram)>>>>;
 
 /// Incoming video packets from one sharer. Compares by channel identity.
 #[derive(Clone, Debug)]
@@ -197,6 +206,7 @@ struct Actor {
     events: flume::Sender<RoomEvent>,
     chat_seq: u64,
     watchers: HashMap<EndpointId, Watcher>,
+    audio_sink: AudioSink,
 }
 
 pub(crate) fn spawn(
@@ -224,6 +234,7 @@ pub(crate) fn spawn(
         events: ev_tx,
         chat_seq: 0,
         watchers: HashMap::new(),
+        audio_sink: AudioSink::default(),
     };
     let fwd = inbound_tx.clone();
     tokio::spawn(async move {
@@ -417,6 +428,7 @@ impl Actor {
         spawn_writer(send, rx);
         spawn_reader(recv, id, conn.stable_id(), self.inbound.clone());
         spawn_uni_acceptor(conn.clone(), id, self.inbound.clone(), self.events.clone());
+        spawn_datagram_reader(conn.clone(), id, self.audio_sink.clone());
         let is_new = !self.peers.contains_key(&id);
         // Tell everyone else about the newcomer.
         let info = MemberInfo {
@@ -513,6 +525,13 @@ impl Actor {
             Command::Unwatch(id) => self.send_to(id, Control::Unwatch),
             Command::RequestKeyframe(id) => self.send_to(id, Control::KeyframeRequest),
             Command::Video(pkt) => self.fan_out(pkt),
+            Command::Audio(bytes) => {
+                for p in self.peers.values() {
+                    // Dropped if the path is congested; that's fine for voice.
+                    let _ = p.conn.send_datagram(bytes.clone());
+                }
+            }
+            Command::SetAudioSink(sink) => *self.audio_sink.lock().expect("audio sink") = sink,
             Command::SetProfile(profile) => {
                 self.profile = profile.clone();
                 self.broadcast(Control::Profile(profile));
@@ -805,6 +824,21 @@ fn spawn_uni_acceptor(
                     }
                 }
             });
+        }
+    });
+}
+
+/// Read voice datagrams from a peer and hand them to the audio engine.
+fn spawn_datagram_reader(conn: Connection, from: EndpointId, sink: AudioSink) {
+    tokio::spawn(async move {
+        while let Ok(bytes) = conn.read_datagram().await {
+            let Ok(pkt) = glance_proto::decode::<glance_proto::AudioDatagram>(&bytes) else {
+                continue;
+            };
+            let tx = sink.lock().expect("audio sink").clone();
+            if let Some(tx) = tx {
+                let _ = tx.try_send((from, pkt));
+            }
         }
     });
 }

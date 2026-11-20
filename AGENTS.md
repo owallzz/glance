@@ -8,7 +8,7 @@ glance: peer-to-peer screen sharing rooms (multi-sharer, voice, chat, webcam, co
 | Host env (immutable Fedora only) | `source scripts/env.sh` |
 | Build | `cargo build` |
 | Run | `cargo run -p glance-app` (`-- --demo` for a populated fake room, `-- --spike N W H FPS` for the video spike) |
-| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS]` (headless: joins, greets, echoes chat, toggles mute; `--stream` shares a test pattern through the real encoder) |
+| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone]` (headless: joins, greets, echoes chat, toggles mute; `--stream` shares a test pattern through the real encoder; `--tone` talks with a sine tone and prints who it hears speaking) |
 | Capture probe | `cargo run --release -p glance-media --example capture_probe [secs] [max_height]` (captures, encodes, prints fps and encode cost) |
 | Second identity | `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app` |
 | Auto-watch | `GLANCE_AUTOWATCH=1` watches every stream automatically (lets a second instance test viewing without clicks) |
@@ -25,13 +25,14 @@ Run the tests and the linter before every commit; CI runs the same checks.
 - `crates/glance-app`: gpui-kit UI, binary `glance`.
   - `net.rs`: tokio runtime, identity key + profile.json in the data dir, helpers to run network futures off the UI thread. `session.rs`: start/join rooms and apply `RoomEvent`s to UI state. `bot.rs`: headless test peer.
   - `app.rs`: root view `GlanceApp` (all UI state, rail, user panel, key actions). Screens are `impl GlanceApp` blocks in `home.rs`, `room.rs`, and `overlays.rs` (Go Live, settings).
+  - `voice.rs`: audio engine per room, mute/deafen, speaking rings, per-user volume, device and processing settings.
   - `streaming.rs`: Go Live (capture -> broadcast), own-stream preview, watching others (feed -> decoder -> tile).
   - `ui.rs`: shared widgets (Avatar, icon_button, pill, live_badge).
   - `video.rs`: `VideoView` tile. `spike.rs`: the render benchmark.
   - `theme.rs` + `assets/themes/glance.json`: design tokens and the gpui-kit component theme (dark + light).
 - `crates/glance-core`: view-model types the UI renders (`model.rs`), formatting helpers, `demo.rs` fake data. Room/contacts state machines land here (no I/O, unit-tested).
-- `crates/glance-net`: `Node` (iroh endpoint + router) and the room mesh actor (`room.rs`): membership, chat, state, and video fan-out (one QUIC uni stream per watcher, per-watcher queue that skips to keyframes when full). `tests/room_mesh.rs` runs in-process peers.
-- `crates/glance-media`: frames and scaling (`frame.rs`), H.264 via OpenH264 (`codec.rs`), capture (`capture/`: Wayland = portal + PipeWire in `wayland.rs`; X11/macOS/Windows = zed-scap in `scap_backend.rs`), and `pipeline.rs` (broadcast: capture -> scale -> encode only while watched; decoder thread for viewers).
+- `crates/glance-net`: `Node` (iroh endpoint + router) and the room mesh actor (`room.rs`): membership, chat, state, voice as QUIC datagrams straight to an audio sink, and video fan-out (one QUIC uni stream per watcher, per-watcher queue that skips to keyframes when full). `tests/room_mesh.rs` runs in-process peers.
+- `crates/glance-media`: voice (`audio/`: cpal devices via lock-free rings, speexdsp echo cancellation + RNNoise suppression, Opus with FEC/DTX, jitter buffer, mixer/engine thread), frames and scaling (`frame.rs`), H.264 via OpenH264 (`codec.rs`), capture (`capture/`: Wayland = portal + PipeWire in `wayland.rs`; X11/macOS/Windows = zed-scap in `scap_backend.rs`), and `pipeline.rs` (broadcast: capture -> scale -> encode only while watched; decoder thread for viewers).
 - `crates/glance-proto`: tickets (`glance://join/...`), room control messages and join proofs, length-prefixed postcard framing. Breaking wire changes get a new ALPN.
 - `scripts/`: host build helpers and `shot.sh` (screenshots).
 - `.claude/skills/run-glance`: how to launch, screenshot and measure the app.

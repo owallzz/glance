@@ -14,7 +14,10 @@ tracing = "0.1"
 blake3 = "1"
 rand = "0.9"
 serde.workspace = true
+bytes = "1"
 flume = "0.11"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+flume = "0.11"
+bytes = "1"

@@ -16,7 +16,7 @@ link() {
   fi
   ln -sf "$found" "native/lib/${name%.so.*}.so"
 }
-for lib in libxcb.so.1 libxkbcommon.so.0 libxkbcommon-x11.so.0 libfontconfig.so.1 libfreetype.so.6 libwayland-client.so.0 libpipewire-0.3.so.0 libdbus-1.so.3 libX11.so.6 libxcb-shm.so.0 libxcb-randr.so.0 libXrandr.so.2; do
+for lib in libxcb.so.1 libxkbcommon.so.0 libxkbcommon-x11.so.0 libfontconfig.so.1 libfreetype.so.6 libwayland-client.so.0 libpipewire-0.3.so.0 libdbus-1.so.3 libX11.so.6 libxcb-shm.so.0 libxcb-randr.so.0 libXrandr.so.2 libasound.so.2; do
   link "$lib"
 done
 echo "native/lib ready"

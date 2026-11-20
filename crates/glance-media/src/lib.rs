@@ -4,6 +4,7 @@
 //! screen capture (zed-scap: portal+PipeWire on Wayland, X11, ScreenCaptureKit,
 //! Windows Graphics Capture).
 
+pub mod audio;
 pub mod capture;
 pub mod codec;
 pub mod frame;

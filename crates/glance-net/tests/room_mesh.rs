@@ -258,3 +258,37 @@ async fn video_reaches_watchers_starting_at_a_keyframe() {
     .await;
     assert_eq!(ev, RoomEvent::Watchers(1));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn voice_datagrams_reach_the_audio_sink() {
+    let (na, nb) = (node().await, node().await);
+    let a = na
+        .create_room(profile("Ana"), MemberState::default())
+        .await
+        .unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+    expect_members(&a, "a", &[nb.id()]).await;
+    let (tx, rx) = flume::unbounded();
+    b.send(Command::SetAudioSink(Some(tx)));
+    let pkt = glance_proto::AudioDatagram {
+        seq: 7,
+        level: 40,
+        data: vec![1, 2, 3],
+    };
+    let bytes = bytes::Bytes::from(glance_proto::encode(&pkt).unwrap()[4..].to_vec());
+    // Datagrams are unreliable: send a few.
+    for _ in 0..5 {
+        a.send(Command::Audio(bytes.clone()));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (from, got) = tokio::time::timeout(Duration::from_secs(5), rx.recv_async())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(from, na.id());
+    assert_eq!(got, pkt);
+}

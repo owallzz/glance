@@ -11,7 +11,8 @@ use glance_proto::{MemberState, Ticket, WireProfile};
 use crate::net::Net;
 
 /// `stream`: share a test pattern of this size and frame rate.
-pub fn run(link: &str, name: &str, stream: Option<(u32, u32, u32)>) -> Result<()> {
+/// `tone`: speak a sine tone so others see/hear us talking.
+pub fn run(link: &str, name: &str, stream: Option<(u32, u32, u32)>, tone: bool) -> Result<()> {
     let ticket = Ticket::parse(link).context("parse room link")?;
     // A fresh identity each run, so a bot never collides with your app.
     let net = Net::start_ephemeral()?;
@@ -56,20 +57,61 @@ pub fn run(link: &str, name: &str, stream: Option<(u32, u32, u32)>) -> Result<()
         );
         control
     });
-    let mut names = std::collections::HashMap::new();
+    // Voice: a tone (or silence) in, mixed output discarded; we log who we
+    // hear speaking so tests can check audio flows both ways.
+    let commander = room.commander();
+    let engine = glance_media::audio::AudioEngine::start(
+        glance_media::audio::EngineConfig {
+            input: if tone {
+                glance_media::audio::InputKind::Tone(330.0)
+            } else {
+                glance_media::audio::InputKind::Silence
+            },
+            output: glance_media::audio::OutputKind::Null,
+            echo_cancel: false,
+            noise_suppression: false,
+        },
+        move |pkt| {
+            let wire = glance_proto::AudioDatagram {
+                seq: pkt.seq,
+                level: pkt.level,
+                data: pkt.data,
+            };
+            if let Ok(f) = glance_proto::encode(&wire) {
+                let _ = commander.send(Command::Audio(bytes::Bytes::from(f[4..].to_vec())));
+            }
+        },
+    )?;
+    let (atx, arx) = flume::bounded::<(glance_net::EndpointId, glance_proto::AudioDatagram)>(512);
+    room.send(Command::SetAudioSink(Some(atx)));
+    let into_engine = engine.incoming();
+    std::thread::spawn(move || {
+        while let Ok((from, d)) = arx.recv() {
+            let _ = into_engine.send((
+                *from.as_bytes(),
+                glance_media::audio::EncodedAudio {
+                    seq: d.seq,
+                    level: d.level,
+                    data: d.data,
+                },
+            ));
+        }
+    });
+    let mut heard: Vec<[u8; 32]> = Vec::new();
+    let names = std::cell::RefCell::new(std::collections::HashMap::new());
     let mut muted = false;
-    let tick = ticker(Duration::from_secs(5));
+    let tick = ticker(Duration::from_secs(if tone { 1 } else { 5 }));
     loop {
         flume::Selector::new()
             .recv(&room.events, |ev| {
                 let Ok(ev) = ev else { std::process::exit(0) };
                 match &ev {
                     RoomEvent::MemberJoined { id, profile, .. } => {
-                        names.insert(*id, profile.name.clone());
+                        names.borrow_mut().insert(*id, profile.name.clone());
                         room.send(Command::Chat(format!("hi {}!", profile.name)));
                     }
                     RoomEvent::Chat { from, text, .. } if !text.starts_with("echo:") => {
-                        let who = names.get(from).cloned().unwrap_or_default();
+                        let who = names.borrow().get(from).cloned().unwrap_or_default();
                         room.send(Command::Chat(format!("echo: {text} (from {who})")));
                     }
                     RoomEvent::Closed => std::process::exit(0),
@@ -88,6 +130,28 @@ pub fn run(link: &str, name: &str, stream: Option<(u32, u32, u32)>) -> Result<()
                 println!("{ev:?}");
             })
             .recv(&tick, |_| {
+                let now = engine.speaking_peers();
+                if now != heard {
+                    let who: Vec<String> = now
+                        .iter()
+                        .map(|k| {
+                            names
+                                .borrow()
+                                .iter()
+                                .find(|(id, _): &(&glance_net::EndpointId, &String)| {
+                                    id.as_bytes() == k
+                                })
+                                .map(|(_, n)| n.clone())
+                                .unwrap_or_else(|| "?".into())
+                        })
+                        .collect();
+                    println!("speaking: {who:?}");
+                    heard = now;
+                }
+                // Toggling mute would cut the tone; only bots without a tone flap.
+                if tone {
+                    return;
+                }
                 muted = !muted;
                 room.send(Command::SetState(MemberState {
                     muted,

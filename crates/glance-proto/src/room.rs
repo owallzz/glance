@@ -83,6 +83,16 @@ pub enum Control {
     KeyframeRequest,
 }
 
+/// One 20 ms Opus voice frame, sent as a QUIC datagram (unreliable: a
+/// late voice frame is useless, the jitter buffer conceals losses).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioDatagram {
+    pub seq: u32,
+    /// Loudness 0–100, for speaking indicators.
+    pub level: u8,
+    pub data: Vec<u8>,
+}
+
 /// First byte of a unidirectional stream: what it carries.
 pub const UNI_VIDEO: u8 = 1;
 

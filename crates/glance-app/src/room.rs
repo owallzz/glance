@@ -215,7 +215,7 @@ impl GlanceApp {
             Route::Direct => format!("Direct · {} ms", c.rtt_ms),
             Route::Relayed => format!("Relayed · {} ms", c.rtt_ms),
         });
-        div()
+        let row = div()
             .id(SharedString::from(format!("person-{}", id.short())))
             .h(px(34.))
             .pl(px(20.))
@@ -261,6 +261,71 @@ impl GlanceApp {
             })
             .when(person.deafened, |d| {
                 d.child(icon(IconName::HeadphoneOff, 14., p.red))
+            })
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, _, cx| {
+                    if let Some(room) = this.room.as_mut() {
+                        room.volume_open = if room.volume_open == Some(id) {
+                            None
+                        } else {
+                            Some(id)
+                        };
+                    }
+                    cx.notify();
+                }),
+            );
+        let volume_open = self
+            .room
+            .as_ref()
+            .is_some_and(|r| r.volume_open == Some(id))
+            && id != self.me.id;
+        let vol = self.user_volume(id);
+        let step = |delta: f32, label: &'static str, key: &str| {
+            div()
+                .id(SharedString::from(format!("{key}-{}", id.short())))
+                .size(px(24.))
+                .rounded(px(4.))
+                .bg(p.bg_selected)
+                .hover(|s| s.opacity(0.8))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(p.text_header)
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let v = this.user_volume(id);
+                    this.set_user_volume(id, ((v + delta) * 10.0).round() / 10.0);
+                    cx.notify();
+                }))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .child(row)
+            .when(volume_open, |d| {
+                d.child(
+                    div()
+                        .ml(px(20.))
+                        .mr_2()
+                        .mb_1()
+                        .p_2()
+                        .rounded(px(4.))
+                        .bg(p.bg_rail)
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_xs()
+                                .text_color(p.text_muted)
+                                .child(format!("User volume {:.0}%", vol * 100.0)),
+                        )
+                        .child(step(-0.1, "−", "vol-down"))
+                        .child(step(0.1, "+", "vol-up")),
+                )
             })
             .into_any_element()
     }

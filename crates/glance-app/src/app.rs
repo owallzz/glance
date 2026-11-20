@@ -95,6 +95,9 @@ pub struct Settings {
     pub let_contacts_join: bool,
     pub auto_preview: bool,
     pub dark: bool,
+    /// `None` = system default.
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
 }
 
 /// Everything about the room you're in.
@@ -112,6 +115,11 @@ pub struct Room {
     /// Our running screen share, if any.
     pub broadcast: Option<glance_media::pipeline::BroadcastControl>,
     pub _broadcast_task: Option<Task<()>>,
+    /// Voice engine (None in the demo room or if audio failed).
+    pub audio: Option<glance_media::audio::AudioEngine>,
+    pub _voice_task: Option<Task<()>>,
+    /// Participant whose volume control is open in the sidebar.
+    pub volume_open: Option<PeerId>,
     pub _events: Option<Task<()>>,
 }
 
@@ -148,6 +156,13 @@ pub struct GlanceApp {
     pub go_live: Option<GoLive>,
     pub settings_open: bool,
     pub settings: Settings,
+    /// Per-user volume (kept across rooms for this session).
+    pub volumes: HashMap<PeerId, f32>,
+    /// Audio devices, listed when the voice settings open.
+    pub audio_devices: Option<(
+        Vec<glance_media::audio::device::DeviceInfo>,
+        Vec<glance_media::audio::device::DeviceInfo>,
+    )>,
     pub link_copied: bool,
 }
 
@@ -228,8 +243,12 @@ impl GlanceApp {
                 let_contacts_join: false,
                 auto_preview: true,
                 dark: true,
+                input_device: None,
+                output_device: None,
             },
             link_copied: false,
+            volumes: HashMap::new(),
+            audio_devices: None,
         };
         if demo_room {
             app.start_demo_room(cx);
@@ -274,6 +293,9 @@ impl GlanceApp {
             _events: None,
             broadcast: None,
             _broadcast_task: None,
+            audio: None,
+            _voice_task: None,
+            volume_open: None,
             name: "Sam's room".into(),
             link: "glance://join/demo".into(),
             participants: demo::participants(),
@@ -373,6 +395,7 @@ impl GlanceApp {
             p.deafened = deafened;
         }
         self.push_state();
+        self.sync_voice();
     }
 
     pub fn profile_of(&self, id: PeerId) -> Option<Profile> {
@@ -580,6 +603,7 @@ impl GlanceApp {
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.settings_open = true;
+                    this.audio_devices = None; // re-list devices on open
                     cx.notify();
                 })),
             )

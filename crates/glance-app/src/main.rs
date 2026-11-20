@@ -12,6 +12,7 @@ mod streaming;
 mod theme;
 mod ui;
 mod video;
+mod voice;
 
 use gpui_kit::component::theme::ThemeMode;
 use gpui_kit::*;
@@ -27,7 +28,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
-            eprintln!("usage: glance bot <link> [name] [--stream WxH@FPS]");
+            eprintln!("usage: glance bot <link> [name] [--stream WxH@FPS] [--tone]");
             std::process::exit(2);
         };
         let name = args
@@ -45,7 +46,8 @@ fn main() {
                 })
                 .unwrap_or((1280, 720, 30))
         });
-        if let Err(e) = bot::run(link, name, stream) {
+        let tone = args.iter().any(|a| a == "--tone");
+        if let Err(e) = bot::run(link, name, stream, tone) {
             eprintln!("glance bot: {e:#}");
             std::process::exit(1);
         }

@@ -461,25 +461,120 @@ impl GlanceApp {
                         ))),
                 )
                 .into_any_element(),
-            SettingsPage::Voice => div()
-                .flex()
-                .flex_col()
-                .child(info_row(p, "Input device", "Default — System microphone"))
-                .child(info_row(p, "Output device", "Default — System speakers"))
-                .child(info_row(p, "Camera", "Default camera"))
-                .child(toggle!(
-                    "ns",
-                    "Noise suppression",
-                    "Filters background noise from your mic.",
-                    noise_suppression
-                ))
-                .child(toggle!(
-                    "aec",
-                    "Echo cancellation",
-                    "Stops others hearing themselves through your speakers.",
-                    echo_cancel
-                ))
-                .into_any_element(),
+            SettingsPage::Voice => {
+                let devices = self.audio_devices.get_or_insert_with(|| {
+                    (
+                        glance_media::audio::device::input_devices(),
+                        glance_media::audio::device::output_devices(),
+                    )
+                });
+                let (inputs, outputs) = devices.clone();
+                let device_list = |id: &'static str,
+                                   label: &'static str,
+                                   list: Vec<glance_media::audio::device::DeviceInfo>,
+                                   selected: Option<String>,
+                                   input: bool| {
+                    let rows = std::iter::once((None, "System default".to_string()))
+                        .chain(list.into_iter().map(|d| (Some(d.name.clone()), d.name)))
+                        .enumerate()
+                        .map(|(i, (value, name))| {
+                            let is_sel = value == selected;
+                            let hover = p.bg_hover;
+                            div()
+                                .id(SharedString::from(format!("{id}-{i}")))
+                                .px_3()
+                                .py_1()
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .truncate()
+                                .text_color(if is_sel { p.text_header } else { p.text_normal })
+                                .when(is_sel, |d| d.bg(p.bg_selected))
+                                .hover(move |s| s.bg(hover))
+                                .child(name)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if input {
+                                        this.settings.input_device = value.clone();
+                                    } else {
+                                        this.settings.output_device = value.clone();
+                                    }
+                                    this.start_voice(cx);
+                                    cx.notify();
+                                }))
+                        });
+                    div()
+                        .py_4()
+                        .border_b_1()
+                        .border_color(p.bg_selected)
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(section_label(p, label))
+                        .child(
+                            div()
+                                .id(id)
+                                .max_h(px(180.))
+                                .overflow_y_scroll()
+                                .p_1()
+                                .rounded(px(4.))
+                                .bg(p.bg_input)
+                                .children(rows),
+                        )
+                };
+                let processing = |id: &'static str,
+                                  label: &'static str,
+                                  desc: &'static str,
+                                  on: bool,
+                                  aec: bool| {
+                    setting_row(
+                        p,
+                        label,
+                        desc,
+                        Switch::new(id).checked(on).on_click(cx.listener(
+                            move |this, v: &bool, _, cx| {
+                                if aec {
+                                    this.settings.echo_cancel = *v;
+                                } else {
+                                    this.settings.noise_suppression = *v;
+                                }
+                                this.apply_audio_processing();
+                                cx.notify();
+                            },
+                        )),
+                    )
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(device_list(
+                        "input-devices",
+                        "INPUT DEVICE",
+                        inputs,
+                        self.settings.input_device.clone(),
+                        true,
+                    ))
+                    .child(device_list(
+                        "output-devices",
+                        "OUTPUT DEVICE",
+                        outputs,
+                        self.settings.output_device.clone(),
+                        false,
+                    ))
+                    .child(processing(
+                        "ns",
+                        "Noise suppression",
+                        "Filters background noise from your mic.",
+                        self.settings.noise_suppression,
+                        false,
+                    ))
+                    .child(processing(
+                        "aec",
+                        "Echo cancellation",
+                        "Stops others hearing themselves through your speakers.",
+                        self.settings.echo_cancel,
+                        true,
+                    ))
+                    .into_any_element()
+            }
             SettingsPage::Streaming => div()
                 .flex()
                 .flex_col()
