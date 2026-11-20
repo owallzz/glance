@@ -1,7 +1,9 @@
 //! glance: peer-to-peer screen sharing rooms.
 
 mod home;
+mod spike;
 mod theme;
+mod video;
 
 use gpui_kit::component::theme::ThemeMode;
 use gpui_kit::*;
@@ -29,8 +31,18 @@ fn main() {
                 app_id: Some("glance".into()),
                 ..Default::default()
             };
-            gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| home::Home))
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            if args.first().map(String::as_str) == Some("--spike") {
+                let num = |i: usize, d: u32| args.get(i).and_then(|v| v.parse().ok()).unwrap_or(d);
+                let (n, w, h, fps) = (num(1, 1), num(2, 1920), num(3, 1080), num(4, 60));
+                gpui_kit::open_window(options, cx, |_, cx| {
+                    cx.new(|cx| spike::Spike::new(n as usize, w, h, fps, cx))
+                })
                 .expect("failed to open window");
+            } else {
+                gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| home::Home))
+                    .expect("failed to open window");
+            }
             cx.activate(true);
         });
 }

@@ -53,3 +53,4 @@ Check the diff for these before every commit.
 - gpui-kit 0.10 pins exact `gpui-pre-*` versions. Upgrade gpui-kit as a whole, never individual gpui crates.
 - Screenshots on GNOME Wayland: run with `WAYLAND_DISPLAY=` (XWayland) and use `xdotool search --name '^glance$'` + `import -window <id> out.png`.
 - First build is slow (~2 min). Dependencies build at opt-level 2 in dev (see the workspace profile) so video paths stay usable in debug.
+- Test modules in files that `use gpui_kit::*` must import items explicitly, not `use super::*`: the glob brings GPUI's `test` macro, which shadows `#[test]` ("recursion limit reached").
