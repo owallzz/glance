@@ -4,7 +4,7 @@
 //!   own call audio, so viewers don't hear themselves) or the whole system
 //!   (the default output's monitor).
 //! - Windows: WASAPI loopback of the default output (via cpal).
-//! - macOS: not available yet (needs a ScreenCaptureKit audio stream).
+//! - macOS: ScreenCaptureKit system audio, minus glance's own sound.
 //!
 //! Captured audio is 48 kHz mono f32, encoded with Opus for music and sent
 //! only to people watching the screen.
@@ -15,11 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 
 use crate::audio::EncodedAudio;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 use crate::audio::{FRAME, level_of};
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -47,9 +49,20 @@ pub fn stream_key(peer: [u8; 32]) -> [u8; 32] {
     peer.map(|b| !b)
 }
 
+/// Whether "Entire system" also picks up the call's own audio (other
+/// people's voices). macOS excludes glance's own process; elsewhere it
+/// can't yet.
+pub fn system_includes_call_audio() -> bool {
+    !cfg!(target_os = "macos")
+}
+
 /// Whether this platform can share audio at all.
 pub fn supported() -> bool {
-    cfg!(any(target_os = "linux", target_os = "windows"))
+    cfg!(any(
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "macos"
+    ))
 }
 
 /// Sources to offer (apps currently playing sound come first on Linux).
@@ -60,11 +73,11 @@ pub fn list_sources() -> Vec<AudioSource> {
         v.push(AudioSource::System);
         v
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         vec![AudioSource::System]
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Vec::new()
     }
@@ -86,16 +99,16 @@ pub fn start(
     source: AudioSource,
     sink: impl FnMut(EncodedAudio) + Send + 'static,
 ) -> Result<StreamAudio> {
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = (source, sink);
         anyhow::bail!("sharing audio isn't available on this platform yet");
     }
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     start_supported(source, sink)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 fn start_supported(
     source: AudioSource,
     sink: impl FnMut(EncodedAudio) + Send + 'static,
@@ -106,6 +119,8 @@ fn start_supported(
     linux::capture(source, tx, stop.clone())?;
     #[cfg(target_os = "windows")]
     windows::capture(source, tx, stop.clone())?;
+    #[cfg(target_os = "macos")]
+    macos::capture(source, tx, stop.clone())?;
     let stop_enc = stop.clone();
     std::thread::Builder::new()
         .name("stream-audio".into())
@@ -113,7 +128,7 @@ fn start_supported(
     Ok(StreamAudio { stop })
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 fn encode_loop(
     mut rx: rtrb::Consumer<f32>,
     stop: Arc<AtomicBool>,

@@ -225,10 +225,18 @@ impl GlanceApp {
             ));
         }
         let audio_note = match &gl.audio {
-            Some(glance_media::stream_audio::AudioSource::System) => Some(
-                "Shares everything your computer plays, including other people's voices from this call.",
-            ),
-            None if gl.audio_sources.len() == 1 => Some(
+            Some(glance_media::stream_audio::AudioSource::System)
+                if glance_media::stream_audio::system_includes_call_audio() =>
+            {
+                Some(
+                    "Shares everything your computer plays, including other people's voices from this call.",
+                )
+            }
+            Some(glance_media::stream_audio::AudioSource::System) => {
+                Some("Shares everything your computer plays (except glance itself).")
+            }
+            // Only Linux lists individual apps.
+            None if cfg!(target_os = "linux") && gl.audio_sources.len() == 1 => Some(
                 "Start the app you want to share so it shows up here, or share the whole system.",
             ),
             _ => None,

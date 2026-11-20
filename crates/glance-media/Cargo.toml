@@ -24,6 +24,10 @@ scap = { package = "zed-scap", version = "=0.0.8-zed", default-features = false 
 
 # zed-scap asks for windows-capture "1.3.6" (any 1.x), but it uses APIs
 # from 1.4 and 1.5 changed Settings::new. 1.4.4 is the compatible release.
+[target.'cfg(target_os = "macos")'.dependencies]
+# Same version zed-scap uses, for system audio with screen shares.
+screencapturekit = "=0.2.8"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "=1.4.4"
 
