@@ -48,15 +48,20 @@ fn main() {
             app::bind_keys(cx);
 
             let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+            // We draw our own Discord-style title bar (drag area, minimize,
+            // maximize, close). Wayland compositors like GNOME don't provide
+            // one, and on Windows/macOS it replaces the system bar.
             let options = WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some("glance".into()),
-                    ..Default::default()
-                }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(720.), px(480.))),
+                window_decorations: Some(WindowDecorations::Client),
+                // The OS still shows this in the taskbar and Alt+Tab.
+                titlebar: Some(TitlebarOptions {
+                    title: Some("glance".into()),
+                    ..gpui_kit::component::TitleBar::title_bar_options()
+                }),
                 app_id: Some("glance".into()),
-                ..Default::default()
+                ..gpui_kit::component::TitleBar::window_options()
             };
             let args: Vec<String> = std::env::args().skip(1).collect();
             if args.first().map(String::as_str) == Some("--spike") {

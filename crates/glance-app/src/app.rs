@@ -594,11 +594,20 @@ impl Render for GlanceApp {
             .relative()
             .size_full()
             .flex()
+            .flex_col()
             .font_family(font)
             .text_color(p.text_normal)
-            .bg(p.bg_content)
-            .child(self.render_rail(&p, cx))
-            .child(main);
+            .bg(p.bg_rail)
+            .child(render_title_bar(&p))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .bg(p.bg_content)
+                    .child(self.render_rail(&p, cx))
+                    .child(main),
+            );
         if self.go_live.is_some() {
             root = root.child(self.render_go_live(&p, cx));
         }
@@ -607,6 +616,29 @@ impl Render for GlanceApp {
         }
         root
     }
+}
+
+/// Discord-style title bar: a thin strip in the rail colour with the app name
+/// centred. gpui-kit's `TitleBar` handles dragging, double-click to maximize,
+/// the window menu, and the minimize/maximize/close buttons per platform.
+fn render_title_bar(p: &Palette) -> impl IntoElement {
+    gpui_kit::component::TitleBar::new()
+        .h(px(32.))
+        .bg(p.bg_rail)
+        .border_b_0()
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(p.text_muted)
+                .child(icon(IconName::Monitor, 14., p.text_muted))
+                .child("glance"),
+        )
 }
 
 pub fn now_ms() -> u64 {
