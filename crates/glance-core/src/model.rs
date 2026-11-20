@@ -244,13 +244,26 @@ impl Resolution {
             Some(cap) => fit(src, (u32::MAX, cap)),
             None => src,
         };
-        // The software encoder's limit, either orientation.
+        // The encoder's limit, either orientation: H.264 level 5.2's
+        // 4096x2304, and no more pixels than 4K.
         let limit = if s.0 >= s.1 {
-            (3840, 2160)
+            (4096, 2304)
         } else {
-            (2160, 3840)
+            (2304, 4096)
         };
-        let (w, h) = fit(s, limit);
+        let (mut w, mut h) = fit(s, limit);
+        const MAX_PIXELS: u64 = 3840 * 2160;
+        let pixels = w as u64 * h as u64;
+        if pixels > MAX_PIXELS {
+            let scale = (MAX_PIXELS as f64 / pixels as f64).sqrt();
+            (w, h) = (
+                (w as f64 * scale).round() as u32,
+                (h as f64 * scale).round() as u32,
+            );
+            while w as u64 * h as u64 > MAX_PIXELS {
+                (w, h) = (w - 1, h - 1);
+            }
+        }
         ((w & !1).max(2), (h & !1).max(2))
     }
 
@@ -319,9 +332,9 @@ mod tests {
     fn resolution_output_sizes() {
         assert_eq!(Resolution::P1080.output_size((3840, 2160)), (1920, 1080));
         assert_eq!(Resolution::P2160.output_size((1920, 1080)), (1920, 1080));
-        // Wider than 3840 is beyond the software encoder: scaled to fit.
-        assert_eq!(Resolution::P1440.output_size((5120, 1440)), (3840, 1080));
-        assert_eq!(Resolution::Source.output_size((5120, 1440)), (3840, 1080));
+        // Wider than 4096 is beyond H.264 encoders: scaled to fit.
+        assert_eq!(Resolution::P1440.output_size((5120, 1440)), (4096, 1152));
+        assert_eq!(Resolution::Source.output_size((5120, 1440)), (4096, 1152));
         assert_eq!(Resolution::Source.output_size((3440, 1440)), (3440, 1440));
         assert_eq!(Resolution::P1080.output_size((5120, 1440)), (3840, 1080));
         assert_eq!(Resolution::Source.output_size((1367, 769)), (1366, 768));

@@ -32,8 +32,38 @@ pub fn bitrate_for(width: u32, height: u32, fps: u32) -> u32 {
     (bps as u32).clamp(800_000, 40_000_000)
 }
 
-/// The largest picture OpenH264 encodes (H.264 level 5.2), either way up.
-pub const MAX_ENCODE: (u32, u32) = (3840, 2160);
+/// The largest picture glance encodes, either way up: H.264 level 5.2's
+/// 4096x2304, which is also the most NVENC, VCN, Quick Sync and
+/// VideoToolbox take for H.264.
+pub const MAX_ENCODE: (u32, u32) = (4096, 2304);
+
+/// The most pixels a stream carries: 4K's worth, so a 4096-wide ultrawide
+/// costs no more to encode than 4K does.
+pub const MAX_ENCODE_PIXELS: u64 = 3840 * 2160;
+
+/// Scale `src` down (aspect kept, never up) to what the encoder takes:
+/// within [`MAX_ENCODE`] either way up and no more than [`MAX_ENCODE_PIXELS`].
+pub fn fit_encoder(src: (u32, u32)) -> (u32, u32) {
+    let limit = if src.0 >= src.1 {
+        MAX_ENCODE
+    } else {
+        (MAX_ENCODE.1, MAX_ENCODE.0)
+    };
+    let (w, h) = fit_within(src, limit);
+    let pixels = w as u64 * h as u64;
+    if pixels <= MAX_ENCODE_PIXELS {
+        return (w, h);
+    }
+    let scale = (MAX_ENCODE_PIXELS as f64 / pixels as f64).sqrt();
+    let (mut w, mut h) = (
+        (w as f64 * scale).round() as u32,
+        (h as f64 * scale).round() as u32,
+    );
+    while w as u64 * h as u64 > MAX_ENCODE_PIXELS {
+        (w, h) = (w - 1, h - 1);
+    }
+    (w, h)
+}
 
 /// The encoder a broadcast uses: a hardware encoder when the machine has
 /// one glance supports (NVENC today), otherwise OpenH264.
@@ -123,7 +153,7 @@ impl VideoEncoder {
         }
         let (long, short) = (width.max(height), width.min(height));
         if long > MAX_ENCODE.0 || short > MAX_ENCODE.1 {
-            bail!("{width}x{height} is larger than H.264 encoding supports (3840x2160)");
+            bail!("{width}x{height} is larger than H.264 encoding supports (4096x2304)");
         }
         let choice = choice.resolved();
         let mut hw_error = None;
@@ -824,6 +854,33 @@ mod tests {
             VideoEncoder::with_choice(320, 240, 30, 1_000_000, EncoderChoice::Software).unwrap();
         assert!(!enc.is_hardware());
         assert_eq!(enc.backend_name(), "OpenH264 (software)");
+    }
+
+    /// The widest stream glance sends (a 32:9 ultrawide at 4096x1152)
+    /// encodes and decodes, in software and on the GPU when there is one.
+    #[test]
+    fn ultrawide_at_the_size_limit_round_trips() {
+        let (w, h) = crate::pipeline::output_size((5120, 1440), None);
+        assert_eq!((w, h), (4096, 1152));
+        let mut choices = vec![EncoderChoice::Software];
+        if hardware_encoder().is_some() {
+            choices.push(EncoderChoice::Hardware);
+        }
+        for choice in choices {
+            let mut enc =
+                VideoEncoder::with_choice(w, h, 30, bitrate_for(w, h, 30), choice).unwrap();
+            let mut dec = VideoDecoder::new().unwrap();
+            let mut pattern = Pattern::new(w, h, 3);
+            let mut decoded = None;
+            for _ in 0..3 {
+                if let Some(pkt) = enc.encode(&pattern.next_frame()).unwrap()
+                    && let Some(out) = dec.decode(&pkt.data, (0, 0)).unwrap()
+                {
+                    decoded = Some((out.width, out.height));
+                }
+            }
+            assert_eq!(decoded, Some((w, h)), "{}", enc.backend_name());
+        }
     }
 
     /// VideoToolbox (Apple's software encoder is allowed, so this runs on CI
