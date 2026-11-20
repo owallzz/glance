@@ -60,6 +60,8 @@ pub enum Control {
         profile: WireProfile,
         state: MemberState,
         members: Vec<MemberInfo>,
+        /// Recent chat and file offers, oldest first, so latecomers see them.
+        history: Vec<HistoryItem>,
     },
     /// The proof was wrong or the room is unknown; the connection closes.
     Rejected,
@@ -81,6 +83,43 @@ pub enum Control {
     Unwatch,
     /// Viewer -> sharer: I lost packets; send a keyframe.
     KeyframeRequest,
+    /// A file offered in chat (fetch it over iroh-blobs by hash).
+    File {
+        sent_at: u64,
+        file: WireFile,
+    },
+    /// The sender now has this file and can serve it too.
+    HaveFile([u8; 32]),
+}
+
+/// One past chat message or file offer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryItem {
+    pub author: EndpointId,
+    /// The author's name when it was sent (they may have left since).
+    pub author_name: String,
+    pub author_color: u32,
+    pub sent_at: u64,
+    pub body: HistoryBody,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HistoryBody {
+    Text(String),
+    File(WireFile),
+}
+
+/// How many history items a peer keeps and sends to newcomers.
+pub const HISTORY_LIMIT: usize = 200;
+
+/// A shared file's metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireFile {
+    /// BLAKE3 hash of the content.
+    pub hash: [u8; 32],
+    pub name: String,
+    pub size: u64,
+    pub mime: String,
 }
 
 /// One 20 ms Opus voice frame, sent as a QUIC datagram (unreliable: a

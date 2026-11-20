@@ -179,6 +179,8 @@ impl GlanceApp {
             audio: None,
             _voice_task: None,
             volume_open: None,
+            files: Default::default(),
+            history_names: Default::default(),
         });
         self.screen = Screen::Room;
         self.start_voice(cx);
@@ -297,6 +299,11 @@ impl GlanceApp {
             RoomEvent::Video { from, feed } => {
                 self.on_video_feed(peer_id(from), feed, cx);
             }
+            RoomEvent::History(items) => self.on_history(items),
+            RoomEvent::FileOffered { from, file, .. } => {
+                self.on_file_offered(from, file, cx);
+            }
+            RoomEvent::FileProvider { from, hash } => self.on_file_provider(from, hash),
             RoomEvent::Watchers(n) => {
                 if let Some(b) = &room.broadcast {
                     b.watchers.store(n, std::sync::atomic::Ordering::Relaxed);
@@ -397,5 +404,48 @@ impl GlanceApp {
         }
         self.needs_profile = false;
         cx.notify();
+    }
+}
+
+impl GlanceApp {
+    /// Put chat/file history from before we joined at the top of the chat.
+    fn on_history(&mut self, items: Vec<glance_proto::HistoryItem>) {
+        let Some(room) = self.room.as_mut() else {
+            return;
+        };
+        let mut earlier = Vec::new();
+        for item in items {
+            let author = peer_id(item.author);
+            room.history_names
+                .entry(author)
+                .or_insert((item.author_name.clone(), item.author_color));
+            let body = match item.body {
+                glance_proto::HistoryBody::Text(t) => ChatBody::Text(t),
+                glance_proto::HistoryBody::File(f) => {
+                    let e = room.files.entry(f.hash).or_default();
+                    if !e.providers.contains(&item.author) {
+                        e.providers.push(item.author);
+                    }
+                    ChatBody::File(glance_core::FileOffer {
+                        hash: f.hash,
+                        name: f.name,
+                        size: f.size,
+                        mime: f.mime,
+                        transfer: glance_core::Transfer::Available,
+                    })
+                }
+            };
+            earlier.push(ChatMessage {
+                id: 0,
+                author,
+                sent_at: item.sent_at,
+                body,
+            });
+        }
+        earlier.append(&mut room.chat);
+        for (i, m) in earlier.iter_mut().enumerate() {
+            m.id = i as u64 + 1;
+        }
+        room.chat = earlier;
     }
 }

@@ -120,6 +120,10 @@ pub struct Room {
     pub _voice_task: Option<Task<()>>,
     /// Participant whose volume control is open in the sidebar.
     pub volume_open: Option<PeerId>,
+    /// Files offered in this room.
+    pub files: crate::files::FileMap,
+    /// Names of history authors who may have left.
+    pub history_names: HashMap<PeerId, (String, u32)>,
     pub _events: Option<Task<()>>,
 }
 
@@ -296,6 +300,8 @@ impl GlanceApp {
             audio: None,
             _voice_task: None,
             volume_open: None,
+            files: Default::default(),
+            history_names: HashMap::new(),
             name: "Sam's room".into(),
             link: "glance://join/demo".into(),
             participants: demo::participants(),
@@ -411,6 +417,10 @@ impl GlanceApp {
                     .iter()
                     .find(|c| c.profile.id == id)
                     .map(|c| c.profile.clone())
+            })
+            .or_else(|| {
+                let (name, color) = self.room.as_ref()?.history_names.get(&id)?.clone();
+                Some(Profile { id, name, color })
             })
     }
 

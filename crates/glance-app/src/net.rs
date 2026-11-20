@@ -101,7 +101,8 @@ pub struct Net {
 impl Net {
     pub fn start(data_dir: PathBuf) -> Result<Self> {
         let key = load_or_create_key(&data_dir)?;
-        Self::start_with_key(data_dir, key)
+        let files = data_dir.join("files");
+        Self::start_with_key(data_dir, key, Some(files))
     }
 
     /// A throwaway identity (used by `glance bot`).
@@ -109,10 +110,15 @@ impl Net {
         Self::start_with_key(
             std::env::temp_dir().join("glance-ephemeral"),
             SecretKey::generate(),
+            None,
         )
     }
 
-    fn start_with_key(data_dir: PathBuf, key: SecretKey) -> Result<Self> {
+    fn start_with_key(
+        data_dir: PathBuf,
+        key: SecretKey,
+        files_dir: Option<PathBuf>,
+    ) -> Result<Self> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("glance-net")
@@ -126,6 +132,7 @@ impl Net {
         let node = rt.block_on(Node::spawn(NetConfig {
             secret_key: key,
             relay,
+            files_dir,
         }))?;
         Ok(Self { rt, node, data_dir })
     }
@@ -172,6 +179,51 @@ impl Net {
             fut.await
                 .unwrap_or_else(|| Err(anyhow::anyhow!("network stopped")))
         }
+    }
+
+    /// Add a file to our store (hash it) so it can be offered.
+    pub fn add_file(&self, path: PathBuf) -> impl Future<Output = Result<([u8; 32], u64)>> + use<> {
+        let node = self.node.clone();
+        let fut = self.run(async move { node.files().add(&path).await });
+        async move {
+            fut.await
+                .unwrap_or_else(|| Err(anyhow::anyhow!("network stopped")))
+        }
+    }
+
+    /// Download a file from `providers`, then save it to `dest`. Progress
+    /// goes to `progress`. Returns the task's abort handle (cancel).
+    pub fn download_file(
+        &self,
+        hash: [u8; 32],
+        providers: Vec<glance_net::EndpointId>,
+        dest: PathBuf,
+        progress: flume::Sender<glance_net::files::Progress>,
+    ) -> tokio::task::AbortHandle {
+        let node = self.node.clone();
+        let handle = self.rt.spawn(async move {
+            let p = progress.clone();
+            let result = node
+                .files()
+                .download(node.endpoint(), hash, providers, move |ev| {
+                    // Done is sent after the export below.
+                    if !matches!(ev, glance_net::files::Progress::Done) {
+                        let _ = p.try_send(ev);
+                    }
+                })
+                .await;
+            let result = match result {
+                Ok(()) => node.files().export(hash, &dest).await,
+                Err(e) => Err(e),
+            };
+            let _ = progress
+                .send_async(match result {
+                    Ok(()) => glance_net::files::Progress::Done,
+                    Err(e) => glance_net::files::Progress::Failed(format!("{e:#}")),
+                })
+                .await;
+        });
+        handle.abort_handle()
     }
 
     /// Block a non-UI thread on a future (CLI modes only).

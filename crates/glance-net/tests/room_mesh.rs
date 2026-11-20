@@ -11,6 +11,7 @@ async fn node() -> Node {
     Node::spawn(NetConfig {
         secret_key: SecretKey::generate(),
         relay: Relay::Disabled,
+        files_dir: None,
     })
     .await
     .expect("spawn node")
@@ -291,4 +292,139 @@ async fn voice_datagrams_reach_the_audio_sink() {
         .unwrap();
     assert_eq!(from, na.id());
     assert_eq!(got, pkt);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_transfer_and_second_downloader_can_fetch_from_first() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+    let (na, nb, nc) = (node().await, node().await, node().await);
+    let a = na
+        .create_room(profile("Ana"), MemberState::default())
+        .await
+        .unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+
+    // Ana shares a 3 MB file.
+    let dir = std::env::temp_dir().join(format!("glance-ft-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("big.bin");
+    let data: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&src, &data).unwrap();
+    let (hash, size) = na.files().add(&src).await.unwrap();
+    assert_eq!(size, data.len() as u64);
+    a.send(Command::OfferFile(glance_proto::WireFile {
+        hash,
+        name: "big.bin".into(),
+        size,
+        mime: "application/octet-stream".into(),
+    }));
+    let RoomEvent::FileOffered { from, file, .. } = expect(&b, "file offer", |e| {
+        matches!(e, RoomEvent::FileOffered { .. })
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    assert_eq!((from, file.hash), (na.id(), hash));
+
+    // Ben downloads with progress, exports, and the bytes match.
+    let mut last = 0;
+    nb.files()
+        .download(nb.endpoint(), hash, vec![na.id()], |p| {
+            if let glance_net::files::Progress::Bytes(n) = p {
+                last = n;
+            }
+        })
+        .await
+        .unwrap();
+    assert!(last > 0);
+    let out = dir.join("got.bin");
+    nb.files().export(hash, &out).await.unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), data);
+
+    // Cy joins (so is connected to Ben), Ana goes away; Cy can still get
+    // the file from Ben.
+    let c = nc
+        .join_room(a.ticket.clone(), profile("Cy"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&c, "c", &[na.id(), nb.id()]).await;
+    na.shutdown().await;
+    nc.files()
+        .download(nc.endpoint(), hash, vec![nb.id()], |_| {})
+        .await
+        .unwrap();
+    assert!(nc.files().has(hash).await);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn download_of_unknown_file_fails_cleanly() {
+    let (na, nb) = (node().await, node().await);
+    let mut failed = false;
+    let r = nb
+        .files()
+        .download(nb.endpoint(), [7; 32], vec![na.id()], |p| {
+            if matches!(p, glance_net::files::Progress::Failed(_)) {
+                failed = true;
+            }
+        })
+        .await;
+    assert!(r.is_err() && failed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn late_joiner_receives_chat_and_file_history() {
+    let (na, nb, nc) = (node().await, node().await, node().await);
+    let a = na
+        .create_room(profile("Ana"), MemberState::default())
+        .await
+        .unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+    b.send(Command::Chat("before you came".into()));
+    expect(&a, "chat at a", |e| matches!(e, RoomEvent::Chat { .. })).await;
+    a.send(Command::OfferFile(glance_proto::WireFile {
+        hash: [3; 32],
+        name: "notes.txt".into(),
+        size: 10,
+        mime: "text/plain".into(),
+    }));
+    expect(&b, "offer at b", |e| {
+        matches!(e, RoomEvent::FileOffered { .. })
+    })
+    .await;
+
+    let c = nc
+        .join_room(a.ticket.clone(), profile("Cy"), MemberState::default())
+        .await
+        .unwrap();
+    let RoomEvent::History(items) =
+        expect(&c, "history", |e| matches!(e, RoomEvent::History(_))).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(items.len(), 2, "{items:?}");
+    assert_eq!(items[0].author, nb.id());
+    assert_eq!(items[0].author_name, "Ben");
+    assert!(matches!(&items[0].body, glance_proto::HistoryBody::Text(t) if t == "before you came"));
+    assert!(matches!(&items[1].body, glance_proto::HistoryBody::File(f) if f.name == "notes.txt"));
+    // History arrives once even though Cy connects to both Ana and Ben.
+    expect_members(&c, "c", &[na.id(), nb.id()]).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        c.events
+            .try_iter()
+            .all(|e| !matches!(e, RoomEvent::History(_)))
+    );
 }

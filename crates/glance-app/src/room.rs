@@ -45,10 +45,15 @@ impl GlanceApp {
     ) -> impl IntoElement {
         let chat_open = self.room.as_ref().is_some_and(|r| r.chat_open);
         div()
+            .id("room-view")
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
+            // Drop files anywhere in the room to send them.
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.send_files(paths.paths().to_vec(), cx);
+            }))
             .child(self.render_room_sidebar(p, cx))
             .child(self.render_stage(p, cx))
             .when(chat_open, |d| d.child(self.render_chat(p, cx)))
@@ -798,13 +803,16 @@ impl GlanceApp {
                         .items_center()
                         .gap_2()
                         .px_2()
-                        .child(icon_button(
-                            "attach",
-                            IconName::CirclePlus,
-                            "Upload a file",
-                            p.interactive,
-                            p,
-                        ))
+                        .child(
+                            icon_button(
+                                "attach",
+                                IconName::CirclePlus,
+                                "Send a file",
+                                p.interactive,
+                                p,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.pick_files_to_send(cx))),
+                        )
                         .child(
                             div()
                                 .flex_1()
@@ -911,12 +919,22 @@ impl GlanceApp {
                 )
             }
         };
+        let hash = f.hash;
+        let done = f.transfer == Transfer::Done;
+        let path = self.file_path(&hash);
         let action = match &f.transfer {
             Transfer::Available | Transfer::Failed(_) => Some((IconName::Download, "Download")),
             Transfer::Downloading { .. } => Some((IconName::X, "Cancel")),
             Transfer::Done => Some((IconName::FolderOpen, "Show in folder")),
-            Transfer::Sent => None,
+            Transfer::Sent => path
+                .as_ref()
+                .map(|_| (IconName::FolderOpen, "Show in folder")),
         };
+        let sent = f.transfer == Transfer::Sent;
+        // Inline preview for images we have on disk.
+        let preview = path
+            .clone()
+            .filter(|_| f.is_image() && (done || sent) && f.size <= crate::files::AUTO_PREVIEW_MAX);
         div()
             .max_w(px(300.))
             .p_3()
@@ -944,15 +962,19 @@ impl GlanceApp {
                     )
                     .children(action.map(|(glyph, tip)| {
                         icon_button(
-                            SharedString::from(format!("file-{msg_id}")),
+                            // The id includes the action so the tooltip refreshes when it changes.
+                            SharedString::from(format!("file-{msg_id}-{tip}")),
                             glyph,
                             tip,
                             p.interactive,
                             p,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_download(msg_id);
-                            cx.notify();
+                            if done || sent {
+                                this.reveal_file(hash, cx);
+                            } else {
+                                this.toggle_download(hash, cx);
+                            }
                         }))
                     })),
             )
@@ -964,29 +986,14 @@ impl GlanceApp {
                     .bg(p.bg_selected)
                     .child(div().h_full().w(relative(frac)).rounded_full().bg(p.brand))
             }))
+            .children(preview.map(|path| {
+                img(path)
+                    .max_w(px(276.))
+                    .max_h(px(200.))
+                    .rounded(px(4.))
+                    .object_fit(ObjectFit::Contain)
+            }))
             .into_any_element()
-    }
-
-    /// UI-shell stand-in for starting/cancelling a download (M3c wires blobs).
-    fn toggle_download(&mut self, msg_id: u64) {
-        let Some(room) = self.room.as_mut() else {
-            return;
-        };
-        if let Some(ChatBody::File(f)) = room
-            .chat
-            .iter_mut()
-            .find(|m| m.id == msg_id)
-            .map(|m| &mut m.body)
-        {
-            f.transfer = match f.transfer {
-                Transfer::Available | Transfer::Failed(_) => Transfer::Downloading {
-                    done: 0,
-                    bytes_per_sec: 0,
-                },
-                Transfer::Downloading { .. } => Transfer::Available,
-                ref other => other.clone(),
-            };
-        }
     }
 }
 

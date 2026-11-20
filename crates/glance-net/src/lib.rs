@@ -5,6 +5,7 @@
 //! active room. [`Node::create_room`] / [`Node::join_room`] return a
 //! [`RoomHandle`]: send it [`Command`]s and read [`RoomEvent`]s.
 
+pub mod files;
 mod io;
 pub mod room;
 
@@ -35,6 +36,8 @@ pub enum Relay {
 pub struct NetConfig {
     pub secret_key: SecretKey,
     pub relay: Relay,
+    /// Where shared/downloaded files are kept; `None` keeps them in memory.
+    pub files_dir: Option<std::path::PathBuf>,
 }
 
 /// The slot the protocol handler hands incoming room connections to.
@@ -44,6 +47,7 @@ type RoomSlot = Arc<Mutex<Option<flume::Sender<room::Inbound>>>>;
 pub struct Node {
     router: Router,
     room_slot: RoomSlot,
+    files: files::FileStore,
 }
 
 #[derive(Debug, Clone)]
@@ -99,14 +103,27 @@ impl Node {
             .await
             .map_err(|e| anyhow::anyhow!("bind endpoint: {e}"))?;
         let room_slot: RoomSlot = Arc::default();
+        let files = files::FileStore::open(config.files_dir.as_deref()).await?;
         let router = Router::builder(endpoint)
             .accept(ROOM_ALPN, RoomProtocol(room_slot.clone()))
+            .accept(
+                iroh_blobs::ALPN,
+                iroh_blobs::BlobsProtocol::new(files.store(), None),
+            )
             .spawn();
-        Ok(Self { router, room_slot })
+        Ok(Self {
+            router,
+            room_slot,
+            files,
+        })
     }
 
     pub fn endpoint(&self) -> &Endpoint {
         self.router.endpoint()
+    }
+
+    pub fn files(&self) -> &files::FileStore {
+        &self.files
     }
 
     pub fn id(&self) -> EndpointId {

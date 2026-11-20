@@ -15,8 +15,8 @@ use anyhow::{Context, Result, bail};
 use std::sync::Arc;
 
 use glance_proto::{
-    Control, EndpointAddr, EndpointId, Hello, MemberInfo, MemberState, ROOM_ALPN, Ticket,
-    UNI_VIDEO, VideoPacket, WireProfile, join_proof, verify_proof,
+    Control, EndpointAddr, EndpointId, HISTORY_LIMIT, Hello, HistoryBody, HistoryItem, MemberInfo,
+    MemberState, ROOM_ALPN, Ticket, UNI_VIDEO, VideoPacket, WireProfile, join_proof, verify_proof,
 };
 use iroh::Endpoint;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -43,6 +43,10 @@ pub enum Command {
     /// A voice frame (already postcard-encoded `AudioDatagram`), sent to
     /// everyone as a datagram.
     Audio(bytes::Bytes),
+    /// Offer a file (already added to our store) to the room.
+    OfferFile(glance_proto::WireFile),
+    /// Tell the room we now have a file and can serve it.
+    HaveFile([u8; 32]),
     /// Where incoming voice datagrams go (bypasses the UI event channel).
     SetAudioSink(Option<flume::Sender<(EndpointId, glance_proto::AudioDatagram)>>),
 }
@@ -99,6 +103,19 @@ pub enum RoomEvent {
     },
     /// How many people are watching our stream.
     Watchers(usize),
+    /// Someone offered a file in chat.
+    FileOffered {
+        from: EndpointId,
+        sent_at: u64,
+        file: glance_proto::WireFile,
+    },
+    /// Chat and files from before we joined (oldest first).
+    History(Vec<HistoryItem>),
+    /// Another peer can now serve this file.
+    FileProvider {
+        from: EndpointId,
+        hash: [u8; 32],
+    },
     /// Our encoder should produce a keyframe soon (new or lagging viewer).
     KeyframeNeeded,
     /// The room actor stopped (after Leave).
@@ -155,6 +172,7 @@ pub(crate) enum Inbound {
         profile: WireProfile,
         state: MemberState,
         members: Vec<MemberInfo>,
+        history: Vec<HistoryItem>,
     },
     DialFailed {
         id: EndpointId,
@@ -207,6 +225,9 @@ struct Actor {
     chat_seq: u64,
     watchers: HashMap<EndpointId, Watcher>,
     audio_sink: AudioSink,
+    history: std::collections::VecDeque<HistoryItem>,
+    /// Only the first Welcome's history is used (others would duplicate it).
+    got_history: bool,
 }
 
 pub(crate) fn spawn(
@@ -235,6 +256,8 @@ pub(crate) fn spawn(
         chat_seq: 0,
         watchers: HashMap::new(),
         audio_sink: AudioSink::default(),
+        history: Default::default(),
+        got_history: false,
     };
     let fwd = inbound_tx.clone();
     tokio::spawn(async move {
@@ -318,8 +341,16 @@ impl Actor {
                 profile,
                 state,
                 members,
+                history,
             } => {
                 let id = conn.remote_id();
+                if !self.got_history {
+                    self.got_history = true;
+                    if !history.is_empty() {
+                        self.history.extend(history.iter().cloned());
+                        let _ = self.events.send(RoomEvent::History(history));
+                    }
+                }
                 self.dialing.remove(&id);
                 self.register(conn, send, recv, addr, profile, state, self.me, None);
                 for m in members {
@@ -380,6 +411,7 @@ impl Actor {
             profile: self.profile.clone(),
             state: self.state.clone(),
             members,
+            history: self.history.iter().cloned().collect(),
         };
         let mut addr = hello.addr.clone();
         addr.id = from;
@@ -477,6 +509,8 @@ impl Actor {
                     .send(RoomEvent::MemberProfile { id: from, profile });
             }
             Control::Chat { sent_at, text, .. } => {
+                let (name, color) = (peer.profile.name.clone(), peer.profile.color);
+                self.remember(from, name, color, sent_at, HistoryBody::Text(text.clone()));
                 let _ = self.events.send(RoomEvent::Chat {
                     from,
                     sent_at,
@@ -495,6 +529,18 @@ impl Actor {
                 }
                 self.remove_watcher(from);
                 let _ = self.events.send(RoomEvent::MemberLeft { id: from });
+            }
+            Control::File { sent_at, file } => {
+                let (name, color) = (peer.profile.name.clone(), peer.profile.color);
+                self.remember(from, name, color, sent_at, HistoryBody::File(file.clone()));
+                let _ = self.events.send(RoomEvent::FileOffered {
+                    from,
+                    sent_at,
+                    file,
+                });
+            }
+            Control::HaveFile(hash) => {
+                let _ = self.events.send(RoomEvent::FileProvider { from, hash });
             }
             Control::Watch => self.add_watcher(from),
             Control::Unwatch => self.remove_watcher(from),
@@ -525,6 +571,13 @@ impl Actor {
             Command::Unwatch(id) => self.send_to(id, Control::Unwatch),
             Command::RequestKeyframe(id) => self.send_to(id, Control::KeyframeRequest),
             Command::Video(pkt) => self.fan_out(pkt),
+            Command::OfferFile(file) => {
+                let sent_at = now_ms();
+                let (me, name, color) = (self.me, self.profile.name.clone(), self.profile.color);
+                self.remember(me, name, color, sent_at, HistoryBody::File(file.clone()));
+                self.broadcast(Control::File { sent_at, file });
+            }
+            Command::HaveFile(hash) => self.broadcast(Control::HaveFile(hash)),
             Command::Audio(bytes) => {
                 for p in self.peers.values() {
                     // Dropped if the path is congested; that's fine for voice.
@@ -538,9 +591,12 @@ impl Actor {
             }
             Command::Chat(text) => {
                 self.chat_seq += 1;
+                let sent_at = now_ms();
+                let (me, name, color) = (self.me, self.profile.name.clone(), self.profile.color);
+                self.remember(me, name, color, sent_at, HistoryBody::Text(text.clone()));
                 self.broadcast(Control::Chat {
                     id: self.chat_seq,
-                    sent_at: now_ms(),
+                    sent_at,
                     text,
                 });
             }
@@ -558,6 +614,26 @@ impl Actor {
             }
         }
         true
+    }
+
+    fn remember(
+        &mut self,
+        author: EndpointId,
+        author_name: String,
+        author_color: u32,
+        sent_at: u64,
+        body: HistoryBody,
+    ) {
+        self.history.push_back(HistoryItem {
+            author,
+            author_name,
+            author_color,
+            sent_at,
+            body,
+        });
+        while self.history.len() > HISTORY_LIMIT {
+            self.history.pop_front();
+        }
     }
 
     fn send_to(&self, id: EndpointId, msg: Control) {
@@ -631,7 +707,7 @@ impl Actor {
         };
         tokio::spawn(async move {
             match dial_and_hello(&endpoint, addr.clone(), hello).await {
-                Ok((conn, send, recv, profile, state, members)) => {
+                Ok((conn, send, recv, profile, state, members, history)) => {
                     let _ = inbound.send(Inbound::Welcomed {
                         conn,
                         send,
@@ -640,6 +716,7 @@ impl Actor {
                         profile,
                         state,
                         members,
+                        history,
                     });
                 }
                 Err(e) => {
@@ -684,6 +761,7 @@ type Dialed = (
     WireProfile,
     MemberState,
     Vec<MemberInfo>,
+    Vec<HistoryItem>,
 );
 
 async fn dial_and_hello(endpoint: &Endpoint, addr: EndpointAddr, hello: Hello) -> Result<Dialed> {
@@ -701,7 +779,8 @@ async fn dial_and_hello(endpoint: &Endpoint, addr: EndpointAddr, hello: Hello) -
             profile,
             state,
             members,
-        } => Ok((conn, send, recv, profile, state, members)),
+            history,
+        } => Ok((conn, send, recv, profile, state, members, history)),
         Control::Rejected => bail!("the room rejected this link"),
         other => bail!("unexpected reply {other:?}"),
     }

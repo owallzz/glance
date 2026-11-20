@@ -12,7 +12,14 @@ use crate::net::Net;
 
 /// `stream`: share a test pattern of this size and frame rate.
 /// `tone`: speak a sine tone so others see/hear us talking.
-pub fn run(link: &str, name: &str, stream: Option<(u32, u32, u32)>, tone: bool) -> Result<()> {
+/// `file`: offer this file to the room after joining.
+pub fn run(
+    link: &str,
+    name: &str,
+    stream: Option<(u32, u32, u32)>,
+    tone: bool,
+    file: Option<std::path::PathBuf>,
+) -> Result<()> {
     let ticket = Ticket::parse(link).context("parse room link")?;
     // A fresh identity each run, so a bot never collides with your app.
     let net = Net::start_ephemeral()?;
@@ -97,6 +104,43 @@ pub fn run(link: &str, name: &str, stream: Option<(u32, u32, u32)>, tone: bool) 
             ));
         }
     });
+    if let Some(path) = file {
+        // Wait until we're connected to someone, or the offer reaches no one.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut early = Vec::new();
+        while std::time::Instant::now() < deadline {
+            match room.events.recv_timeout(Duration::from_millis(200)) {
+                Ok(ev) => {
+                    let joined = matches!(ev, RoomEvent::MemberJoined { .. });
+                    early.push(ev);
+                    if joined {
+                        break;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        for ev in early {
+            println!("{ev:?}");
+        }
+        let (hash, size) = net.block_on(net.add_file(path.clone()))?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mime = mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string();
+        room.send(Command::OfferFile(glance_proto::WireFile {
+            hash,
+            name,
+            size,
+            mime,
+        }));
+        println!("offered {} ({size} bytes)", path.display());
+    }
+    // Bots fetch every file offered to them (into a temp dir) and say so.
+    let dl_dir = std::env::temp_dir().join(format!("glance-bot-{}", std::process::id()));
     let mut heard: Vec<[u8; 32]> = Vec::new();
     let names = std::cell::RefCell::new(std::collections::HashMap::new());
     let mut muted = false;
@@ -115,6 +159,36 @@ pub fn run(link: &str, name: &str, stream: Option<(u32, u32, u32)>, tone: bool) 
                         room.send(Command::Chat(format!("echo: {text} (from {who})")));
                     }
                     RoomEvent::Closed => std::process::exit(0),
+                    RoomEvent::FileOffered { from, file, .. } => {
+                        let (tx, rx) = flume::unbounded();
+                        let dest = glance_net::files::unique_path(&dl_dir, &file.name);
+                        let _ = std::fs::create_dir_all(&dl_dir);
+                        net.download_file(file.hash, vec![*from], dest.clone(), tx);
+                        let name = file.name.clone();
+                        let cmd = room.commander();
+                        let hash = file.hash;
+                        std::thread::spawn(move || {
+                            while let Ok(p) = rx.recv() {
+                                match p {
+                                    glance_net::files::Progress::Done => {
+                                        let len =
+                                            std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                                        println!("downloaded {name} ({len} bytes)");
+                                        let _ = cmd.send(Command::HaveFile(hash));
+                                        let _ = cmd.send(Command::Chat(format!(
+                                            "got {name} ({len} bytes)"
+                                        )));
+                                        break;
+                                    }
+                                    glance_net::files::Progress::Failed(e) => {
+                                        println!("download of {name} failed: {e}");
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        });
+                    }
                     RoomEvent::Watchers(n) => {
                         if let Some(b) = &broadcast {
                             b.watchers.store(*n, std::sync::atomic::Ordering::Relaxed);

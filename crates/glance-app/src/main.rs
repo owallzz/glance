@@ -2,6 +2,7 @@
 
 mod app;
 mod bot;
+mod files;
 mod home;
 mod net;
 mod overlays;
@@ -28,7 +29,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
-            eprintln!("usage: glance bot <link> [name] [--stream WxH@FPS] [--tone]");
+            eprintln!("usage: glance bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH]");
             std::process::exit(2);
         };
         let name = args
@@ -47,7 +48,12 @@ fn main() {
                 .unwrap_or((1280, 720, 30))
         });
         let tone = args.iter().any(|a| a == "--tone");
-        if let Err(e) = bot::run(link, name, stream, tone) {
+        let file = args
+            .iter()
+            .position(|a| a == "--file")
+            .and_then(|i| args.get(i + 1))
+            .map(std::path::PathBuf::from);
+        if let Err(e) = bot::run(link, name, stream, tone, file) {
             eprintln!("glance bot: {e:#}");
             std::process::exit(1);
         }
