@@ -1,0 +1,37 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: [self-hosted, Linux, X64]
+    # The runner has no C compiler/linker, so Rust builds run in a container.
+    container: fedora:44
+    timeout-minutes: 45
+    steps:
+      - run: dnf install -y --setopt=install_weak_deps=False gcc gcc-c++ git curl pkgconf-pkg-config fontconfig-devel freetype-devel libxkbcommon-devel libxkbcommon-x11-devel libxcb-devel wayland-devel vulkan-loader-devel openssl-devel
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      # Container jobs run as root; hand the workspace back to the runner user so later jobs can clean it.
+      - name: Fix workspace ownership
+        if: always()
+        run: chown -R "$(stat -c %u:%g "$GITHUB_WORKSPACE/..")" "$GITHUB_WORKSPACE"

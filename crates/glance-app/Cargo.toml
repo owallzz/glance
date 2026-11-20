@@ -1,0 +1,16 @@
+[package]
+name = "glance-app"
+description = "Peer-to-peer screen sharing rooms"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "glance"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+anyhow.workspace = true
+serde_json = "1"

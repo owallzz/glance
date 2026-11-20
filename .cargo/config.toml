@@ -1,0 +1,4 @@
+[target.x86_64-unknown-linux-gnu]
+# `native/lib` is created by scripts/setup-native-libs.sh (only needed on
+# immutable Fedora hosts without -devel packages). Harmless if missing.
+rustflags = ["-Lnative/lib"]
