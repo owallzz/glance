@@ -62,3 +62,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --release --locked -p glance-app
+      - name: macOS app bundle builds
+        if: runner.os == 'macOS'
+        shell: bash
+        run: scripts/package-macos.sh target/release/glance 0.0.0 bundle

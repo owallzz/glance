@@ -30,6 +30,7 @@ serde = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = "0.1"
 bytes = "1"
+png = "0.18"
 auto-launch = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]

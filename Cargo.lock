@@ -2993,6 +2993,7 @@ dependencies = [
  "ksni",
  "mime_guess",
  "notify-rust",
+ "png 0.18.1",
  "rand 0.9.5",
  "serde",
  "serde_json",

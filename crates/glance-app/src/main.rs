@@ -33,6 +33,16 @@ fn main() {
         )
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--export-icons") {
+        let dir = args
+            .get(1)
+            .map_or_else(|| "icons".into(), std::path::PathBuf::from);
+        if let Err(e) = tray::export_icons(&dir) {
+            eprintln!("glance: exporting icons failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
             eprintln!(

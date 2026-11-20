@@ -80,6 +80,12 @@ jobs:
           bin=target/release/glance
           [ "${{ matrix.name }}" = "Windows" ] && bin=target/release/glance.exe
           cp "$bin" "dist/glance-${GITHUB_REF_NAME}-${{ matrix.asset }}"
+      - name: macOS app bundle (.dmg)
+        if: matrix.name == 'macOS'
+        run: |
+          # The .app holds the permission prompts and glance:// handler.
+          scripts/package-macos.sh target/release/glance "${GITHUB_REF_NAME#v}" bundle
+          mv bundle/glance.dmg "dist/glance-${GITHUB_REF_NAME}-macos-aarch64.dmg"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.name }}

@@ -38,6 +38,15 @@ fn register_for(exe: &std::path::Path) -> anyhow::Result<()> {
     }
     std::fs::create_dir_all(&apps)?;
     std::fs::write(&path, entry)?;
+    // The icon the desktop entry (and the window, via its app id) uses.
+    if let Some(icons) = dirs::data_dir().map(|d| d.join("icons/hicolor")) {
+        for size in [64u32, 128, 256, 512] {
+            let dir = icons.join(format!("{size}x{size}/apps"));
+            if std::fs::create_dir_all(&dir).is_ok() {
+                let _ = std::fs::write(dir.join("glance.png"), crate::tray::icon_png(size));
+            }
+        }
+    }
     let _ = std::process::Command::new("xdg-mime")
         .args(["default", "glance.desktop", "x-scheme-handler/glance"])
         .status();

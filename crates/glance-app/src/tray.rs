@@ -56,6 +56,30 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
     out
 }
 
+/// The app icon as a PNG file.
+pub fn icon_png(size: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, size, size);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let written = enc
+        .write_header()
+        .and_then(|mut w| w.write_image_data(&icon_rgba(size)));
+    if written.is_err() {
+        out.clear();
+    }
+    out
+}
+
+/// `glance --export-icons <dir>`: icon_<size>.png for packaging.
+pub fn export_icons(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for size in [16, 32, 64, 128, 256, 512, 1024] {
+        std::fs::write(dir.join(format!("icon_{size}.png")), icon_png(size))?;
+    }
+    Ok(())
+}
+
 /// A running tray icon; dropping it removes the icon.
 pub struct Tray {
     #[cfg(target_os = "linux")]
@@ -252,6 +276,16 @@ pub fn sync_autostart(enabled: bool) {
 #[cfg(test)]
 mod tests {
     use super::icon_rgba;
+
+    #[test]
+    fn icon_png_is_a_png() {
+        let png = super::icon_png(64);
+        assert_eq!(&png[1..4], b"PNG");
+        let dir = std::env::temp_dir().join(format!("glance-icons-{}", std::process::id()));
+        super::export_icons(&dir).unwrap();
+        assert!(dir.join("icon_1024.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn icon_has_transparent_corners_and_white_glyph() {
