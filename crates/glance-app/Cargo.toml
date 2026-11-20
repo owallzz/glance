@@ -17,3 +17,4 @@ serde_json = "1"
 image = { version = "0.25", default-features = false }
 flume = "0.11"
 glance-media.workspace = true
+glance-core.workspace = true

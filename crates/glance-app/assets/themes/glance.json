@@ -73,7 +73,22 @@
         "title_bar.border": "#1e1f22",
         "warning.background": "#f0b232",
         "warning.foreground": "#000000",
-        "window.border": "#1e1f22"
+        "window.border": "#1e1f22",
+        "button.success.background": "#248046",
+        "button.success.hover.background": "#1a6334",
+        "button.success.active.background": "#15562b",
+        "button.success.foreground": "#ffffff",
+        "button.danger.background": "#da373c",
+        "button.danger.hover.background": "#a12828",
+        "button.danger.active.background": "#8f2022",
+        "button.danger.foreground": "#ffffff",
+        "button.primary.background": "#5865f2",
+        "button.primary.hover.background": "#4752c4",
+        "button.primary.active.background": "#3c45a5",
+        "button.primary.foreground": "#ffffff",
+        "button.secondary.background": "#4e5058",
+        "button.secondary.hover.background": "#6d6f78",
+        "button.secondary.foreground": "#ffffff"
       }
     },
     {
@@ -147,7 +162,22 @@
         "title_bar.border": "#e3e5e8",
         "warning.background": "#f0b232",
         "warning.foreground": "#000000",
-        "window.border": "#e3e5e8"
+        "window.border": "#e3e5e8",
+        "button.success.background": "#248046",
+        "button.success.hover.background": "#1a6334",
+        "button.success.active.background": "#15562b",
+        "button.success.foreground": "#ffffff",
+        "button.danger.background": "#da373c",
+        "button.danger.hover.background": "#a12828",
+        "button.danger.active.background": "#8f2022",
+        "button.danger.foreground": "#ffffff",
+        "button.primary.background": "#5865f2",
+        "button.primary.hover.background": "#4752c4",
+        "button.primary.active.background": "#3c45a5",
+        "button.primary.foreground": "#ffffff",
+        "button.secondary.background": "#6d6f78",
+        "button.secondary.hover.background": "#4e5058",
+        "button.secondary.foreground": "#ffffff"
       }
     }
   ]

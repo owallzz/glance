@@ -1,8 +1,12 @@
 //! glance: peer-to-peer screen sharing rooms.
 
+mod app;
 mod home;
+mod overlays;
+mod room;
 mod spike;
 mod theme;
+mod ui;
 mod video;
 
 use gpui_kit::component::theme::ThemeMode;
@@ -19,6 +23,7 @@ fn main() {
 
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.bind_keys([KeyBinding::new("ctrl-q", Quit, None)]);
+            app::bind_keys(cx);
 
             let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
             let options = WindowOptions {
@@ -40,8 +45,11 @@ fn main() {
                 })
                 .expect("failed to open window");
             } else {
-                gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| home::Home))
-                    .expect("failed to open window");
+                let demo = args.iter().any(|a| a == "--demo");
+                gpui_kit::open_window(options, cx, |window, cx| {
+                    cx.new(|cx| app::GlanceApp::new(demo, window, cx))
+                })
+                .expect("failed to open window");
             }
             cx.activate(true);
         });

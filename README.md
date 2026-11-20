@@ -9,7 +9,8 @@ Peer-to-peer screen sharing rooms with a familiar, Discord-style interface. Star
 Requirements: a recent stable Rust toolchain, plus the gpui system libraries on Linux (`fontconfig`, `freetype`, `libxkbcommon`, `libxcb`, `wayland` development packages).
 
 ```sh
-cargo run -p glance-app          # launches the `glance` binary
+cargo run -p glance-app               # launches the `glance` binary
+cargo run -p glance-app -- --demo     # start in a fake room (UI preview)
 ```
 
 On an immutable Fedora host (Silverblue, Bazzite, ...) without `-devel` packages, source the helper first. It needs Homebrew's `fontconfig` for the pkg-config files:
