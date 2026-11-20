@@ -1,8 +1,8 @@
-//! Software encode speed: `cargo run --release -p glance-media --example
-//! encode_bench -- [WxH] [frames]`. Encodes a scrolling, busy pattern (like
+//! Encode speed: `cargo run --release -p glance-media --example
+//! encode_bench -- [WxH] [frames] [--sw|--hw] [--pattern]`. Encodes a scrolling, busy pattern (like
 //! scrolling a web page) and prints the average time per frame.
 use glance_media::VideoFrame;
-use glance_media::codec::{VideoEncoder, bitrate_for};
+use glance_media::codec::{EncoderChoice, VideoEncoder, bitrate_for};
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -12,7 +12,15 @@ fn main() -> anyhow::Result<()> {
         .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
         .unwrap_or((2560u32, 1440u32));
     let frames: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(120);
-    let mut enc = VideoEncoder::new(w, h, 60, bitrate_for(w, h, 60))?;
+    let choice = if args.iter().any(|a| a == "--sw") {
+        EncoderChoice::Software
+    } else if args.iter().any(|a| a == "--hw") {
+        EncoderChoice::Hardware
+    } else {
+        EncoderChoice::Auto
+    };
+    let mut enc = VideoEncoder::with_choice(w, h, 60, bitrate_for(w, h, 60), choice)?;
+    println!("encoder: {}", enc.backend_name());
     // A text-like texture that scrolls 8 px per frame.
     let tex: Vec<u8> = (0..(w * (h + 1024)) as usize)
         .map(|i| {
@@ -59,6 +67,7 @@ fn main() -> anyhow::Result<()> {
     for p in &packets {
         let _ = dec.decode(p, (1920, 1080))?;
     }
+    let scaled = t.elapsed();
     let mut raw = openh264::decoder::Decoder::new()?;
     let (mut t_dec, mut t_rgb) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
     let mut rgba = Vec::new();
@@ -83,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     );
     println!(
         "  decode+scale to 1080p tile: {:.1} ms/frame",
-        t.elapsed().as_secs_f64() * 1000.0 / packets.len().max(1) as f64
+        scaled.as_secs_f64() * 1000.0 / packets.len().max(1) as f64
     );
     println!(
         "{w}x{h}: {ms:.1} ms/frame ({:.0} fps max), {:.1} Mbps at 60 fps",

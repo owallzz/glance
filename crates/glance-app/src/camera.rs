@@ -62,6 +62,7 @@ impl GlanceApp {
             BroadcastConfig {
                 max_height: Some(h),
                 fps: CAMERA_FPS,
+                encoder: glance_media::codec::EncoderChoice::Auto,
             },
             Some((preview_tx, preview_target.clone())),
             move |pkt| {

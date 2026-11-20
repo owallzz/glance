@@ -6,7 +6,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-fast_image_resize = "6"
+fast_image_resize = { version = "6", features = ["rayon"] }
 flume = "0.11"
 openh264 = "0.9"
 openh264-sys2 = "=0.9.10"
@@ -16,6 +16,8 @@ nnnoiseless = { version = "0.5", default-features = false }
 aec-rs = "1"
 rtrb = "0.3"
 nokhwa = { version = "0.10", features = ["input-native"] }
+libloading = "0.8"
+rayon = "1"
 anyhow.workspace = true
 tracing = "0.1"
 

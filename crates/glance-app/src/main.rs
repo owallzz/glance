@@ -48,7 +48,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
             eprintln!(
-                "usage: glance bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]"
+                "usage: glance bot <link|new> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]"
             );
             std::process::exit(2);
         };
@@ -97,6 +97,15 @@ fn main() {
         scheme::register();
     }
 
+    // Look for a GPU encoder in the background (loading the driver takes a
+    // moment); settings and Go Live read the answer once it's in.
+    std::thread::Builder::new()
+        .name("encoder-probe".into())
+        .spawn(|| {
+            let found = glance_media::codec::hardware_encoder();
+            tracing::info!("hardware encoder: {}", found.unwrap_or("none"));
+        })
+        .ok();
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     // macOS delivers clicked links as open-URL events, not arguments.
     let url_tx = instance_tx.clone();

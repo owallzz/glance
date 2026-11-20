@@ -11,7 +11,7 @@ Peer-to-peer screen sharing rooms with a familiar, Discord-style interface. Star
 - **Contacts:** add people you've called, see when they're online or in a call, ring them, send them files outside calls. glance waits in the tray and starts on login.
 - **Settings:** devices, light/dark theme, a custom relay server, start on login.
 
-See [PLAN.md](PLAN.md) for the roadmap. Not done yet: hardware video encoders (needed for 4K60) and signed installers.
+See [PLAN.md](PLAN.md) for the roadmap. Not done yet: hardware encoders other than NVIDIA NVENC (AMD/Intel GPUs encode in software) and signed installers.
 
 ## Install
 

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::capture::Capture;
-use crate::codec::{EncodedPacket, VideoDecoder, VideoEncoder, bitrate_for};
+use crate::codec::{EncodedPacket, EncoderChoice, VideoDecoder, VideoEncoder, bitrate_for};
 use crate::frame::{FrameScaler, TargetSize, VideoFrame, fit_within};
 
 /// Size to encode a `src`-sized capture at: scaled to `max_height` (if set),
@@ -100,6 +100,8 @@ pub struct BroadcastControl {
     pub congestion: Arc<AtomicUsize>,
     /// Current target bitrate (for the stats overlay).
     pub bitrate: Arc<AtomicU64>,
+    /// Whether the current encoder is a hardware one.
+    pub hardware: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 }
 
@@ -117,6 +119,7 @@ impl BroadcastControl {
 pub struct BroadcastConfig {
     pub max_height: Option<u32>,
     pub fps: u32,
+    pub encoder: EncoderChoice,
 }
 
 /// Run a broadcast on its own thread. `sink` gets every encoded packet;
@@ -144,6 +147,7 @@ pub fn start_broadcast(
             let mut last: Option<VideoFrame> = None;
             let mut last_sent = std::time::Instant::now();
             let mut stats = Stats::default();
+            let mut choice = config.encoder;
             let reason = loop {
                 if ctl.stop.load(Ordering::Relaxed) {
                     break "stopped".to_string();
@@ -186,8 +190,15 @@ pub fn start_broadcast(
                 let out = output_size((frame.width, frame.height), config.max_height);
                 if encoder.as_ref().is_none_or(|e| e.size() != out) {
                     let base = bitrate_for(out.0, out.1, config.fps);
-                    match VideoEncoder::new(out.0, out.1, config.fps, base) {
+                    match VideoEncoder::with_choice(out.0, out.1, config.fps, base, choice) {
                         Ok(e) => {
+                            tracing::info!(
+                                "encoding {}x{} with {}",
+                                out.0,
+                                out.1,
+                                e.backend_name()
+                            );
+                            ctl.hardware.store(e.is_hardware(), Ordering::Relaxed);
                             encoder = Some(e);
                             rate = Some(RateController::new(base));
                             ctl.bitrate.store(base as u64, Ordering::Relaxed);
@@ -241,6 +252,14 @@ pub fn start_broadcast(
                         sink(pkt)
                     }
                     Ok(None) => {}
+                    // A GPU encoder can fail mid-stream (driver reset, too
+                    // many sessions): carry on in software.
+                    Err(e) if enc.is_hardware() => {
+                        tracing::warn!("hardware encoding failed, switching to software: {e:#}");
+                        choice = EncoderChoice::Software;
+                        encoder = None;
+                        ctl.keyframe.store(true, Ordering::Relaxed);
+                    }
                     Err(e) => break format!("video encoding failed: {e:#}"),
                 }
             };

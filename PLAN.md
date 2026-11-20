@@ -176,7 +176,13 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - Opus at 64 kbps (music mode), sent as datagrams only to people watching the screen; receivers mix it as a separate source with its own volume.
 - [x] **M8: Webcam.** Camera tiles via nokhwa, sharing the video pipeline.
 - [ ] **M9: macOS + Windows backends.** Done so far: macOS .app bundle + .dmg in releases (usage strings, URL scheme, icon; ad-hoc signed), single instance with link hand-off, `glance://` registration on Linux/Windows, macOS open-URL events. SCK/WGC capture plus audio, VideoToolbox/Media Foundation encode/decode, URL scheme registration, permissions prompts.
-- [ ] **M10: Hardware codecs on Linux + quality presets.** Done so far: OpenH264 now encodes in parallel slices (our own wrapper; the crate forced one slice), so 1440p60 streams at a full 60 fps (11 ms/frame) and 4K reaches ~40 fps; viewers scale Y/U/V planes to the tile before converting (4K into a 1080p tile ~17 ms). Streams are capped at 3840x2160 (what OpenH264 takes), so 5120x1440 goes out as 3840x1080. Remaining: hardware encoders for 4K60. VA-API/NVENC encode/decode with openh264 fallback, up to 4K60/ultrawide/Source, plus a fused I420→BGRA scale+convert at tile size on the decode side.
+- [ ] **M10: Hardware codecs on Linux + quality presets.**
+  - OpenH264 encodes in parallel slices (our own wrapper; the crate forced one slice): 1440p60 at a full 60 fps in software, 4K about 40 fps.
+  - **NVENC** (Linux + Windows, `hw/nvenc.rs`): the driver is loaded at run time through vendored NVENC 12.0 bindings, with a CUDA context. BGRA goes in (the GPU converts it) and Constrained Baseline comes out, so viewers keep decoding with OpenH264. Measured on a recent NVIDIA RTX card: 4K in 11.6 ms per frame, and a 4K60 stream decoded at 60 fps between two local peers.
+  - If the GPU encoder fails mid-stream, glance falls back to software. There's a Settings → Streaming toggle, and the Go Live warning only shows without a GPU encoder.
+  - Viewers scale the Y/U/V planes to the tile and convert to BGRA in parallel (rayon): 4K into a 1080p tile takes about 13 ms (OpenH264 decode is about 9.5 ms of that).
+  - Streams are capped at 3840x2160, so 5120x1440 goes out as 3840x1080.
+  - Remaining: VA-API (AMD/Intel on Linux), Media Foundation (AMD/Intel on Windows), and hardware decode.
 - [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.
 
 ## 5. Running and testing
@@ -197,7 +203,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - **Video in gpui:** if per-frame `RenderImage` swaps are too slow, write a custom element with a persistent GPU texture. M1 exists to find this out early.
 - **Wayland portal quirks** vary by compositor (GNOME/KDE/Hyprland). Test on the local desktop first.
 - **Fullscreen 4K upload:** gpui on Linux/Windows has no external-texture surface, so a full-size 4K frame is a new atlas texture plus three copies. Fallback: a small `[patch.crates-io]` fork of `gpui-pre-wgpu` adding a persistent video texture with YUV planes and shader conversion.
-- **4K needs hardware encode:** sharers without a usable GPU encoder are capped at 1080p (openh264). This shows in the Go Live picker.
+- **4K60 needs hardware encode:** without a supported GPU encoder (NVENC; VideoToolbox on macOS), 4K tops out around 40 fps in software. The Go Live picker warns about this.
 - **Open (file sharing):** auto-preview limit (25 MB) and default save folder are guesses, so say if you want them different. Folder sharing is planned as a zipped/collection blob, and per-file approval for big files from non-contacts is still to decide.
 - **Mesh bandwidth** caps practical room size for high-quality shares. Document it and warn in the UI. An optional SFU is a later project.
 - **Contacts depend on both apps running** (tray + autostart) and on n0's discovery service. If discovery is down, contacts on another network can't be rung, but a pasted link still works.

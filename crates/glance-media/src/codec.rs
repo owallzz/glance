@@ -1,7 +1,8 @@
-//! H.264 encode/decode with OpenH264 (software, every platform).
+//! H.264 encode/decode. Encoding uses a hardware encoder when there is one
+//! (see [`crate::hw`]) and OpenH264 otherwise; decoding is OpenH264.
 //!
-//! The encoder is tuned for screen content in real time and splits big
-//! pictures into slices so several cores share the work.
+//! The software encoder is tuned for screen content in real time and splits
+//! big pictures into slices so several cores share the work.
 
 use std::time::Instant;
 
@@ -34,24 +35,192 @@ pub fn bitrate_for(width: u32, height: u32, fps: u32) -> u32 {
 /// The largest picture OpenH264 encodes (H.264 level 5.2), either way up.
 pub const MAX_ENCODE: (u32, u32) = (3840, 2160);
 
+/// The encoder a broadcast uses: a hardware encoder when the machine has
+/// one glance supports (NVENC today), otherwise OpenH264.
 pub struct VideoEncoder {
-    raw: RawEncoder,
+    backend: Backend,
     width: u32,
     height: u32,
-    yuv: YUVBuffer,
     start: Instant,
+    keyframe: bool,
+}
+
+enum Backend {
+    Software(Box<SoftwareEncoder>),
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    Nvenc(crate::hw::nvenc::NvencEncoder),
+}
+
+/// Which encoders [`VideoEncoder::with_choice`] may use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EncoderChoice {
+    /// Hardware if available, else software.
+    #[default]
+    Auto,
+    Software,
+    /// Hardware or fail (tests and benchmarks).
+    Hardware,
+}
+
+impl EncoderChoice {
+    /// `GLANCE_ENCODER=software|hardware` overrides `Auto` (testing aid).
+    fn resolved(self) -> Self {
+        match (self, std::env::var("GLANCE_ENCODER").as_deref()) {
+            (Self::Auto, Ok("software")) => Self::Software,
+            (Self::Auto, Ok("hardware")) => Self::Hardware,
+            (c, _) => c,
+        }
+    }
+}
+
+static HARDWARE: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+
+/// The hardware encoder this machine has, if any. The first call probes it
+/// (opening a GPU session takes a moment), so call it off the UI thread.
+pub fn hardware_encoder() -> Option<&'static str> {
+    *HARDWARE.get_or_init(|| {
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if crate::hw::nvenc::available() {
+            return Some("NVIDIA NVENC");
+        }
+        None
+    })
+}
+
+/// [`hardware_encoder`]'s answer if it has been probed already.
+pub fn hardware_encoder_known() -> Option<Option<&'static str>> {
+    HARDWARE.get().copied()
 }
 
 impl VideoEncoder {
     /// `width` and `height` must be even and within [`MAX_ENCODE`].
     pub fn new(width: u32, height: u32, fps: u32, bitrate_bps: u32) -> Result<Self> {
+        Self::with_choice(width, height, fps, bitrate_bps, EncoderChoice::Auto)
+    }
+
+    pub fn with_choice(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_bps: u32,
+        choice: EncoderChoice,
+    ) -> Result<Self> {
         if width == 0 || height == 0 || width % 2 == 1 || height % 2 == 1 {
             bail!("encoder size must be even and non-zero, got {width}x{height}");
         }
         let (long, short) = (width.max(height), width.min(height));
         if long > MAX_ENCODE.0 || short > MAX_ENCODE.1 {
-            bail!("{width}x{height} is larger than software encoding supports (3840x2160)");
+            bail!("{width}x{height} is larger than H.264 encoding supports (3840x2160)");
         }
+        let choice = choice.resolved();
+        let mut hw_error = None;
+        if choice != EncoderChoice::Software {
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            match crate::hw::nvenc::NvencEncoder::new(width, height, fps, bitrate_bps) {
+                Ok(e) => return Ok(Self::wrap(Backend::Nvenc(e), width, height)),
+                Err(e) => hw_error = Some(e),
+            }
+            if choice == EncoderChoice::Hardware {
+                return Err(hw_error.unwrap_or_else(|| anyhow::anyhow!("no hardware encoder")));
+            }
+        }
+        if let Some(e) = hw_error {
+            tracing::debug!("hardware encoder unavailable, using OpenH264: {e:#}");
+        }
+        let sw = SoftwareEncoder::new(width, height, fps, bitrate_bps)?;
+        Ok(Self::wrap(Backend::Software(Box::new(sw)), width, height))
+    }
+
+    fn wrap(backend: Backend, width: u32, height: u32) -> Self {
+        Self {
+            backend,
+            width,
+            height,
+            start: Instant::now(),
+            keyframe: false,
+        }
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// A human-readable name for the stats overlay.
+    pub fn backend_name(&self) -> &'static str {
+        match &self.backend {
+            Backend::Software(_) => "OpenH264 (software)",
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            Backend::Nvenc(_) => "NVIDIA NVENC",
+        }
+    }
+
+    pub fn is_hardware(&self) -> bool {
+        !matches!(self.backend, Backend::Software(_))
+    }
+
+    /// Change the target bitrate on the fly (no new keyframe).
+    pub fn set_bitrate(&mut self, bps: u32) {
+        match &mut self.backend {
+            Backend::Software(e) => e.set_bitrate(bps),
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            Backend::Nvenc(e) => {
+                if let Err(e) = e.set_bitrate(bps) {
+                    tracing::warn!("{e:#}");
+                }
+            }
+        }
+    }
+
+    /// Ask for the next frame to be a keyframe (new viewer, packet loss).
+    pub fn force_keyframe(&mut self) {
+        match &mut self.backend {
+            Backend::Software(e) => e.raw.force_intra_frame(),
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            Backend::Nvenc(_) => self.keyframe = true,
+        }
+    }
+
+    /// Encode a frame of exactly the encoder's size. Returns `None` when the
+    /// rate controller skipped the frame.
+    pub fn encode(&mut self, frame: &VideoFrame) -> Result<Option<EncodedPacket>> {
+        if (frame.width, frame.height) != (self.width, self.height) || !frame.is_valid() {
+            bail!(
+                "frame is {}x{}, encoder expects {}x{}",
+                frame.width,
+                frame.height,
+                self.width,
+                self.height
+            );
+        }
+        let ts_us = self.start.elapsed().as_micros() as u64;
+        let out = match &mut self.backend {
+            Backend::Software(e) => e.encode(frame, ts_us)?,
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            Backend::Nvenc(e) => {
+                let key = std::mem::take(&mut self.keyframe);
+                Some(e.encode(&frame.bgra, ts_us, key)?)
+            }
+        };
+        Ok(out.map(|(keyframe, data)| EncodedPacket {
+            keyframe,
+            ts_us,
+            width: self.width,
+            height: self.height,
+            data,
+        }))
+    }
+}
+
+/// OpenH264, converting BGRA to I420 on the CPU first.
+struct SoftwareEncoder {
+    raw: RawEncoder,
+    yuv: YUVBuffer,
+    width: u32,
+    height: u32,
+}
+
+impl SoftwareEncoder {
+    fn new(width: u32, height: u32, fps: u32, bitrate_bps: u32) -> Result<Self> {
         // OpenH264 encodes slices in parallel (at most 4 threads). Measured
         // on a 24-thread desktop: 1440p 21 -> 9 ms/frame, 4K 45 -> 22 ms.
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -69,19 +238,13 @@ impl VideoEncoder {
         let raw = RawEncoder::new(width, height, fps, bitrate_bps, threads)?;
         Ok(Self {
             raw,
+            yuv: YUVBuffer::new(width as usize, height as usize),
             width,
             height,
-            yuv: YUVBuffer::new(width as usize, height as usize),
-            start: Instant::now(),
         })
     }
 
-    pub fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    /// Change the target bitrate on the fly (no new keyframe).
-    pub fn set_bitrate(&mut self, bps: u32) {
+    fn set_bitrate(&mut self, bps: u32) {
         let mut info = openh264_sys2::SBitrateInfo {
             iLayer: openh264_sys2::SPATIAL_LAYER_ALL,
             iBitrate: bps.min(i32::MAX as u32) as i32,
@@ -92,36 +255,10 @@ impl VideoEncoder {
         );
     }
 
-    /// Ask for the next frame to be a keyframe (new viewer, packet loss).
-    pub fn force_keyframe(&mut self) {
-        self.raw.force_intra_frame();
-    }
-
-    /// Encode a frame of exactly the encoder's size. Returns `None` when the
-    /// rate controller skipped the frame.
-    pub fn encode(&mut self, frame: &VideoFrame) -> Result<Option<EncodedPacket>> {
-        if (frame.width, frame.height) != (self.width, self.height) {
-            bail!(
-                "frame is {}x{}, encoder expects {}x{}",
-                frame.width,
-                frame.height,
-                self.width,
-                self.height
-            );
-        }
+    fn encode(&mut self, frame: &VideoFrame, ts_us: u64) -> Result<Option<(bool, Vec<u8>)>> {
         let bgra = BgraSliceU8::new(&frame.bgra, (self.width as usize, self.height as usize));
         self.yuv.read_bgra8(bgra);
-        let ts_us = self.start.elapsed().as_micros() as u64;
-        let Some((keyframe, data)) = self.raw.encode(&self.yuv, ts_us / 1000)? else {
-            return Ok(None);
-        };
-        Ok(Some(EncodedPacket {
-            keyframe,
-            ts_us,
-            width: self.width,
-            height: self.height,
-            data,
-        }))
+        self.raw.encode(&self.yuv, ts_us / 1000)
     }
 }
 
@@ -339,28 +476,39 @@ impl VideoDecoder {
         };
         // Even sizes, and a width the SIMD converter likes (multiple of 8).
         let out = ((out.0 & !7).max(8), (out.1 & !1).max(2));
-        let mut rgba;
-        let (ow, oh) = if out.0 as usize >= w || out.1 as usize >= h {
-            rgba = vec![0u8; w * h * 4];
-            yuv.write_rgba8(&mut rgba);
-            (w as u32, h as u32)
-        } else {
-            let (y, u, v) = self.planes.scale(&yuv, out)?;
-            let mut bgra = vec![0u8; out.0 as usize * out.1 as usize * 4];
-            i420_to_bgra(y, u, v, (out.0 as usize, out.1 as usize), &mut bgra);
+        if out.0 as usize >= w || out.1 as usize >= h {
+            // Full size: convert straight from the decoder's planes.
+            let (sy, su, sv) = yuv.strides();
+            let mut bgra = vec![0u8; w * h * 4];
+            i420_to_bgra(
+                Planes {
+                    y: (yuv.y(), sy),
+                    u: (yuv.u(), su),
+                    v: (yuv.v(), sv),
+                },
+                (w & !1, h & !1),
+                w,
+                &mut bgra,
+            );
             return Ok(Some(VideoFrame {
-                width: out.0,
-                height: out.1,
+                width: w as u32,
+                height: h as u32,
                 bgra,
             }));
-        };
-        for px in rgba.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
         }
+        let (ow, oh) = (out.0 as usize, out.1 as usize);
+        let (y, u, v) = self.planes.scale(&yuv, out)?;
+        let mut bgra = vec![0u8; ow * oh * 4];
+        let planes = Planes {
+            y: (y, ow),
+            u: (u, ow / 2),
+            v: (v, ow / 2),
+        };
+        i420_to_bgra(planes, (ow, oh), ow, &mut bgra);
         Ok(Some(VideoFrame {
-            width: ow,
-            height: oh,
-            bgra: rgba,
+            width: out.0,
+            height: out.1,
+            bgra,
         }))
     }
 }
@@ -415,30 +563,48 @@ impl PlaneScaler {
     }
 }
 
-/// Limited-range BT.601 I420 (tightly packed) to BGRA, the same maths as
-/// OpenH264's converter in 8.8 fixed point.
-fn i420_to_bgra(y: &[u8], u: &[u8], v: &[u8], (w, h): (usize, usize), out: &mut [u8]) {
+/// I420 planes with their row strides.
+struct Planes<'a> {
+    y: (&'a [u8], usize),
+    u: (&'a [u8], usize),
+    v: (&'a [u8], usize),
+}
+
+/// Limited-range BT.601 I420 to BGRA, the same maths as OpenH264's
+/// converter in 8.8 fixed point. `(w, h)` must be even; output rows are
+/// `out_w * 4` bytes apart (pixels past `w` are left alone). Rows are
+/// converted in parallel.
+fn i420_to_bgra(p: Planes<'_>, (w, h): (usize, usize), out_w: usize, out: &mut [u8]) {
+    use rayon::prelude::*;
     let cw = w / 2;
-    for row in 0..h {
-        let yrow = &y[row * w..][..w];
-        let urow = &u[(row / 2) * cw..][..cw];
-        let vrow = &v[(row / 2) * cw..][..cw];
-        let orow = &mut out[row * w * 4..][..w * 4];
-        // Two pixels share one chroma sample.
-        let pairs = orow.as_chunks_mut::<8>().0.iter_mut();
-        for (((pair, ys), &cu), &cv) in pairs.zip(yrow.as_chunks::<2>().0).zip(urow).zip(vrow) {
-            let d = cu as i32 - 128;
-            let e = cv as i32 - 128;
-            let (rb, rg, rr) = (516 * d + 128, 128 - 100 * d - 208 * e, 409 * e + 128);
-            for (k, &yv) in ys.iter().enumerate() {
-                let c = (yv as i32 - 16) * 298;
-                pair[k * 4] = ((c + rb) >> 8).clamp(0, 255) as u8;
-                pair[k * 4 + 1] = ((c + rg) >> 8).clamp(0, 255) as u8;
-                pair[k * 4 + 2] = ((c + rr) >> 8).clamp(0, 255) as u8;
-                pair[k * 4 + 3] = 255;
+    // Two output rows share one chroma row: work in pairs of rows.
+    out[..out_w * 4 * h]
+        .par_chunks_mut(out_w * 4 * 2)
+        .enumerate()
+        .for_each(|(pair_row, rows)| {
+            let urow = &p.u.0[pair_row * p.u.1..][..cw];
+            let vrow = &p.v.0[pair_row * p.v.1..][..cw];
+            for (k, orow) in rows.chunks_mut(out_w * 4).enumerate() {
+                let row = pair_row * 2 + k;
+                let yrow = &p.y.0[row * p.y.1..][..w];
+                let orow = &mut orow[..w * 4];
+                let pairs = orow.as_chunks_mut::<8>().0.iter_mut();
+                for (((pair, ys), &cu), &cv) in
+                    pairs.zip(yrow.as_chunks::<2>().0).zip(urow).zip(vrow)
+                {
+                    let d = cu as i32 - 128;
+                    let e = cv as i32 - 128;
+                    let (rb, rg, rr) = (516 * d + 128, 128 - 100 * d - 208 * e, 409 * e + 128);
+                    for (k, &yv) in ys.iter().enumerate() {
+                        let c = (yv as i32 - 16) * 298;
+                        pair[k * 4] = ((c + rb) >> 8).clamp(0, 255) as u8;
+                        pair[k * 4 + 1] = ((c + rg) >> 8).clamp(0, 255) as u8;
+                        pair[k * 4 + 2] = ((c + rr) >> 8).clamp(0, 255) as u8;
+                        pair[k * 4 + 3] = 255;
+                    }
+                }
             }
-        }
-    }
+        });
 }
 
 #[cfg(test)]
@@ -585,6 +751,59 @@ mod tests {
             low < high,
             "lowering bitrate should shrink output: {high} -> {low}"
         );
+    }
+
+    #[test]
+    fn software_choice_is_honoured() {
+        let enc =
+            VideoEncoder::with_choice(320, 240, 30, 1_000_000, EncoderChoice::Software).unwrap();
+        assert!(!enc.is_hardware());
+        assert_eq!(enc.backend_name(), "OpenH264 (software)");
+    }
+
+    /// Runs only where a hardware encoder exists (not in CI).
+    #[test]
+    fn hardware_stream_decodes_with_openh264() {
+        if hardware_encoder().is_none() {
+            eprintln!("no hardware encoder; skipping");
+            return;
+        }
+        let (w, h) = (1920, 1080);
+        let mut enc =
+            VideoEncoder::with_choice(w, h, 60, bitrate_for(w, h, 60), EncoderChoice::Hardware)
+                .unwrap();
+        assert!(enc.is_hardware());
+        let mut dec = VideoDecoder::new().unwrap();
+        let mut pattern = Pattern::new(w, h, 9);
+        let mut keys = Vec::new();
+        let mut last = None;
+        for i in 0..20 {
+            if i == 10 {
+                enc.force_keyframe();
+            }
+            let frame = pattern.next_frame();
+            let pkt = enc.encode(&frame).unwrap().expect("hardware never skips");
+            keys.push(pkt.keyframe);
+            if let Some(out) = dec.decode(&pkt.data, (0, 0)).unwrap() {
+                last = Some((frame, out));
+            }
+        }
+        assert!(keys[0] && keys[10], "keyframes at 0 and 10: {keys:?}");
+        assert_eq!(keys.iter().filter(|k| **k).count(), 2, "{keys:?}");
+        let (input, out) = last.expect("decoded");
+        assert_eq!((out.width, out.height), (w, h));
+        for y in [10, h / 2, h - 10] {
+            let i = ((y * w + w / 2) * 4) as usize;
+            for c in 0..3 {
+                let d = (input.bgra[i + c] as i32 - out.bgra[i + c] as i32).abs();
+                assert!(d < 60, "pixel at row {y} channel {c} off by {d}");
+            }
+        }
+        // A keyframe on its own (a viewer joining late) decodes too.
+        enc.force_keyframe();
+        let pkt = enc.encode(&pattern.next_frame()).unwrap().unwrap();
+        let mut late = VideoDecoder::new().unwrap();
+        assert!(late.decode(&pkt.data, (0, 0)).unwrap().is_some());
     }
 
     #[test]

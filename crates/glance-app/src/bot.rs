@@ -1,5 +1,5 @@
-//! `glance bot <link> [name]`: a headless peer for testing. It joins the
-//! room, greets people, echoes chat back, and toggles mute every few seconds
+//! `glance bot <link|new> [name]`: a headless peer for testing. It joins the
+//! room (or hosts a new one and prints its link), greets people, echoes chat back, and toggles mute every few seconds
 //! so state changes are visible. Ctrl-C to quit.
 
 use std::time::Duration;
@@ -22,7 +22,6 @@ pub fn run(
     ring_back: bool,
     camera: bool,
 ) -> Result<()> {
-    let ticket = Ticket::parse(link).context("parse room link")?;
     // A fresh identity each run, so a bot never collides with your app.
     let net = Net::start_ephemeral()?;
     let profile = WireProfile {
@@ -41,7 +40,15 @@ pub fn run(
         camera,
         ..Default::default()
     };
-    let room = net.block_on(net.join_room(ticket, profile.clone(), initial))?;
+    // `new` hosts a room instead of joining one and prints its link.
+    let room = if link == "new" {
+        let room = net.block_on(net.create_room(profile.clone(), initial))?;
+        println!("room link: {}", room.link());
+        room
+    } else {
+        let ticket = Ticket::parse(link).context("parse room link")?;
+        net.block_on(net.join_room(ticket, profile.clone(), initial))?
+    };
     // Contacts: accept every request; answer rings by joining that room
     // (this process relaunches itself into the new room).
     let contacts = net.contacts();
@@ -59,6 +66,7 @@ pub fn run(
             glance_media::pipeline::BroadcastConfig {
                 max_height: None,
                 fps,
+                encoder: glance_media::codec::EncoderChoice::Auto,
             },
             None,
             move |pkt| {
@@ -84,6 +92,7 @@ pub fn run(
             glance_media::pipeline::BroadcastConfig {
                 max_height: None,
                 fps: 24,
+                encoder: glance_media::codec::EncoderChoice::Auto,
             },
             None,
             move |pkt| {
@@ -225,7 +234,10 @@ pub fn run(
     let mut muted = false;
     // Testing aid: GLANCE_AUTOWATCH=1 makes the bot watch every screen share
     // (frames are discarded; it reports stream audio it hears).
+    // GLANCE_AUTOWATCH=decode also decodes them at 1080p tile size and
+    // prints the frame rate every 5 seconds.
     let autowatch = std::env::var_os("GLANCE_AUTOWATCH").is_some();
+    let decode = std::env::var("GLANCE_AUTOWATCH").is_ok_and(|v| v == "decode");
     let tick = ticker(Duration::from_secs(if tone { 1 } else { 5 }));
     loop {
         flume::Selector::new()
@@ -249,6 +261,31 @@ pub fn run(
                         room.send(Command::Chat(format!("echo: {text} (from {who})")));
                     }
                     RoomEvent::Closed => std::process::exit(0),
+                    RoomEvent::Video { feed, .. } if decode => {
+                        let rx = feed.0.clone();
+                        let target = glance_media::TargetSize::default();
+                        target.set(1920, 1080);
+                        let frames = glance_media::pipeline::spawn_decoder(
+                            move || rx.recv().ok().map(|p| p.data),
+                            target,
+                            || {},
+                        );
+                        std::thread::spawn(move || {
+                            let mut since = std::time::Instant::now();
+                            let mut n = 0u32;
+                            while let Ok(f) = frames.recv() {
+                                n += 1;
+                                if since.elapsed() >= Duration::from_secs(5) {
+                                    let fps = n as f64 / since.elapsed().as_secs_f64();
+                                    println!(
+                                        "decoding {fps:.1} fps (shown at {}x{})",
+                                        f.width, f.height
+                                    );
+                                    (n, since) = (0, std::time::Instant::now());
+                                }
+                            }
+                        });
+                    }
                     RoomEvent::Video { feed, .. } => {
                         // Discard frames so the sharer doesn't see us as congested.
                         let rx = feed.0.clone();

@@ -35,7 +35,9 @@ impl GlanceApp {
             .as_ref()
             .and_then(|s| s.size)
             .map(|sz| gl.resolution.output_size(sz));
-        let heavy = gl.resolution.needs_hardware(gl.fps);
+        let gpu = self.settings.hardware_encoding
+            && matches!(glance_media::codec::hardware_encoder_known(), Some(Some(_)));
+        let heavy = gl.resolution.needs_hardware(gl.fps) && !gpu;
 
         let tab = |id: &'static str, label: &'static str, windows: bool, selected: bool| {
             div()
@@ -349,7 +351,7 @@ impl GlanceApp {
                         })
                         .when(heavy, |d| {
                             d.child(div().text_xs().text_color(p.yellow).child(
-                                "This quality uses software encoding for now and may drop frames on slower computers.",
+                                "No hardware encoder is available, so this quality may drop frames on slower computers.",
                             ))
                         })
                         .children(error.map(|e| div().text_sm().text_color(p.red).child(e))),
@@ -711,10 +713,21 @@ impl GlanceApp {
                     )
                     .into(),
                 ))
+                .child(toggle!(
+                    "hw-encode",
+                    "Hardware encoding",
+                    "Use the graphics card to encode your stream when it can. Needed for 4K at 60 FPS; turn it off if streams look wrong.",
+                    hardware_encoding
+                ))
                 .child(info_row(
                     p,
                     "Video encoder",
-                    "Software H.264 (OpenH264)".into(),
+                    match glance_media::codec::hardware_encoder_known() {
+                        _ if !self.settings.hardware_encoding => "Software H.264 (OpenH264)".into(),
+                        Some(Some(name)) => format!("{name} (hardware), OpenH264 as fallback").into(),
+                        Some(None) => "Software H.264 (OpenH264): no supported hardware encoder found".into(),
+                        None => "Checking for a hardware encoder…".into(),
+                    },
                 ))
                 .into_any_element(),
             SettingsPage::Contacts => div()

@@ -142,6 +142,11 @@ impl GlanceApp {
             BroadcastConfig {
                 max_height: resolution.max_height(),
                 fps,
+                encoder: if self.settings.hardware_encoding {
+                    glance_media::codec::EncoderChoice::Auto
+                } else {
+                    glance_media::codec::EncoderChoice::Software
+                },
             },
             Some((preview_tx, preview_target.clone())),
             sink,
@@ -182,7 +187,15 @@ impl GlanceApp {
                 let label: SharedString = if watchers == 0 {
                     "Nobody watching yet".into()
                 } else {
-                    format!("Live to {watchers} · {:.1} Mbps", kbps as f64 / 1000.0).into()
+                    let hw = control_for_size
+                        .hardware
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    format!(
+                        "Live to {watchers} · {:.1} Mbps{}",
+                        kbps as f64 / 1000.0,
+                        if hw { " · GPU" } else { "" }
+                    )
+                    .into()
                 };
                 let _ = this.update(cx, |app, cx| {
                     let me = app.me.id;

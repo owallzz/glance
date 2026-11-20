@@ -116,6 +116,8 @@ pub struct Settings {
     /// The quality last used to Go Live (the picker starts there).
     pub stream_resolution: Resolution,
     pub stream_fps: u32,
+    /// Encode with the GPU when there's a supported one.
+    pub hardware_encoding: bool,
 }
 
 impl Default for Settings {
@@ -136,6 +138,7 @@ impl Default for Settings {
             relay_url: None,
             stream_resolution: Resolution::P1080,
             stream_fps: 60,
+            hardware_encoding: true,
         }
     }
 }
