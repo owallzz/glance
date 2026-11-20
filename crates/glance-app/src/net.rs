@@ -96,6 +96,8 @@ pub struct Net {
     rt: tokio::runtime::Runtime,
     node: Node,
     pub data_dir: PathBuf,
+    /// Which relay this run uses, for settings.
+    pub relay_label: String,
 }
 
 impl Net {
@@ -124,17 +126,35 @@ impl Net {
             .thread_name("glance-net")
             .enable_all()
             .build()?;
-        let relay = match std::env::var("GLANCE_RELAY").as_deref() {
-            Ok("off") => Relay::Disabled,
-            Ok(url) if !url.is_empty() => Relay::Custom(url.parse().context("GLANCE_RELAY url")?),
+        // GLANCE_RELAY (testing) beats the saved setting.
+        let saved = crate::app::Settings::load(&data_dir).relay_url;
+        let relay = match std::env::var("GLANCE_RELAY").ok().or(saved).as_deref() {
+            Some("off") => Relay::Disabled,
+            Some(url) if !url.is_empty() => match url.parse() {
+                Ok(url) => Relay::Custom(url),
+                Err(e) => {
+                    tracing::warn!("ignoring bad relay URL {url}: {e}");
+                    Relay::Default
+                }
+            },
             _ => Relay::Default,
+        };
+        let relay_label = match &relay {
+            Relay::Disabled => "None (direct connections only)".to_string(),
+            Relay::Custom(url) => url.to_string(),
+            Relay::Default => "Default public relays".to_string(),
         };
         let node = rt.block_on(Node::spawn(NetConfig {
             secret_key: key,
             relay,
             files_dir,
         }))?;
-        Ok(Self { rt, node, data_dir })
+        Ok(Self {
+            rt,
+            node,
+            data_dir,
+            relay_label,
+        })
     }
 
     pub fn me(&self) -> PeerId {

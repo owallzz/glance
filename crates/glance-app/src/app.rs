@@ -108,6 +108,9 @@ pub struct Settings {
     /// Camera index (`None` = first camera).
     pub camera_device: Option<u32>,
     pub output_device: Option<String>,
+    /// Custom relay server (`None` = the default public relays). Read at
+    /// startup; `GLANCE_RELAY` overrides it.
+    pub relay_url: Option<String>,
 }
 
 impl Default for Settings {
@@ -124,6 +127,7 @@ impl Default for Settings {
             input_device: None,
             output_device: None,
             camera_device: None,
+            relay_url: None,
         }
     }
 }
@@ -231,6 +235,36 @@ impl GlanceApp {
         self.join(ticket, cx);
     }
 
+    /// Switch between the dark and light themes per settings.
+    pub fn apply_theme(&self, window: &mut Window, cx: &mut App) {
+        use gpui_kit::component::theme::{Theme, ThemeMode};
+        let mode = if self.settings.dark {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        };
+        if Theme::global(cx).mode != mode {
+            Theme::change(mode, Some(window), cx);
+        }
+    }
+
+    /// Save the custom relay URL from settings (applies on next start).
+    pub fn save_relay(&mut self, cx: &mut Context<Self>) {
+        let text = self.relay_input.read(cx).value().to_string();
+        match parse_relay_setting(&text) {
+            Ok(url) => {
+                self.relay_note = Some(match url {
+                    None => "Saved. glance will use the default relays after a restart.".into(),
+                    Some(_) => "Saved. glance will use this relay after a restart.".into(),
+                });
+                self.settings.relay_url = url;
+                self.save_settings();
+            }
+            Err(e) => self.relay_note = Some(e.into()),
+        }
+        cx.notify();
+    }
+
     pub fn save_settings(&self) {
         if let Some(net) = &self.net
             && let Err(e) = self.settings.save(&net.data_dir)
@@ -295,13 +329,36 @@ pub struct Room {
 actions!(glance, [CloseOverlay, ToggleMute, ToggleDeafen]);
 
 /// Window-level shortcuts. `Quit` is bound in main.
+/// The relay field: blank means the default relays, otherwise a URL.
+pub fn parse_relay_setting(text: &str) -> Result<Option<String>, &'static str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    match text.parse::<iroh::RelayUrl>() {
+        Ok(_) if text.starts_with("https://") || text.starts_with("http://") => {
+            Ok(Some(text.to_string()))
+        }
+        _ => Err("That doesn't look like a relay URL (https://...)."),
+    }
+}
+
+/// Shortcut keystrokes: escape, mute, deafen, quit. ⌘ on macOS, Ctrl
+/// elsewhere. (A bad keystroke string panics at startup; a test parses them.)
+#[cfg(target_os = "macos")]
+pub const SHORTCUTS: [&str; 4] = ["escape", "cmd-shift-m", "cmd-shift-d", "cmd-q"];
+#[cfg(not(target_os = "macos"))]
+pub const SHORTCUTS: [&str; 4] = ["escape", "ctrl-shift-m", "ctrl-shift-d", "ctrl-q"];
+
 pub fn bind_keys(cx: &mut App) {
+    let [esc, mute, deafen, _quit] = SHORTCUTS;
     cx.bind_keys([
-        KeyBinding::new("escape", CloseOverlay, Some("GlanceApp")),
-        KeyBinding::new("ctrl-shift-m", ToggleMute, Some("GlanceApp")),
-        KeyBinding::new("ctrl-shift-d", ToggleDeafen, Some("GlanceApp")),
+        KeyBinding::new(esc, CloseOverlay, Some("GlanceApp")),
+        KeyBinding::new(mute, ToggleMute, Some("GlanceApp")),
+        KeyBinding::new(deafen, ToggleDeafen, Some("GlanceApp")),
     ]);
 }
+
 
 pub struct GlanceApp {
     pub focus: FocusHandle,
@@ -309,6 +366,10 @@ pub struct GlanceApp {
     /// First run: ask for a display name before anything else.
     pub needs_profile: bool,
     pub name_input: Entity<InputState>,
+    /// Settings → Connection: custom relay URL.
+    pub relay_input: Entity<InputState>,
+    /// Feedback under the relay field.
+    pub relay_note: Option<String>,
     pub join_error: Option<String>,
     pub busy: bool,
     pub me: Profile,
@@ -367,6 +428,10 @@ impl GlanceApp {
         let join_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Paste a glance link or code"));
         let chat_input = cx.new(|cx| InputState::new(window, cx).placeholder("Message the room"));
+        let relay_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("https://relay.example.com (blank = default relays)")
+        });
         cx.subscribe_in(&chat_input, window, Self::on_chat_input)
             .detach();
         cx.subscribe_in(&join_input, window, Self::on_join_input)
@@ -411,6 +476,8 @@ impl GlanceApp {
             net,
             needs_profile,
             name_input,
+            relay_input,
+            relay_note: None,
             join_error: None,
             busy: false,
             me,
@@ -454,6 +521,11 @@ impl GlanceApp {
                 true
             }
         });
+        app.apply_theme(window, cx);
+        if let Some(url) = app.settings.relay_url.clone() {
+            app.relay_input
+                .update(cx, |s, cx| s.set_value(url, window, cx));
+        }
         app.apply_tray(window, cx);
         crate::tray::sync_autostart(app.settings.autostart && app.net.is_some());
         if !demo_room {
@@ -695,7 +767,16 @@ impl GlanceApp {
                     "rail-home",
                     home_selected,
                     p.bg_content,
-                    icon(IconName::Monitor, 26., gpui_kit::white()).into_any_element(),
+                    icon(
+                        IconName::Monitor,
+                        26.,
+                        if home_selected {
+                            gpui_kit::white()
+                        } else {
+                            p.text_normal
+                        },
+                    )
+                    .into_any_element(),
                 )
                 .on_mouse_down(
                     MouseButton::Left,
@@ -983,4 +1064,26 @@ pub fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod key_tests {
+    #[test]
+    fn shortcuts_parse() {
+        for k in super::SHORTCUTS {
+            assert!(gpui_kit::Keystroke::parse(k).is_ok(), "{k}");
+        }
+    }
+
+    #[test]
+    fn relay_setting() {
+        use super::parse_relay_setting as p;
+        assert_eq!(p("  "), Ok(None));
+        assert_eq!(
+            p(" https://relay.example.com "),
+            Ok(Some("https://relay.example.com".into()))
+        );
+        assert!(p("nope").is_err());
+        assert!(p("ftp://x").is_err());
+    }
 }

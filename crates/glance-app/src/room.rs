@@ -408,7 +408,10 @@ impl GlanceApp {
             .into_any_element()
     }
 
-    fn render_stage(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_stage(&mut self, _p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        // The stage is dark in both themes (like Discord's call view), so
+        // video and the control bar read the same everywhere.
+        let p = &Palette::dark();
         let room = self.room.as_ref().expect("in a room");
         let chat_open = room.chat_open;
         let name = room.name.clone();

@@ -3,6 +3,7 @@
 use glance_core::{FRAME_RATES, Resolution, StreamInfo};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::Input;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -481,6 +482,7 @@ impl GlanceApp {
                         .on_click(cx.listener(|this, v: &bool, window, cx| {
                             this.settings.$field = *v;
                             this.on_settings_changed();
+                            this.apply_theme(window, cx);
                             this.apply_tray(window, cx);
                             crate::tray::sync_autostart(this.settings.autostart);
                             cx.notify();
@@ -488,6 +490,10 @@ impl GlanceApp {
                 )
             };
         }
+        let relay_in_use = self
+            .net
+            .as_ref()
+            .map_or_else(|| "Offline".to_string(), |n| n.relay_label.clone());
         let body = match page {
             SettingsPage::Account => div()
                 .p_4()
@@ -680,11 +686,11 @@ impl GlanceApp {
             SettingsPage::Streaming => div()
                 .flex()
                 .flex_col()
-                .child(info_row(p, "Default quality", "1080p · 60 FPS"))
+                .child(info_row(p, "Default quality", "1080p · 60 FPS".into()))
                 .child(info_row(
                     p,
                     "Video encoder",
-                    "Detected in M10 (hardware preferred, software fallback)",
+                    "Software H.264 (OpenH264)".into(),
                 ))
                 .into_any_element(),
             SettingsPage::Contacts => div()
@@ -712,7 +718,7 @@ impl GlanceApp {
             SettingsPage::Files => div()
                 .flex()
                 .flex_col()
-                .child(info_row(p, "Save files to", "Downloads"))
+                .child(info_row(p, "Save files to", "Downloads".into()))
                 .child(toggle!(
                     "preview",
                     "Preview images automatically",
@@ -733,15 +739,40 @@ impl GlanceApp {
             SettingsPage::Keybinds => div()
                 .flex()
                 .flex_col()
-                .child(info_row(p, "Toggle mute", "Ctrl + Shift + M"))
-                .child(info_row(p, "Toggle deafen", "Ctrl + Shift + D"))
-                .child(info_row(p, "Quit", "Ctrl + Q"))
+                .child(info_row(p, "Toggle mute", keys("Shift + M")))
+                .child(info_row(p, "Toggle deafen", keys("Shift + D")))
+                .child(info_row(p, "Quit", keys("Q")))
+                .child(info_row(p, "Close dialog / exit fullscreen", "Esc".into()))
                 .into_any_element(),
             SettingsPage::Connection => div()
                 .flex()
                 .flex_col()
-                .child(info_row(p, "Relay", "Default public relays"))
-                .child(info_row(p, "Custom relay URL", "Not set"))
+                .child(info_row(p, "Relay in use", relay_in_use.into()))
+                .child(
+                    div()
+                        .py_4()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(section_label(p, "CUSTOM RELAY URL"))
+                        .child(div().text_xs().text_color(p.text_muted).child(
+                            "Calls go directly between computers when possible. When they can't, they pass (still encrypted) through a relay. Run your own with iroh-relay and enter its URL here.",
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(div().flex_1().child(Input::new(&self.relay_input)))
+                                .child(Button::new("relay-save").primary().label("Save").on_click(
+                                    cx.listener(|this, _, _, cx| this.save_relay(cx)),
+                                )),
+                        )
+                        .children(
+                            self.relay_note
+                                .clone()
+                                .map(|n| div().text_xs().text_color(p.text_muted).child(n)),
+                        ),
+                )
                 .into_any_element(),
         };
         div()
@@ -1107,7 +1138,16 @@ fn setting_row(
         .child(control)
 }
 
-fn info_row(p: &Palette, label: &'static str, value: &'static str) -> impl IntoElement {
+/// A shortcut label with the platform's modifier (⌘ on macOS).
+fn keys(rest: &str) -> SharedString {
+    if cfg!(target_os = "macos") {
+        format!("⌘ + {rest}").into()
+    } else {
+        format!("Ctrl + {rest}").into()
+    }
+}
+
+fn info_row(p: &Palette, label: &'static str, value: SharedString) -> impl IntoElement {
     div()
         .py_4()
         .border_b_1()

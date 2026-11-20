@@ -15,6 +15,24 @@ pub struct DeviceInfo {
     pub is_default: bool,
 }
 
+/// Whether to offer a device in settings. Through PipeWire, cpal also lists
+/// placeholder defaults (we have "System default"), apps' own streams and,
+/// as inputs, every speaker's monitor; only real (driver-backed) devices are
+/// worth picking, and only true sources as microphones.
+fn offered(d: &cpal::Device, input: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    if cpal::default_host().id() == cpal::HostId::PipeWire {
+        let Ok(desc) = d.description() else {
+            return false;
+        };
+        let is_device = desc.driver().is_some();
+        let is_monitor = input && desc.direction() == cpal::DeviceDirection::Duplex;
+        return is_device && !is_monitor;
+    }
+    let _ = (d, input);
+    true
+}
+
 fn device_name(d: &cpal::Device) -> String {
     d.description()
         .map(|desc| desc.name().to_string())
@@ -26,14 +44,15 @@ pub fn input_devices() -> Vec<DeviceInfo> {
     let default = host.default_input_device().map(|d| device_name(&d));
     host.input_devices()
         .map(|it| {
-            it.map(|d| {
-                let name = device_name(&d);
-                DeviceInfo {
-                    is_default: Some(&name) == default.as_ref(),
-                    name,
-                }
-            })
-            .collect()
+            it.filter(|d| offered(d, true))
+                .map(|d| {
+                    let name = device_name(&d);
+                    DeviceInfo {
+                        is_default: Some(&name) == default.as_ref(),
+                        name,
+                    }
+                })
+                .collect()
         })
         .unwrap_or_default()
 }
@@ -43,14 +62,15 @@ pub fn output_devices() -> Vec<DeviceInfo> {
     let default = host.default_output_device().map(|d| device_name(&d));
     host.output_devices()
         .map(|it| {
-            it.map(|d| {
-                let name = device_name(&d);
-                DeviceInfo {
-                    is_default: Some(&name) == default.as_ref(),
-                    name,
-                }
-            })
-            .collect()
+            it.filter(|d| offered(d, false))
+                .map(|d| {
+                    let name = device_name(&d);
+                    DeviceInfo {
+                        is_default: Some(&name) == default.as_ref(),
+                        name,
+                    }
+                })
+                .collect()
         })
         .unwrap_or_default()
 }
@@ -83,6 +103,7 @@ fn find_output(name: Option<&str>) -> Result<cpal::Device> {
 pub fn open_input(name: Option<&str>, mut tx: rtrb::Producer<f32>) -> Result<Stream> {
     let device = find_input(name)?;
     let supported = device.default_input_config().context("microphone config")?;
+    tracing::info!("audio in: {} ({supported:?})", device_name(&device));
     let format = supported.sample_format();
     let config: StreamConfig = supported.into();
     let channels = config.channels as usize;
@@ -142,6 +163,7 @@ pub fn open_input(name: Option<&str>, mut tx: rtrb::Producer<f32>) -> Result<Str
 pub fn open_output(name: Option<&str>, mut rx: rtrb::Consumer<f32>) -> Result<Stream> {
     let device = find_output(name)?;
     let supported = device.default_output_config().context("speaker config")?;
+    tracing::info!("audio out: {} ({supported:?})", device_name(&device));
     let format = supported.sample_format();
     let config: StreamConfig = supported.into();
     let channels = config.channels as usize;

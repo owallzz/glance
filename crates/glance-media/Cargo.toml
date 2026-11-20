@@ -31,6 +31,7 @@ windows-capture = "=1.4.4"
 # (zed-scap's Wayland path needs libspa 0.8, which doesn't build against
 # current PipeWire).
 [target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18", features = ["pipewire"] }
 scap = { package = "zed-scap", version = "=0.0.8-zed", default-features = false, features = ["x11"] }
 pipewire = { version = "0.10", features = ["v0_3_44"] }
 ashpd = { version = "0.14", default-features = false, features = ["tokio", "screencast"] }

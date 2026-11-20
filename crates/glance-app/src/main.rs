@@ -101,7 +101,7 @@ fn main() {
 
         cx.on_action(|_: &Quit, cx| cx.quit());
 
-        cx.bind_keys([KeyBinding::new("ctrl-q", Quit, None)]);
+        cx.bind_keys([KeyBinding::new(app::SHORTCUTS[3], Quit, None)]);
         app::bind_keys(cx);
 
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);

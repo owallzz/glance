@@ -90,6 +90,9 @@ Check the diff for these before every commit.
 - Test multi-person flows with one GUI window plus `glance bot` peers. Two GUI windows overlap and GNOME ignores scripted window moves, so xdotool clicks hit the wrong one.
 - The bot uses a fresh identity each run; the GUI uses the identity in its data dir. Two GUI instances need different `GLANCE_DATA_DIR`s: a second launch with the same data dir hands its arguments (a `glance://` link, or just "show") to the running one through `instance.json` and exits (`instance.rs`).
 - `glance://` registration (`scheme.rs`: desktop entry on Linux, HKCU registry on Windows, Info.plist on macOS) and start-on-login only happen in release builds without `GLANCE_DATA_DIR`, so dev builds never take over the handler.
+- Linux audio goes through cpal's PipeWire host (falls back to ALSA); settings only list driver-backed devices (`offered` in `audio/device.rs`). `cargo run -p glance-media --example audio_devices -- --raw` shows what the host reports.
+- Key bindings: gpui-pre 0.3 has no `secondary-` modifier; use `SHORTCUTS` in `app.rs` (cmd on macOS, ctrl elsewhere). A test parses them, since a bad keystroke panics at startup.
+- xdotool can't move keyboard focus on GNOME Wayland: `xdotool type` goes to whatever X11 window is active (maybe not glance). Only type after confirming `xdotool getactivewindow` is the glance window. Unfocused XWayland windows also stop repainting, so screenshots go stale.
 - QUIC idle timeout is 10 s with 2 s keep-alives (`glance-net/src/lib.rs`): a crashed peer leaves rooms after ~10 s.
 - The dev host is immutable Fedora without `-devel` packages: `source scripts/env.sh` first, or the fontconfig/xkbcommon build scripts fail.
 - gpui-kit 0.10 pins exact `gpui-pre-*` versions. Upgrade gpui-kit as a whole, never individual gpui crates.
