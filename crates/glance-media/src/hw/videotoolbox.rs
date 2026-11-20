@@ -423,7 +423,9 @@ impl VtEncoder {
             bail!("VideoToolbox encode failed (OSStatus {status})");
         }
         // One frame in, at most one out (no reordering); keep the newest.
-        Ok(sink.frames.drain(..).last())
+        let newest = sink.frames.pop();
+        sink.frames.clear();
+        Ok(newest)
     }
 }
 

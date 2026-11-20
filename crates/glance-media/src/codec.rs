@@ -51,6 +51,8 @@ enum Backend {
     Nvenc(crate::hw::nvenc::NvencEncoder),
     #[cfg(target_os = "macos")]
     VideoToolbox(crate::hw::videotoolbox::VtEncoder),
+    #[cfg(target_os = "linux")]
+    Vaapi(crate::hw::vaapi::VaapiEncoder),
 }
 
 /// Which encoders [`VideoEncoder::with_choice`] may use.
@@ -69,7 +71,7 @@ impl EncoderChoice {
     fn resolved(self) -> Self {
         match (self, std::env::var("GLANCE_ENCODER").as_deref()) {
             (Self::Auto, Ok("software")) => Self::Software,
-            (Self::Auto, Ok("hardware")) => Self::Hardware,
+            (Self::Auto, Ok("hardware" | "nvenc" | "vaapi" | "videotoolbox")) => Self::Hardware,
             (c, _) => c,
         }
     }
@@ -81,12 +83,17 @@ static HARDWARE: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock
 /// (opening a GPU session takes a moment), so call it off the UI thread.
 pub fn hardware_encoder() -> Option<&'static str> {
     *HARDWARE.get_or_init(|| {
+        use crate::hw::allowed;
         #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if crate::hw::nvenc::available() {
+        if allowed("nvenc") && crate::hw::nvenc::available() {
             return Some("NVIDIA NVENC");
         }
+        #[cfg(target_os = "linux")]
+        if allowed("vaapi") && crate::hw::vaapi::available() {
+            return Some("VA-API");
+        }
         #[cfg(target_os = "macos")]
-        if crate::hw::videotoolbox::available() {
+        if allowed("videotoolbox") && crate::hw::videotoolbox::available() {
             return Some("Apple VideoToolbox");
         }
         None
@@ -121,15 +128,28 @@ impl VideoEncoder {
         let choice = choice.resolved();
         let mut hw_error = None;
         if choice != EncoderChoice::Software {
+            use crate::hw::allowed;
             #[cfg(any(target_os = "linux", target_os = "windows"))]
-            match crate::hw::nvenc::NvencEncoder::new(width, height, fps, bitrate_bps) {
-                Ok(e) => return Ok(Self::wrap(Backend::Nvenc(e), width, height)),
-                Err(e) => hw_error = Some(e),
+            if allowed("nvenc") {
+                match crate::hw::nvenc::NvencEncoder::new(width, height, fps, bitrate_bps) {
+                    Ok(e) => return Ok(Self::wrap(Backend::Nvenc(e), width, height)),
+                    Err(e) => hw_error = Some(e),
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if allowed("vaapi") {
+                match crate::hw::vaapi::VaapiEncoder::new(width, height, fps, bitrate_bps) {
+                    Ok(e) => return Ok(Self::wrap(Backend::Vaapi(e), width, height)),
+                    Err(e) => hw_error = Some(e),
+                }
             }
             #[cfg(target_os = "macos")]
-            match crate::hw::videotoolbox::VtEncoder::new(width, height, fps, bitrate_bps, true) {
-                Ok(e) => return Ok(Self::wrap(Backend::VideoToolbox(e), width, height)),
-                Err(e) => hw_error = Some(e),
+            if allowed("videotoolbox") {
+                match crate::hw::videotoolbox::VtEncoder::new(width, height, fps, bitrate_bps, true)
+                {
+                    Ok(e) => return Ok(Self::wrap(Backend::VideoToolbox(e), width, height)),
+                    Err(e) => hw_error = Some(e),
+                }
             }
             if choice == EncoderChoice::Hardware {
                 return Err(hw_error.unwrap_or_else(|| anyhow::anyhow!("no hardware encoder")));
@@ -164,6 +184,8 @@ impl VideoEncoder {
             Backend::Nvenc(_) => "NVIDIA NVENC",
             #[cfg(target_os = "macos")]
             Backend::VideoToolbox(_) => "Apple VideoToolbox",
+            #[cfg(target_os = "linux")]
+            Backend::Vaapi(_) => "VA-API",
         }
     }
 
@@ -174,6 +196,8 @@ impl VideoEncoder {
             Backend::Nvenc(_) => true,
             #[cfg(target_os = "macos")]
             Backend::VideoToolbox(e) => e.is_hardware(),
+            #[cfg(target_os = "linux")]
+            Backend::Vaapi(_) => true,
         }
     }
 
@@ -193,6 +217,8 @@ impl VideoEncoder {
                     tracing::warn!("{e:#}");
                 }
             }
+            #[cfg(target_os = "linux")]
+            Backend::Vaapi(e) => e.set_bitrate(bps),
         }
     }
 
@@ -204,6 +230,8 @@ impl VideoEncoder {
             Backend::Nvenc(_) => self.keyframe = true,
             #[cfg(target_os = "macos")]
             Backend::VideoToolbox(_) => self.keyframe = true,
+            #[cfg(target_os = "linux")]
+            Backend::Vaapi(_) => self.keyframe = true,
         }
     }
 
@@ -231,6 +259,11 @@ impl VideoEncoder {
             Backend::VideoToolbox(e) => {
                 let key = std::mem::take(&mut self.keyframe);
                 e.encode(&frame.bgra, ts_us, key)?
+            }
+            #[cfg(target_os = "linux")]
+            Backend::Vaapi(e) => {
+                let key = std::mem::take(&mut self.keyframe);
+                Some(e.encode(&frame.bgra, key)?)
             }
         };
         Ok(out.map(|(keyframe, data)| EncodedPacket {

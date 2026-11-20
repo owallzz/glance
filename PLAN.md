@@ -183,7 +183,8 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - Viewers scale the Y/U/V planes to the tile and convert to BGRA in parallel (rayon): 4K into a 1080p tile takes about 13 ms (OpenH264 decode is about 9.5 ms of that).
   - Streams are capped at 3840x2160, so 5120x1440 goes out as 3840x1080.
   - **VideoToolbox** (macOS, `hw/videotoolbox.rs`): a hardware session with low-latency rate control, Constrained Baseline, and AVCC converted to Annex-B with SPS/PPS before keyframes. Tested in CI with Apple's software encoder; not yet run on a real Mac.
-  - Remaining: VA-API (AMD/Intel on Linux), Media Foundation (AMD/Intel on Windows), and hardware decode.
+  - **VA-API** (Linux AMD/Intel, `hw/vaapi.rs`): libva is loaded at run time and glance tries each render node until one has a Constrained Baseline encoder. BGRA is converted to NV12 on the CPU in parallel. Mesa writes no headers itself, so `hw/h264_headers.rs` supplies SPS, PPS and slice headers as packed headers. On an AMD integrated GPU, 4K encodes in 15 ms per frame and the sharer holds 58 fps. NVENC is tried first.
+  - Remaining: Media Foundation (AMD/Intel on Windows) and hardware decode.
 - [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.
 
 ## 5. Running and testing

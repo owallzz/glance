@@ -11,7 +11,7 @@ Peer-to-peer screen sharing rooms with a familiar, Discord-style interface. Star
 - **Contacts:** add people you've called, see when they're online or in a call, ring them, send them files outside calls. glance waits in the tray and starts on login.
 - **Settings:** devices, light/dark theme, a custom relay server, start on login.
 
-See [PLAN.md](PLAN.md) for the roadmap. Not done yet: hardware encoding on AMD/Intel GPUs under Linux and Windows (NVIDIA uses NVENC, Macs VideoToolbox; others use software) and signed installers.
+See [PLAN.md](PLAN.md) for the roadmap. Not done yet: hardware encoding on AMD/Intel GPUs under Windows (NVIDIA uses NVENC, Linux AMD/Intel use VA-API, Macs VideoToolbox; others use software) and signed installers.
 
 ## Install
 
