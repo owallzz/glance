@@ -21,6 +21,11 @@ fn to_render_image(frame: VideoFrame) -> Option<Arc<RenderImage>> {
 
 /// A view that shows the latest frame from a channel.
 pub struct VideoView {
+    /// Bytes received for this stream (set by the network side), for the
+    /// bitrate in the stats label.
+    bytes: Option<Arc<std::sync::atomic::AtomicU64>>,
+    /// Extra text for the stats label (e.g. "Live to 2 · 3.1 Mbps").
+    pub label: Option<SharedString>,
     current: Option<Arc<RenderImage>>,
     current_size: (u32, u32),
     stale: Vec<Arc<RenderImage>>,
@@ -46,6 +51,8 @@ impl VideoView {
     /// A tile with no frames yet (waiting for a stream to start).
     pub fn empty(target: TargetSize) -> Self {
         Self {
+            bytes: None,
+            label: None,
             current: None,
             current_size: (0, 0),
             stale: Vec::new(),
@@ -53,6 +60,10 @@ impl VideoView {
             stats: FpsCounter::default(),
             _feed: Task::ready(()),
         }
+    }
+
+    pub fn set_bytes_counter(&mut self, bytes: Arc<std::sync::atomic::AtomicU64>) {
+        self.bytes = Some(bytes);
     }
 
     pub fn target(&self) -> TargetSize {
@@ -75,7 +86,11 @@ impl VideoView {
                         view.stale.push(old);
                     }
                     view.current_size = size;
-                    view.stats.tick();
+                    let total = view
+                        .bytes
+                        .as_ref()
+                        .map(|b| b.load(std::sync::atomic::Ordering::Relaxed));
+                    view.stats.tick_bytes(total);
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -102,6 +117,14 @@ impl Render for VideoView {
         let target = self.target.clone();
         let fps = self.stats.fps;
         let (fw, fh) = self.current_size;
+        let mut stats_text = format!("{fw}×{fh} · {fps:.0} fps");
+        if self.bytes.is_some() && self.stats.mbps > 0.0 {
+            stats_text.push_str(&format!(" · {:.1} Mbps", self.stats.mbps));
+        }
+        if let Some(extra) = &self.label {
+            stats_text.push_str(" · ");
+            stats_text.push_str(extra);
+        }
         div()
             .relative()
             .size_full()
@@ -138,12 +161,14 @@ impl Render for VideoView {
                     .absolute()
                     .top_2()
                     .left_2()
+                    .max_w(relative(0.55))
+                    .truncate()
                     .px_2()
                     .rounded(px(4.))
                     .bg(gpui_kit::black().opacity(0.6))
                     .text_xs()
                     .text_color(gpui_kit::white())
-                    .child(format!("{fw}×{fh} · {fps:.0} fps")),
+                    .child(stats_text),
             )
     }
 }
@@ -154,9 +179,21 @@ pub struct FpsCounter {
     window_start: Option<Instant>,
     count: u32,
     pub fps: f32,
+    pub mbps: f32,
+    bytes_at_start: Option<u64>,
+    last_bytes: Option<u64>,
 }
 
 impl FpsCounter {
+    /// Count a frame; `total_bytes` (if known) gives the bitrate too.
+    pub fn tick_bytes(&mut self, total_bytes: Option<u64>) {
+        self.last_bytes = total_bytes;
+        if self.bytes_at_start.is_none() {
+            self.bytes_at_start = total_bytes;
+        }
+        self.tick();
+    }
+
     pub fn tick(&mut self) {
         let now = Instant::now();
         let start = *self.window_start.get_or_insert(now);
@@ -164,7 +201,11 @@ impl FpsCounter {
         let elapsed = now - start;
         if elapsed >= Duration::from_secs(1) {
             self.fps = self.count as f32 / elapsed.as_secs_f32();
-            tracing::debug!(fps = self.fps, "video tile");
+            if let (Some(a), Some(b)) = (self.bytes_at_start, self.last_bytes) {
+                self.mbps = (b.saturating_sub(a)) as f32 * 8.0 / elapsed.as_secs_f32() / 1e6;
+            }
+            self.bytes_at_start = self.last_bytes;
+            tracing::debug!(fps = self.fps, mbps = self.mbps, "video tile");
             self.count = 0;
             self.window_start = Some(now);
         }

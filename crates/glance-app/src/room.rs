@@ -525,13 +525,43 @@ impl GlanceApp {
             }
             TileKind::Stream(person) => {
                 let stream = person.stream.clone().expect("stream tile");
+                let is_me = peer == self.me.id;
+                if room.popouts.contains_key(&peer) {
+                    return tile
+                        .bg(p.bg_sidebar)
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .child(icon(IconName::ExternalLink, 28., p.text_muted))
+                        .child(div().text_sm().text_color(p.text_muted).child("Popped out"))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("popin-{}", peer.short())))
+                                .px_3()
+                                .py_1()
+                                .rounded(px(4.))
+                                .bg(p.bg_selected)
+                                .cursor_pointer()
+                                .text_sm()
+                                .text_color(p.text_header)
+                                .child("Bring back")
+                                .on_click(cx.listener(move |this, _, _, cx| this.pop_in(peer, cx))),
+                        )
+                        .into_any_element();
+                }
                 if let Some(view) = room.watching.get(&peer).cloned() {
+                    // Controls show while the pointer is over the tile.
+                    let group = SharedString::from(format!("tile-{}", peer.short()));
                     let hover_bar = div()
                         .absolute()
                         .top_2()
                         .right_2()
                         .flex()
                         .gap_1()
+                        .invisible()
+                        .group_hover(group.clone(), |s| s.visible())
                         .child(
                             tile_button(
                                 p,
@@ -555,15 +585,44 @@ impl GlanceApp {
                         .child(
                             tile_button(
                                 p,
+                                &format!("full-{}", peer.short()),
+                                IconName::Expand,
+                                "Fullscreen",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.enter_fullscreen(peer, window, cx),
+                            )),
+                        )
+                        .when(!is_me, |d| {
+                            d.child(
+                                tile_button(
+                                    p,
+                                    &format!("pop-{}", peer.short()),
+                                    IconName::ExternalLink,
+                                    "Pop out",
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.pop_out(peer, cx)),
+                                ),
+                            )
+                        })
+                        .child(
+                            tile_button(
+                                p,
                                 &format!("stop-{}", peer.short()),
                                 IconName::X,
-                                "Stop watching",
+                                if is_me {
+                                    "Hide preview"
+                                } else {
+                                    "Stop watching"
+                                },
                             )
                             .on_click(
                                 cx.listener(move |this, _, _, cx| this.stop_watching(peer, cx)),
                             ),
                         );
-                    tile.child(view)
+                    tile.group(group)
+                        .child(view)
                         .child(
                             div()
                                 .absolute()

@@ -30,6 +30,7 @@ Run the tests and the linter before every commit; CI runs the same checks.
   - `contacts.rs`: contact book (contacts.json), presence, calling/ringing contacts, incoming calls with ringtone and OS notification, missed calls, call history and the "call ended" add-contact prompt. Settings persist in settings.json (`app.rs`).
   - `tray.rs`: tray icon (ksni on Linux, tray-icon on macOS/Windows), close-to-tray (minimize while the tray is up), start on login via auto-launch (release builds only, never with `GLANCE_DATA_DIR`).
   - `files.rs`: send (attach/drag & drop), offers, downloads with progress into Downloads (`GLANCE_DOWNLOAD_DIR` overrides), inline image previews.
+  - `popout.rs`: fullscreen (immersive) viewing and pop-out windows (a popped-out stream gets its own Watch/feed; closing the window brings it back).
   - `ui.rs`: shared widgets (Avatar, icon_button, pill, live_badge).
   - `video.rs`: `VideoView` tile. `spike.rs`: the render benchmark.
   - `theme.rs` + `assets/themes/glance.json`: design tokens and the gpui-kit component theme (dark + light).
@@ -72,6 +73,8 @@ This repo must not contain personal or identifying information. Never commit:
 Check the diff for these before every commit.
 
 ## Gotchas
+- When editing with scripted search/replace, assert that each pattern matched. `cargo fmt` reflows code, and a silent miss once hid a real bug (pop-out feeds never routed).
+- Every request that makes a sharer send a keyframe must be rate-limited (≤1/s): keyframes are large, and a flood makes congestion worse.
 - A gpui window can have helper X windows with the same title; when scripting, pick the one whose geometry matches the real window.
 - Stock GNOME has no StatusNotifierItem host: the tray doesn't appear and closing the window quits (by design).
 - Never `pkill -f` / `pgrep -f` with a pattern that appears in your own command (e.g. `glance bot`, a script name): it matches your shell and kills it. Use `pgrep -x glance` and pids you saved.

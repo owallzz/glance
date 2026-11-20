@@ -205,10 +205,10 @@ pub fn start(_net: &crate::net::Net, tx: flume::Sender<TrayEvent>) -> Option<Tra
     // Menu clicks arrive on a global channel; forward them.
     std::thread::spawn(move || {
         while let Ok(ev) = MenuEvent::receiver().recv() {
-            if let Some((_, e)) = ids.iter().find(|(id, _)| *id == ev.id) {
-                if tx.send(*e).is_err() {
-                    break;
-                }
+            if let Some((_, e)) = ids.iter().find(|(id, _)| *id == ev.id)
+                && tx.send(*e).is_err()
+            {
+                break;
             }
         }
     });

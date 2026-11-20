@@ -152,6 +152,30 @@ impl GlanceApp {
                 if gone {
                     break;
                 }
+                // Preview label: who's watching and at what bitrate.
+                let watchers = control_for_size
+                    .watchers
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let kbps = control_for_size
+                    .bitrate
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    / 1000;
+                let label: SharedString = if watchers == 0 {
+                    "Nobody watching yet".into()
+                } else {
+                    format!("Live to {watchers} · {:.1} Mbps", kbps as f64 / 1000.0).into()
+                };
+                let _ = this.update(cx, |app, cx| {
+                    let me = app.me.id;
+                    if let Some(v) = app.room.as_ref().and_then(|r| r.watching.get(&me)).cloned() {
+                        v.update(cx, |v, cx| {
+                            if v.label.as_ref() != Some(&label) {
+                                v.label = Some(label.clone());
+                                cx.notify();
+                            }
+                        });
+                    }
+                });
                 if !size_known {
                     let src = control_for_size.source_size();
                     if src.0 > 0 {
@@ -257,7 +281,13 @@ impl GlanceApp {
         let Some(room) = self.room.as_mut() else {
             return;
         };
-        let Some(view) = room.watching.get(&peer).cloned() else {
+        // A popped-out stream goes to its own window.
+        let Some(view) = room
+            .popouts
+            .get(&peer)
+            .or_else(|| room.watching.get(&peer))
+            .cloned()
+        else {
             return; // stopped watching meanwhile; dropping the feed ends it
         };
         let Some(handle) = &room.handle else { return };
@@ -267,14 +297,32 @@ impl GlanceApp {
         let commander = handle.commander();
         let target = view.read(cx).target();
         let packets = feed.0;
+        let bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = bytes.clone();
         let frames = spawn_decoder(
-            move || packets.recv().ok().map(|p| p.data),
-            target,
             move || {
-                let _ = commander.send(Command::RequestKeyframe(id));
+                packets.recv().ok().map(|p| {
+                    counter.fetch_add(p.data.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                    p.data
+                })
+            },
+            target,
+            {
+                // At most one keyframe request a second.
+                let mut last: Option<std::time::Instant> = None;
+                move || {
+                    let now = std::time::Instant::now();
+                    if last.is_none_or(|t| now - t >= std::time::Duration::from_secs(1)) {
+                        last = Some(now);
+                        let _ = commander.send(Command::RequestKeyframe(id));
+                    }
+                }
             },
         );
-        view.update(cx, |v, cx| v.set_source(frames, cx));
+        view.update(cx, |v, cx| {
+            v.set_bytes_counter(bytes);
+            v.set_source(frames, cx);
+        });
     }
 }
 

@@ -433,3 +433,53 @@ async fn late_joiner_receives_chat_and_file_history() {
             .all(|e| !matches!(e, RoomEvent::History(_)))
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rewatching_survives_the_old_stream_closing() {
+    let (na, nb) = (node().await, node().await);
+    let a = na.create_room(profile("Ana"), live()).await.unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+    b.send(Command::Watch(na.id()));
+    expect(&a, "watcher", |e| matches!(e, RoomEvent::Watchers(1))).await;
+    a.send(Command::Video(packet(1, true)));
+    let RoomEvent::Video { feed: first, .. } =
+        expect(&b, "first feed", |e| matches!(e, RoomEvent::Video { .. })).await
+    else {
+        unreachable!()
+    };
+    // Pop-out style: drop the old feed, unwatch and watch again right away.
+    drop(first);
+    b.send(Command::Unwatch(na.id()));
+    b.send(Command::Watch(na.id()));
+    let RoomEvent::Video { feed: second, .. } =
+        expect(&b, "second feed", |e| matches!(e, RoomEvent::Video { .. })).await
+    else {
+        unreachable!()
+    };
+    // Keep sending; the old stream's teardown must not kill the new one.
+    let pump = {
+        let cmd = a.commander();
+        tokio::spawn(async move {
+            for n in 2..40u8 {
+                let _ = cmd.send(Command::Video(packet(n, true)));
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+    };
+    let mut got = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while got < 10 && tokio::time::Instant::now() < deadline {
+        if tokio::time::timeout(Duration::from_millis(500), second.0.recv_async())
+            .await
+            .is_ok_and(|r| r.is_ok())
+        {
+            got += 1;
+        }
+    }
+    pump.await.unwrap();
+    assert!(got >= 10, "new stream died after {got} packets");
+}

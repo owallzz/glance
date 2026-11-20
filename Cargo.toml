@@ -25,3 +25,7 @@ strip = true
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Media code is too slow to test realistically unoptimized.
+[profile.dev.package.glance-media]
+opt-level = 2

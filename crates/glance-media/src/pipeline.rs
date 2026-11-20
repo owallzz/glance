@@ -23,6 +23,63 @@ pub fn output_size(src: (u32, u32), max_height: Option<u32>) -> (u32, u32) {
     ((w & !1).max(2), (h & !1).max(2))
 }
 
+/// Adapts the encoder bitrate to the slowest viewer: back off quickly when a
+/// viewer's queue overflows, recover slowly when things are calm.
+#[derive(Debug, Clone)]
+pub struct RateController {
+    base: u32,
+    current: u32,
+    last_decrease: Option<std::time::Instant>,
+    last_change: std::time::Instant,
+}
+
+impl RateController {
+    pub fn new(base: u32) -> Self {
+        Self {
+            base,
+            current: base,
+            last_decrease: None,
+            last_change: std::time::Instant::now(),
+        }
+    }
+
+    pub fn current(&self) -> u32 {
+        self.current
+    }
+
+    /// A viewer fell behind. Returns the new rate if it changed.
+    pub fn on_congestion(&mut self, now: std::time::Instant) -> Option<u32> {
+        if self
+            .last_decrease
+            .is_some_and(|t| now - t < Duration::from_secs(1))
+        {
+            return None;
+        }
+        let floor = self.base / 4;
+        let next = (self.current as u64 * 7 / 10) as u32;
+        let next = next.max(floor);
+        self.last_decrease = Some(now);
+        self.last_change = now;
+        (next != self.current).then(|| {
+            self.current = next;
+            next
+        })
+    }
+
+    /// Called regularly; raises the rate after 8 calm seconds.
+    pub fn on_tick(&mut self, now: std::time::Instant) -> Option<u32> {
+        let calm = self
+            .last_decrease
+            .is_none_or(|t| now - t >= Duration::from_secs(8));
+        if !calm || self.current >= self.base || now - self.last_change < Duration::from_secs(4) {
+            return None;
+        }
+        self.current = ((self.current as u64 * 23 / 20) as u32).min(self.base);
+        self.last_change = now;
+        Some(self.current)
+    }
+}
+
 /// Live controls for a running broadcast, shared with the UI/network.
 #[derive(Clone, Default)]
 pub struct BroadcastControl {
@@ -32,6 +89,10 @@ pub struct BroadcastControl {
     pub keyframe: Arc<AtomicBool>,
     /// Captured size, packed as `(w << 32) | h` (0 until the first frame).
     pub source_size: Arc<AtomicU64>,
+    /// Bumped by the network when a viewer falls behind.
+    pub congestion: Arc<AtomicUsize>,
+    /// Current target bitrate (for the stats overlay).
+    pub bitrate: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
 }
 
@@ -69,6 +130,8 @@ pub fn start_broadcast(
             let mut scaler = FrameScaler::default();
             let mut preview_scaler = FrameScaler::default();
             let mut encoder: Option<VideoEncoder> = None;
+            let mut rate: Option<RateController> = None;
+            let mut seen_congestion = 0usize;
             // The last captured frame: GNOME only sends frames when the screen
             // changes, so a viewer joining a still screen needs it re-encoded.
             let mut last: Option<VideoFrame> = None;
@@ -115,19 +178,35 @@ pub fn start_broadcast(
                 }
                 let out = output_size((frame.width, frame.height), config.max_height);
                 if encoder.as_ref().is_none_or(|e| e.size() != out) {
-                    match VideoEncoder::new(
-                        out.0,
-                        out.1,
-                        config.fps,
-                        bitrate_for(out.0, out.1, config.fps),
-                    ) {
-                        Ok(e) => encoder = Some(e),
+                    let base = bitrate_for(out.0, out.1, config.fps);
+                    match VideoEncoder::new(out.0, out.1, config.fps, base) {
+                        Ok(e) => {
+                            encoder = Some(e);
+                            rate = Some(RateController::new(base));
+                            ctl.bitrate.store(base as u64, Ordering::Relaxed);
+                        }
                         Err(e) => break format!("couldn't start the video encoder: {e:#}"),
                     }
                 }
                 let Some(enc) = encoder.as_mut() else {
                     continue;
                 };
+                // Follow the slowest viewer's capacity.
+                if let Some(rc) = rate.as_mut() {
+                    let now = std::time::Instant::now();
+                    let c = ctl.congestion.load(Ordering::Relaxed);
+                    let change = if c != seen_congestion {
+                        seen_congestion = c;
+                        rc.on_congestion(now)
+                    } else {
+                        rc.on_tick(now)
+                    };
+                    if let Some(bps) = change {
+                        enc.set_bitrate(bps);
+                        ctl.bitrate.store(bps as u64, Ordering::Relaxed);
+                        tracing::debug!(bps, "broadcast bitrate");
+                    }
+                }
                 if ctl.keyframe.swap(false, Ordering::Relaxed) {
                     enc.force_keyframe();
                 }
@@ -253,6 +332,29 @@ pub fn spawn_decoder(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_controller_backs_off_fast_and_recovers_slowly() {
+        let t0 = std::time::Instant::now();
+        let s = |secs: f64| t0 + Duration::from_secs_f64(secs);
+        let mut rc = RateController::new(1_000_000);
+        assert_eq!(rc.on_congestion(s(0.0)), Some(700_000));
+        assert_eq!(rc.on_congestion(s(0.5)), None, "at most one cut per second");
+        assert_eq!(rc.on_congestion(s(1.1)), Some(490_000));
+        for i in 0..10 {
+            rc.on_congestion(s(2.0 + i as f64 * 1.1));
+        }
+        assert_eq!(rc.current(), 250_000, "floor is a quarter of the base");
+        assert_eq!(rc.on_tick(s(15.0)), None, "not calm yet");
+        let mut t = 21.0;
+        while rc.current() < 1_000_000 {
+            if rc.on_tick(s(t)).is_some() {
+                assert!(rc.current() <= 1_000_000);
+            }
+            t += 4.0;
+            assert!(t < 200.0, "never recovered");
+        }
+    }
 
     #[test]
     fn output_sizes_are_even_and_capped() {

@@ -210,6 +210,8 @@ pub struct Room {
     pub _voice_task: Option<Task<()>>,
     /// Participant whose volume control is open in the sidebar.
     pub volume_open: Option<PeerId>,
+    /// Streams shown in their own windows.
+    pub popouts: HashMap<PeerId, Entity<VideoView>>,
     /// Files offered in this room.
     pub files: crate::files::FileMap,
     /// Names of history authors who may have left.
@@ -232,7 +234,7 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub struct GlanceApp {
-    focus: FocusHandle,
+    pub focus: FocusHandle,
     pub net: Option<std::rc::Rc<crate::net::Net>>,
     /// First run: ask for a display name before anything else.
     pub needs_profile: bool,
@@ -267,6 +269,8 @@ pub struct GlanceApp {
     pub contact_menu: Option<PeerId>,
     /// "Invite" panel in a room.
     pub invite_open: bool,
+    /// Stream shown full-window (fullscreen viewing).
+    pub immersive: Option<PeerId>,
     pub _tray: Option<crate::tray::Tray>,
     pub _tray_task: Option<Task<()>>,
     /// Audio devices, listed when the voice settings open.
@@ -363,6 +367,7 @@ impl GlanceApp {
             invite_open: false,
             _tray: None,
             _tray_task: None,
+            immersive: None,
         };
         // While the tray icon is up, closing the window minimizes it so calls
         // keep going and contacts can still ring you.
@@ -425,6 +430,7 @@ impl GlanceApp {
             audio: None,
             _voice_task: None,
             volume_open: None,
+            popouts: HashMap::new(),
             files: Default::default(),
             history_names: HashMap::new(),
             met: HashMap::new(),
@@ -764,6 +770,32 @@ impl Render for GlanceApp {
         let font = gpui_kit::component::ActiveTheme::theme(&**cx)
             .font_family
             .clone();
+        if let Some(peer) = self.immersive {
+            if let Some(view) = self
+                .room
+                .as_ref()
+                .and_then(|r| r.watching.get(&peer))
+                .cloned()
+            {
+                return div()
+                    .id("immersive")
+                    .key_context("GlanceApp")
+                    .track_focus(&self.focus)
+                    .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {
+                        this.exit_fullscreen(window, cx)
+                    }))
+                    .size_full()
+                    .bg(gpui_kit::black())
+                    .on_click(cx.listener(|this, ev: &ClickEvent, window, cx| {
+                        if ev.click_count() >= 2 {
+                            this.exit_fullscreen(window, cx);
+                        }
+                    }))
+                    .child(view)
+                    .into_any_element();
+            }
+            self.immersive = None;
+        }
         let main = match (self.screen, self.room.is_some()) {
             (Screen::Room, true) => self.render_room(&p, window, cx).into_any_element(),
             _ => self.render_home(&p, window, cx).into_any_element(),
@@ -771,8 +803,10 @@ impl Render for GlanceApp {
         let mut root = div()
             .key_context("GlanceApp")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| {
-                if this.settings_open {
+            .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {
+                if this.immersive.is_some() {
+                    this.exit_fullscreen(window, cx);
+                } else if this.settings_open {
                     this.settings_open = false;
                 } else {
                     this.go_live = None;
@@ -821,7 +855,7 @@ impl Render for GlanceApp {
             content = content.child(self.render_incoming_call(&p, cx));
         }
         root = root.child(content);
-        root
+        root.into_any_element()
     }
 }
 

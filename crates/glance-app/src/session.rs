@@ -180,6 +180,7 @@ impl GlanceApp {
             audio: None,
             _voice_task: None,
             volume_open: None,
+            popouts: Default::default(),
             files: Default::default(),
             history_names: Default::default(),
             met: Default::default(),
@@ -313,6 +314,12 @@ impl GlanceApp {
             RoomEvent::Watchers(n) => {
                 if let Some(b) = &room.broadcast {
                     b.watchers.store(n, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            RoomEvent::Congested => {
+                if let Some(b) = &room.broadcast {
+                    b.congestion
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             RoomEvent::KeyframeNeeded => {

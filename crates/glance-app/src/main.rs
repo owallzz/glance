@@ -7,6 +7,7 @@ mod files;
 mod home;
 mod net;
 mod overlays;
+mod popout;
 mod room;
 mod session;
 mod spike;

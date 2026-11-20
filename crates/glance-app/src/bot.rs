@@ -203,6 +203,12 @@ pub fn run(
                             b.watchers.store(*n, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
+                    RoomEvent::Congested => {
+                        if let Some(b) = &broadcast {
+                            b.congestion
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                     RoomEvent::KeyframeNeeded => {
                         if let Some(b) = &broadcast {
                             b.keyframe.store(true, std::sync::atomic::Ordering::Relaxed);

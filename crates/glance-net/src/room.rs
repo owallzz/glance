@@ -118,6 +118,8 @@ pub enum RoomEvent {
     },
     /// Our encoder should produce a keyframe soon (new or lagging viewer).
     KeyframeNeeded,
+    /// A viewer couldn't keep up with our stream (lower the bitrate).
+    Congested,
     /// The room actor stopped (after Leave).
     Closed,
 }
@@ -196,13 +198,15 @@ pub(crate) enum Inbound {
         conn_id: usize,
     },
     Cmd(Command),
-    /// A viewer's video stream failed.
-    WatcherGone(EndpointId),
+    /// A viewer's video stream ended (generation identifies which one).
+    WatcherGone(EndpointId, u64),
 }
 
 /// Someone watching our stream.
 struct Watcher {
     tx: mpsc::Sender<Arc<VideoPacket>>,
+    /// Distinguishes successive streams to the same viewer.
+    generation: u64,
     /// Drop frames until the next keyframe (just joined or fell behind).
     need_key: bool,
 }
@@ -231,6 +235,7 @@ struct Actor {
     events: flume::Sender<RoomEvent>,
     chat_seq: u64,
     watchers: HashMap<EndpointId, Watcher>,
+    watcher_generation: u64,
     audio_sink: AudioSink,
     history: std::collections::VecDeque<HistoryItem>,
     /// Only the first Welcome's history is used (others would duplicate it).
@@ -263,6 +268,7 @@ pub(crate) fn spawn(
         events: ev_tx,
         chat_seq: 0,
         watchers: HashMap::new(),
+        watcher_generation: 0,
         audio_sink: AudioSink::default(),
         history: Default::default(),
         got_history: false,
@@ -389,7 +395,17 @@ impl Actor {
                     let _ = self.events.send(RoomEvent::MemberLeft { id });
                 }
             }
-            Inbound::WatcherGone(id) => self.remove_watcher(id),
+            Inbound::WatcherGone(id, generation) => {
+                // Only if it's still the same stream (a re-watch may have
+                // replaced it already).
+                if self
+                    .watchers
+                    .get(&id)
+                    .is_some_and(|w| w.generation == generation)
+                {
+                    self.remove_watcher(id);
+                }
+            }
             Inbound::Cmd(cmd) => return self.on_command(cmd),
         }
         true
@@ -660,8 +676,17 @@ impl Actor {
             return;
         };
         let (tx, rx) = mpsc::channel(WATCHER_QUEUE);
-        spawn_video_writer(peer.conn.clone(), id, rx, self.inbound.clone());
-        self.watchers.insert(id, Watcher { tx, need_key: true });
+        self.watcher_generation += 1;
+        let generation = self.watcher_generation;
+        spawn_video_writer(peer.conn.clone(), id, generation, rx, self.inbound.clone());
+        self.watchers.insert(
+            id,
+            Watcher {
+                tx,
+                generation,
+                need_key: true,
+            },
+        );
         let _ = self.events.send(RoomEvent::Watchers(self.watchers.len()));
         let _ = self.events.send(RoomEvent::KeyframeNeeded);
     }
@@ -690,6 +715,7 @@ impl Actor {
             }
         }
         if want_key {
+            let _ = self.events.send(RoomEvent::Congested);
             let _ = self.events.send(RoomEvent::KeyframeNeeded);
         }
     }
@@ -851,6 +877,7 @@ fn now_ms() -> u64 {
 fn spawn_video_writer(
     conn: Connection,
     to: EndpointId,
+    generation: u64,
     mut rx: mpsc::Receiver<Arc<VideoPacket>>,
     inbound: flume::Sender<Inbound>,
 ) {
@@ -869,7 +896,7 @@ fn spawn_video_writer(
         .await;
         if let Err(e) = result {
             debug!("video stream to {to} ended: {e:#}");
-            let _ = inbound.send(Inbound::WatcherGone(to));
+            let _ = inbound.send(Inbound::WatcherGone(to, generation));
         }
     });
 }
@@ -900,14 +927,26 @@ fn spawn_uni_acceptor(
             }
             let inbound = inbound.clone();
             tokio::spawn(async move {
+                // After dropping a packet, later frames can't decode until the
+                // next keyframe: skip to it, and ask for one at most once a
+                // second (each request makes the sharer send a big frame).
+                let mut waiting_for_key = false;
+                let mut last_request: Option<tokio::time::Instant> = None;
                 while let Ok(pkt) = read_video(&mut recv).await {
+                    if waiting_for_key && !pkt.keyframe {
+                        continue;
+                    }
                     match tx.try_send(pkt) {
-                        Ok(()) => {}
+                        Ok(()) => waiting_for_key = false,
                         // The UI dropped the feed (stopped watching).
                         Err(flume::TrySendError::Disconnected(_)) => break,
-                        // Decoder is behind: drop and ask for a fresh keyframe.
                         Err(flume::TrySendError::Full(_)) => {
-                            let _ = inbound.send(Inbound::Cmd(Command::RequestKeyframe(from)));
+                            waiting_for_key = true;
+                            let now = tokio::time::Instant::now();
+                            if last_request.is_none_or(|t| now - t >= Duration::from_secs(1)) {
+                                last_request = Some(now);
+                                let _ = inbound.send(Inbound::Cmd(Command::RequestKeyframe(from)));
+                            }
                         }
                     }
                 }

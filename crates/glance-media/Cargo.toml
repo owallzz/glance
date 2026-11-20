@@ -9,6 +9,7 @@ publish.workspace = true
 fast_image_resize = "6"
 flume = "0.11"
 openh264 = "0.9"
+openh264-sys2 = "=0.9.10"
 opus = "0.4"
 cpal = "0.18"
 nnnoiseless = { version = "0.5", default-features = false }

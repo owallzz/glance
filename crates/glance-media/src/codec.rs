@@ -84,6 +84,21 @@ impl VideoEncoder {
         (self.width, self.height)
     }
 
+    /// Change the target bitrate on the fly (no new keyframe).
+    pub fn set_bitrate(&mut self, bps: u32) {
+        let mut info = openh264_sys2::SBitrateInfo {
+            iLayer: openh264_sys2::SPATIAL_LAYER_ALL,
+            iBitrate: bps.min(i32::MAX as u32) as i32,
+        };
+        // SAFETY: the encoder is initialized; SetOption copies the struct.
+        unsafe {
+            self.encoder.raw_api().set_option(
+                openh264_sys2::ENCODER_OPTION_BITRATE,
+                (&mut info as *mut openh264_sys2::SBitrateInfo).cast(),
+            );
+        }
+    }
+
     /// Ask for the next frame to be a keyframe (new viewer, packet loss).
     pub fn force_keyframe(&mut self) {
         self.encoder.force_intra_frame();
@@ -212,6 +227,28 @@ mod tests {
         let mut enc = VideoEncoder::new(320, 240, 30, 1_000_000).unwrap();
         let wrong = Pattern::new(160, 120, 0).next_frame();
         assert!(enc.encode(&wrong).is_err());
+    }
+
+    #[test]
+    fn bitrate_can_change_while_encoding() {
+        let (w, h) = (320, 240);
+        let mut enc = VideoEncoder::new(w, h, 30, 2_000_000).unwrap();
+        let mut pattern = Pattern::new(w, h, 5);
+        let mut bytes = |enc: &mut VideoEncoder| -> usize {
+            (0..30)
+                .filter_map(|_| enc.encode(&pattern.next_frame()).unwrap())
+                .map(|p| p.data.len())
+                .sum()
+        };
+        let _warmup = bytes(&mut enc);
+        let high = bytes(&mut enc);
+        enc.set_bitrate(150_000);
+        let _settle = bytes(&mut enc);
+        let low = bytes(&mut enc);
+        assert!(
+            low < high,
+            "lowering bitrate should shrink output: {high} -> {low}"
+        );
     }
 
     #[test]
