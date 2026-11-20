@@ -74,10 +74,15 @@ impl SettingsPage {
 /// Go Live picker state.
 pub struct GoLive {
     pub windows_tab: bool,
+    /// Index into the screens or windows of `sources` (per tab).
     pub source: usize,
+    /// Real capture sources (empty when the OS shows its own picker).
+    pub sources: Vec<glance_media::capture::Source>,
+    /// Wayland: the system dialog chooses what to share.
+    pub system_picker: bool,
     pub resolution: Resolution,
     pub fps: u32,
-    pub audio: bool,
+    pub error: Option<String>,
 }
 
 /// Settings toggles (persisted in M11).
@@ -104,6 +109,9 @@ pub struct Room {
     pub started: Instant,
     /// The live network room; `None` for the `--demo` room.
     pub handle: Option<glance_net::RoomHandle>,
+    /// Our running screen share, if any.
+    pub broadcast: Option<glance_media::pipeline::BroadcastControl>,
+    pub _broadcast_task: Option<Task<()>>,
     pub _events: Option<Task<()>>,
 }
 
@@ -264,6 +272,8 @@ impl GlanceApp {
         self.room = Some(Room {
             handle: None,
             _events: None,
+            broadcast: None,
+            _broadcast_task: None,
             name: "Sam's room".into(),
             link: "glance://join/demo".into(),
             participants: demo::participants(),
@@ -278,6 +288,9 @@ impl GlanceApp {
     }
 
     pub fn leave_room(&mut self, cx: &mut Context<Self>) {
+        if let Some(b) = self.room.as_ref().and_then(|r| r.broadcast.as_ref()) {
+            b.stop();
+        }
         let _guard = self.net.as_ref().map(|n| n.enter());
         self.room = None;
         self.screen = Screen::Home;
@@ -292,6 +305,10 @@ impl GlanceApp {
             return;
         };
         if room.watching.contains_key(&peer) {
+            return;
+        }
+        if room.handle.is_some() {
+            self.watch_live(peer, cx);
             return;
         }
         let Some(stream) = room
@@ -316,7 +333,14 @@ impl GlanceApp {
     }
 
     pub fn stop_watching(&mut self, peer: PeerId, cx: &mut Context<Self>) {
+        let me = self.me.id;
         if let Some(room) = self.room.as_mut() {
+            if peer != me
+                && let Some(handle) = &room.handle
+                && let Ok(id) = glance_net::EndpointId::from_bytes(&peer.0)
+            {
+                handle.send(glance_net::Command::Unwatch(id));
+            }
             room.watching.remove(&peer);
             if room.focused == Some(peer) {
                 room.focused = None;
@@ -598,22 +622,24 @@ impl Render for GlanceApp {
             .font_family(font)
             .text_color(p.text_normal)
             .bg(p.bg_rail)
-            .child(render_title_bar(&p))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .bg(p.bg_content)
-                    .child(self.render_rail(&p, cx))
-                    .child(main),
-            );
+            .child(render_title_bar(&p));
+        // Overlays live below the title bar so the window can always be
+        // dragged, minimized and closed.
+        let mut content = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .bg(p.bg_content)
+            .child(self.render_rail(&p, cx))
+            .child(main);
         if self.go_live.is_some() {
-            root = root.child(self.render_go_live(&p, cx));
+            content = content.child(self.render_go_live(&p, cx));
         }
         if self.settings_open {
-            root = root.child(self.render_settings(&p, cx));
+            content = content.child(self.render_settings(&p, cx));
         }
+        root = root.child(content);
         root
     }
 }

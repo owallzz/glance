@@ -166,8 +166,10 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - [x] **M3: Rooms over iroh.** Create/join by ticket, mesh membership, presence, text chat, connection indicator. Two or three instances on one machine, plus `glance bot`.
 - [ ] **M3b: Contacts + ringing.** Persisted identity, end-of-call "Add contact", mutual requests, contacts home (Online/All/Pending/Blocked), presence/status, Call and Invite rings with incoming-call popup, missed calls, block/remove, tray + start on login + OS notifications. Tested with two local instances using separate data dirs.
 - [ ] **M3c: File sharing.** iroh-blobs store, drag/drop, paste and attach in chat, file cards with progress, inline image preview, multi-provider download, resume, send-to-contact.
-- [ ] **M4: First real screen share (Linux).** Portal+PipeWire and X11 capture, openh264 encode/decode, one sharer to many watchers, Watch/Stop watching, encode-only-when-watched.
-- [ ] **M5: Everyone shares at once.** Multiple simultaneous streams, keyframe requests, per-viewer backpressure, bitrate adaptation, stats overlay, fullscreen and pop-out.
+- [x] **M4: First real screen share.** Portal+PipeWire (Wayland), zed-scap (X11/macOS/Windows), OpenH264 encode/decode, one sharer to many watchers, Watch/Stop watching, encode-only-when-watched, own-stream preview.
+  - Measured on Linux (release build): real 2560×1440 capture at about 52 fps with moving content. Software encode at 1080p takes 18–25 ms per frame. The viewer gets a steady 30 fps from a 1080p30 stream at about 22% of one core.
+  - Not yet checked on real macOS/Windows hardware (CI builds and tests only).
+- [ ] **M5: Everyone shares at once.** Multiple simultaneous streams, keyframe requests and per-viewer backpressure (done in M4), plus bitrate adaptation, stats overlay, fullscreen and pop-out.
 - [ ] **M6: Voice.** cpal + Opus + AEC/NS/VAD, jitter buffer, mixer, mute/deafen, speaking ring, per-user volume, device selection, sounds.
 - [ ] **M7: Stream audio.** System/app audio with screen shares (Linux PipeWire monitor), per-stream volume.
 - [ ] **M8: Webcam.** Camera tiles via nokhwa, sharing the video pipeline.

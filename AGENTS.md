@@ -8,8 +8,11 @@ glance: peer-to-peer screen sharing rooms (multi-sharer, voice, chat, webcam, co
 | Host env (immutable Fedora only) | `source scripts/env.sh` |
 | Build | `cargo build` |
 | Run | `cargo run -p glance-app` (`-- --demo` for a populated fake room, `-- --spike N W H FPS` for the video spike) |
-| Test peer | `cargo run -p glance-app -- bot <link> [name]` (headless: joins, greets, echoes chat, toggles mute) |
+| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS]` (headless: joins, greets, echoes chat, toggles mute; `--stream` shares a test pattern through the real encoder) |
+| Capture probe | `cargo run --release -p glance-media --example capture_probe [secs] [max_height]` (captures, encodes, prints fps and encode cost) |
 | Second identity | `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app` |
+| Auto-watch | `GLANCE_AUTOWATCH=1` watches every stream automatically (lets a second instance test viewing without clicks) |
+| Skip portal | `GLANCE_PW_NODE=<id>` reads an existing PipeWire node instead of opening the share dialog (pair with a Mutter screencast for tests) |
 | Local only | `GLANCE_RELAY=off` (no relays, direct addresses only); `GLANCE_RELAY=<url>` for a custom relay |
 | Screenshot | `scripts/shot.sh out.png 2 --demo` (see `.claude/skills/run-glance`) |
 | Test | `cargo test --workspace` |
@@ -22,12 +25,13 @@ Run the tests and the linter before every commit; CI runs the same checks.
 - `crates/glance-app`: gpui-kit UI, binary `glance`.
   - `net.rs`: tokio runtime, identity key + profile.json in the data dir, helpers to run network futures off the UI thread. `session.rs`: start/join rooms and apply `RoomEvent`s to UI state. `bot.rs`: headless test peer.
   - `app.rs`: root view `GlanceApp` (all UI state, rail, user panel, key actions). Screens are `impl GlanceApp` blocks in `home.rs`, `room.rs`, and `overlays.rs` (Go Live, settings).
+  - `streaming.rs`: Go Live (capture -> broadcast), own-stream preview, watching others (feed -> decoder -> tile).
   - `ui.rs`: shared widgets (Avatar, icon_button, pill, live_badge).
   - `video.rs`: `VideoView` tile. `spike.rs`: the render benchmark.
   - `theme.rs` + `assets/themes/glance.json`: design tokens and the gpui-kit component theme (dark + light).
 - `crates/glance-core`: view-model types the UI renders (`model.rs`), formatting helpers, `demo.rs` fake data. Room/contacts state machines land here (no I/O, unit-tested).
-- `crates/glance-net`: `Node` (iroh endpoint + router) and the room mesh actor (`room.rs`). `tests/room_mesh.rs` runs 3 in-process peers. Media, contacts and files land here next.
-- `crates/glance-media`: `VideoFrame`, `TargetSize` and `FrameScaler` (scale frames to tile size), the test `pattern`. Capture, codecs and audio land here behind per-OS traits.
+- `crates/glance-net`: `Node` (iroh endpoint + router) and the room mesh actor (`room.rs`): membership, chat, state, and video fan-out (one QUIC uni stream per watcher, per-watcher queue that skips to keyframes when full). `tests/room_mesh.rs` runs in-process peers.
+- `crates/glance-media`: frames and scaling (`frame.rs`), H.264 via OpenH264 (`codec.rs`), capture (`capture/`: Wayland = portal + PipeWire in `wayland.rs`; X11/macOS/Windows = zed-scap in `scap_backend.rs`), and `pipeline.rs` (broadcast: capture -> scale -> encode only while watched; decoder thread for viewers).
 - `crates/glance-proto`: tickets (`glance://join/...`), room control messages and join proofs, length-prefixed postcard framing. Breaking wire changes get a new ALPN.
 - `scripts/`: host build helpers and `shot.sh` (screenshots).
 - `.claude/skills/run-glance`: how to launch, screenshot and measure the app.
@@ -64,6 +68,11 @@ This repo must not contain personal or identifying information. Never commit:
 Check the diff for these before every commit.
 
 ## Gotchas
+- Never `pkill -f` / `pgrep -f` with a pattern that appears in your own command (e.g. `glance bot`, a script name): it matches your shell and kills it. Use `pgrep -x glance` and pids you saved.
+- xdotool `mousemove --window` misplaces the pointer for our client-decorated window; compute absolute coordinates from `getwindowgeometry --shell` (as `scripts/shot.sh` does).
+- Linux capture needs PipeWire headers (`pipewire-devel`, or `brew install pipewire` on the immutable dev host) and clang for bindgen. zed-scap's own Wayland path is disabled: it needs libspa 0.8, which doesn't build against PipeWire 1.x.
+- GNOME only sends screencast frames when the screen changes; the broadcaster re-encodes the last frame when a keyframe is requested.
+- Measure video performance with release builds; glance crates run unoptimized in dev and the encoder pipeline is several times slower.
 - Test multi-person flows with one GUI window plus `glance bot` peers. Two GUI windows overlap and GNOME ignores scripted window moves, so xdotool clicks hit the wrong one.
 - The bot uses a fresh identity each run; the GUI uses the identity in its data dir. Two GUI instances need different `GLANCE_DATA_DIR`s.
 - The dev host is immutable Fedora without `-devel` packages: `source scripts/env.sh` first, or the fontconfig/xkbcommon build scripts fail.

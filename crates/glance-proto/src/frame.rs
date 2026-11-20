@@ -2,12 +2,15 @@
 
 use serde::{Serialize, de::DeserializeOwned};
 
-/// Largest frame we accept (control messages are small; files use blobs).
+/// Largest control frame we accept (control messages are small; files use blobs).
 pub const MAX_FRAME: usize = 1 << 20;
+
+/// Largest video packet (a 4K/8K keyframe can be several megabytes).
+pub const MAX_VIDEO_FRAME: usize = 32 << 20;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FrameError {
-    #[error("frame of {0} bytes exceeds the {MAX_FRAME} byte limit")]
+    #[error("frame of {0} bytes exceeds the size limit")]
     TooLarge(usize),
     #[error("malformed frame: {0}")]
     Malformed(#[from] postcard::Error),
@@ -15,8 +18,13 @@ pub enum FrameError {
 
 /// Encode `msg` as a complete frame (length prefix included).
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, FrameError> {
+    encode_with_limit(msg, MAX_FRAME)
+}
+
+/// [`encode`] with a custom size limit (video uses [`MAX_VIDEO_FRAME`]).
+pub fn encode_with_limit<T: Serialize>(msg: &T, limit: usize) -> Result<Vec<u8>, FrameError> {
     let body = postcard::to_stdvec(msg)?;
-    if body.len() > MAX_FRAME {
+    if body.len() > limit {
         return Err(FrameError::TooLarge(body.len()));
     }
     let mut out = Vec::with_capacity(4 + body.len());
@@ -27,8 +35,12 @@ pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, FrameError> {
 
 /// Parse a length prefix, rejecting oversized frames before allocating.
 pub fn body_len(prefix: [u8; 4]) -> Result<usize, FrameError> {
+    body_len_with_limit(prefix, MAX_FRAME)
+}
+
+pub fn body_len_with_limit(prefix: [u8; 4], limit: usize) -> Result<usize, FrameError> {
     let len = u32::from_be_bytes(prefix) as usize;
-    if len > MAX_FRAME {
+    if len > limit {
         return Err(FrameError::TooLarge(len));
     }
     Ok(len)

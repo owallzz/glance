@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use glance_media::{TargetSize, VideoFrame};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use image::{Frame, RgbaImage};
 
@@ -37,7 +38,30 @@ impl VideoView {
         target: TargetSize,
         cx: &mut Context<Self>,
     ) -> Self {
-        let feed = cx.spawn(async move |this, cx| {
+        let mut view = Self::empty(target);
+        view.set_source(rx, cx);
+        view
+    }
+
+    /// A tile with no frames yet (waiting for a stream to start).
+    pub fn empty(target: TargetSize) -> Self {
+        Self {
+            current: None,
+            current_size: (0, 0),
+            stale: Vec::new(),
+            target,
+            stats: FpsCounter::default(),
+            _feed: Task::ready(()),
+        }
+    }
+
+    pub fn target(&self) -> TargetSize {
+        self.target.clone()
+    }
+
+    /// Show frames from `rx`, replacing any previous source.
+    pub fn set_source(&mut self, rx: flume::Receiver<VideoFrame>, cx: &mut Context<Self>) {
+        self._feed = cx.spawn(async move |this, cx| {
             while let Ok(mut frame) = rx.recv_async().await {
                 while let Ok(newer) = rx.try_recv() {
                     frame = newer;
@@ -59,14 +83,6 @@ impl VideoView {
                 }
             }
         });
-        Self {
-            current: None,
-            current_size: (0, 0),
-            stale: Vec::new(),
-            target,
-            stats: FpsCounter::default(),
-            _feed: feed,
-        }
     }
 
     pub fn fps(&self) -> f32 {
@@ -104,6 +120,14 @@ impl Render for VideoView {
                 .absolute()
                 .size_full(),
             )
+            .when(self.current.is_none(), |d| {
+                d.flex().items_center().justify_center().child(
+                    div()
+                        .text_sm()
+                        .text_color(gpui_kit::white().opacity(0.6))
+                        .child("Connecting to stream…"),
+                )
+            })
             .children(self.current.clone().map(|image| {
                 img(ImageSource::Render(image))
                     .size_full()
@@ -140,6 +164,7 @@ impl FpsCounter {
         let elapsed = now - start;
         if elapsed >= Duration::from_secs(1) {
             self.fps = self.count as f32 / elapsed.as_secs_f32();
+            tracing::debug!(fps = self.fps, "video tile");
             self.count = 0;
             self.window_start = Some(now);
         }

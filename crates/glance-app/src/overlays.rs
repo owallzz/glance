@@ -7,38 +7,32 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{GlanceApp, GoLive, SettingsPage};
+use glance_media::capture::{Source, SourceKind};
+
+use crate::app::{GlanceApp, SettingsPage};
 use crate::theme::Palette;
 use crate::ui::{Avatar, icon, pill, section_label};
-
-impl Default for GoLive {
-    fn default() -> Self {
-        Self {
-            windows_tab: false,
-            source: 0,
-            resolution: Resolution::P1080,
-            fps: 60,
-            audio: true,
-        }
-    }
-}
-
-/// Placeholder capture sources until M4 enumerates real ones.
-const SCREENS: [(&str, u32, u32); 2] = [("Screen 1", 3840, 2160), ("Screen 2", 2560, 1440)];
-const WINDOWS: [(&str, u32, u32); 3] = [
-    ("Terminal", 1920, 1080),
-    ("Browser", 2560, 1440),
-    ("Game", 5120, 1440),
-];
 
 impl GlanceApp {
     pub fn render_go_live(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let gl = self.go_live.as_ref().expect("go live open");
-        let sources: &[(&str, u32, u32)] = if gl.windows_tab { &WINDOWS } else { &SCREENS };
-        let (src_name, src_w, src_h) = sources[gl.source.min(sources.len() - 1)];
-        let out = gl.resolution.output_size((src_w, src_h));
-        // No encoder probing yet (M10); assume hardware is present.
-        let hw_available = true;
+        let kind = if gl.windows_tab {
+            SourceKind::Window
+        } else {
+            SourceKind::Screen
+        };
+        let visible: Vec<Source> = gl
+            .sources
+            .iter()
+            .filter(|s| s.kind == kind)
+            .cloned()
+            .collect();
+        let selected_src = visible.get(gl.source).cloned();
+        let out = selected_src
+            .as_ref()
+            .and_then(|s| s.size)
+            .map(|sz| gl.resolution.output_size(sz));
+        let heavy = gl.resolution.needs_hardware(gl.fps);
 
         let tab = |id: &'static str, label: &'static str, windows: bool, selected: bool| {
             div()
@@ -67,68 +61,123 @@ impl GlanceApp {
                 }))
         };
 
-        let source_cards = sources.iter().enumerate().map(|(i, (name, w, h))| {
-            let selected = i == gl.source;
+        let source_cards: Vec<AnyElement> = visible
+            .iter()
+            .enumerate()
+            .map(|(i, src)| {
+                let selected = i == gl.source;
+                let glyph = match src.kind {
+                    SourceKind::Screen => IconName::Monitor,
+                    SourceKind::Window => IconName::AppWindow,
+                };
+                div()
+                    .id(SharedString::from(format!("src-{i}")))
+                    .w(px(200.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(gl) = this.go_live.as_mut() {
+                            gl.source = i;
+                            gl.error = None;
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .h(px(112.))
+                            .rounded(px(6.))
+                            .border_2()
+                            .border_color(if selected { p.brand } else { p.bg_rail })
+                            .bg(p.bg_rail)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon(glyph, 36., p.text_muted)),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .truncate()
+                            .text_color(if selected {
+                                p.text_header
+                            } else {
+                                p.text_normal
+                            })
+                            .child(src.name.clone()),
+                    )
+                    .children(src.size.map(|(w, h)| {
+                        div()
+                            .text_xs()
+                            .text_color(p.text_muted)
+                            .child(format!("{w}×{h}"))
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+
+        let picker_body: AnyElement = if gl.system_picker {
             div()
-                .id(SharedString::from(format!("src-{i}")))
-                .w(px(200.))
+                .p_4()
                 .flex()
-                .flex_col()
-                .gap_1()
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(gl) = this.go_live.as_mut() {
-                        gl.source = i;
-                    }
-                    cx.notify();
-                }))
+                .items_center()
+                .gap_3()
+                .child(icon(IconName::ScreenShare, 32., p.brand))
                 .child(
                     div()
-                        .h(px(112.))
-                        .rounded(px(6.))
-                        .border_2()
-                        .border_color(if selected { p.brand } else { p.bg_rail })
-                        .bg(p.bg_rail)
                         .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(icon(IconName::Monitor, 36., p.text_muted)),
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_color(p.text_header)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Your system will ask what to share"),
+                        )
+                        .child(div().text_sm().text_color(p.text_muted).child(
+                            "After you press Go Live, pick a screen or window in the dialog that opens.",
+                        )),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(if selected {
-                            p.text_header
-                        } else {
-                            p.text_normal
-                        })
-                        .child(name.to_string()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(p.text_muted)
-                        .child(format!("{w}×{h}")),
-                )
-        });
+                .into_any_element()
+        } else if source_cards.is_empty() {
+            div()
+                .p_4()
+                .text_sm()
+                .text_color(p.text_muted)
+                .child(if gl.windows_tab {
+                    "No windows found."
+                } else {
+                    "No screens found. Screen capture may not be supported here."
+                })
+                .into_any_element()
+        } else {
+            div()
+                .id("go-live-sources")
+                .max_h(px(300.))
+                .overflow_y_scroll()
+                .p_4()
+                .flex()
+                .flex_wrap()
+                .gap_3()
+                .children(source_cards)
+                .into_any_element()
+        };
 
         let res_pills = Resolution::ALL.into_iter().map(|r| {
-            let disabled = r.needs_hardware(gl.fps) && !hw_available;
             pill(
                 SharedString::from(format!("res-{}", r.label())),
                 r.label(),
                 r == gl.resolution,
-                disabled,
+                false,
                 p,
             )
-            .when(!disabled, |d| {
-                d.on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(gl) = this.go_live.as_mut() {
-                        gl.resolution = r;
-                    }
-                    cx.notify();
-                }))
-            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(gl) = this.go_live.as_mut() {
+                    gl.resolution = r;
+                }
+                cx.notify();
+            }))
         });
         let fps_pills = FRAME_RATES.into_iter().map(|f| {
             pill(
@@ -145,8 +194,27 @@ impl GlanceApp {
                 cx.notify();
             }))
         });
-        let audio = gl.audio;
+        let summary = match (&selected_src, out, gl.system_picker) {
+            (_, _, true) => format!(
+                "Streams at up to {} and {} FPS. Viewers on smaller tiles get it scaled to fit.",
+                gl.resolution.label(),
+                gl.fps
+            ),
+            (Some(src), Some((w, h)), _) => format!(
+                "{} will stream at {w}×{h}, {} FPS. Viewers on smaller tiles get it scaled to fit.",
+                src.name, gl.fps
+            ),
+            (Some(src), None, _) => format!(
+                "{} will stream at up to {}, {} FPS.",
+                src.name,
+                gl.resolution.label(),
+                gl.fps
+            ),
+            (None, _, _) => "Pick a screen or window.".into(),
+        };
         let windows_tab = gl.windows_tab;
+        let system_picker = gl.system_picker;
+        let error = gl.error.clone();
 
         modal_backdrop("go-live-backdrop").child(
             div()
@@ -176,17 +244,19 @@ impl GlanceApp {
                             cx.notify();
                         }))),
                 )
-                .child(
-                    div()
-                        .px_4()
-                        .flex()
-                        .gap_2()
-                        .border_b_1()
-                        .border_color(p.bg_selected)
-                        .child(tab("tab-screens", "Screens", false, !windows_tab))
-                        .child(tab("tab-windows", "Applications", true, windows_tab)),
-                )
-                .child(div().p_4().flex().flex_wrap().gap_3().children(source_cards))
+                .when(!system_picker, |d| {
+                    d.child(
+                        div()
+                            .px_4()
+                            .flex()
+                            .gap_2()
+                            .border_b_1()
+                            .border_color(p.bg_selected)
+                            .child(tab("tab-screens", "Screens", false, !windows_tab))
+                            .child(tab("tab-windows", "Applications", true, windows_tab)),
+                    )
+                })
+                .child(picker_body)
                 .child(
                     div()
                         .p_4()
@@ -217,21 +287,13 @@ impl GlanceApp {
                                         .child(div().flex().flex_wrap().gap_1().children(fps_pills)),
                                 ),
                         )
-                        .child(div().text_xs().text_color(p.text_muted).child(format!(
-                            "{src_name} will stream at {}×{}. Viewers on smaller tiles get it scaled to fit.",
-                            out.0, out.1
-                        )))
-                        .child(
-                            Switch::new("share-audio")
-                                .checked(audio)
-                                .label("Also share audio")
-                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                    if let Some(gl) = this.go_live.as_mut() {
-                                        gl.audio = *checked;
-                                    }
-                                    cx.notify();
-                                })),
-                        ),
+                        .child(div().text_xs().text_color(p.text_muted).child(summary))
+                        .when(heavy, |d| {
+                            d.child(div().text_xs().text_color(p.yellow).child(
+                                "This quality uses software encoding for now and may drop frames on slower computers.",
+                            ))
+                        })
+                        .children(error.map(|e| div().text_sm().text_color(p.red).child(e))),
                 )
                 .child(
                     div()
@@ -247,15 +309,14 @@ impl GlanceApp {
                             },
                         )))
                         .child(Button::new("go-live-start").primary().label("Go Live").on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                this.start_streaming(src_name, out, cx);
-                            },
+                            |this, _, _, cx| this.start_streaming(cx),
                         ))),
                 ),
         )
     }
 
-    fn start_streaming(&mut self, source: &str, size: (u32, u32), cx: &mut Context<Self>) {
+    /// The `--demo` room has no network: show a fake stream entry.
+    pub fn start_demo_stream(&mut self, cx: &mut Context<Self>) {
         let Some(gl) = self.go_live.take() else {
             return;
         };
@@ -264,14 +325,13 @@ impl GlanceApp {
             && let Some(x) = room.participants.iter_mut().find(|x| x.profile.id == me)
         {
             x.stream = Some(StreamInfo {
-                width: size.0,
-                height: size.1,
+                width: 1920,
+                height: 1080,
                 fps: gl.fps,
-                has_audio: gl.audio,
-                source: source.to_string(),
+                has_audio: false,
+                source: "Screen".into(),
             });
         }
-        self.push_state();
         cx.notify();
     }
 

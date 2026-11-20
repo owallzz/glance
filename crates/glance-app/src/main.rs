@@ -8,6 +8,7 @@ mod overlays;
 mod room;
 mod session;
 mod spike;
+mod streaming;
 mod theme;
 mod ui;
 mod video;
@@ -26,11 +27,25 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
-            eprintln!("usage: glance bot <link> [name]");
+            eprintln!("usage: glance bot <link> [name] [--stream WxH@FPS]");
             std::process::exit(2);
         };
-        let name = args.get(2).map(String::as_str).unwrap_or("Bot");
-        if let Err(e) = bot::run(link, name) {
+        let name = args
+            .get(2)
+            .filter(|a| !a.starts_with("--"))
+            .map(String::as_str)
+            .unwrap_or("Bot");
+        // --stream [WxH@FPS], default 1280x720@30
+        let stream = args.iter().position(|a| a == "--stream").map(|i| {
+            args.get(i + 1)
+                .and_then(|spec| {
+                    let (size, fps) = spec.split_once('@')?;
+                    let (w, h) = size.split_once('x')?;
+                    Some((w.parse().ok()?, h.parse().ok()?, fps.parse().ok()?))
+                })
+                .unwrap_or((1280, 720, 30))
+        });
+        if let Err(e) = bot::run(link, name, stream) {
             eprintln!("glance bot: {e:#}");
             std::process::exit(1);
         }

@@ -75,6 +75,26 @@ pub enum Control {
     Ping(u64),
     Pong(u64),
     Leave,
+    /// Viewer -> sharer: start sending me your screen.
+    Watch,
+    /// Viewer -> sharer: stop sending it.
+    Unwatch,
+    /// Viewer -> sharer: I lost packets; send a keyframe.
+    KeyframeRequest,
+}
+
+/// First byte of a unidirectional stream: what it carries.
+pub const UNI_VIDEO: u8 = 1;
+
+/// One encoded picture on a video stream (sharer -> viewer).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoPacket {
+    pub ts_us: u64,
+    pub keyframe: bool,
+    pub width: u32,
+    pub height: u32,
+    /// Annex-B H.264 access unit.
+    pub data: Vec<u8>,
 }
 
 /// Proof that `from` knows the room secret, bound to the pair of endpoints so

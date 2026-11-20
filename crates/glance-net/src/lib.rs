@@ -18,7 +18,7 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayUrl, SecretKey, TransportAddr};
 
 pub use glance_proto::EndpointId;
-pub use room::{Command, RoomEvent, RoomHandle};
+pub use room::{Command, RoomEvent, RoomHandle, VideoFeed};
 
 /// Which relays the endpoint uses when a direct path isn't possible.
 #[derive(Clone, Debug, Default)]

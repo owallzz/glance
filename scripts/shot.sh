@@ -23,8 +23,11 @@ for _ in $(seq 1 30); do
 done
 [ -n "$id" ] || { echo "glance window not found" >&2; exit 1; }
 sleep "$wait"
+# Window-relative coordinates -> absolute (`mousemove --window` misplaces
+# the pointer for client-decorated windows under XWayland).
+eval "$(xdotool getwindowgeometry --shell "$id")"
 for c in ${CLICKS:-}; do
-  xdotool mousemove --window "$id" "${c%,*}" "${c#*,}" click 1
+  xdotool mousemove "$((X + ${c%,*}))" "$((Y + ${c#*,}))" click 1
   sleep 0.7
 done
 for k in ${KEYS:-}; do

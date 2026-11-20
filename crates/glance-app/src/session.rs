@@ -174,6 +174,8 @@ impl GlanceApp {
             started: Instant::now(),
             handle: Some(handle),
             _events: Some(task),
+            broadcast: None,
+            _broadcast_task: None,
         });
         self.screen = Screen::Room;
     }
@@ -285,11 +287,46 @@ impl GlanceApp {
                     });
                 }
             }
+            RoomEvent::Video { from, feed } => {
+                self.on_video_feed(peer_id(from), feed, cx);
+            }
+            RoomEvent::Watchers(n) => {
+                if let Some(b) = &room.broadcast {
+                    b.watchers.store(n, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            RoomEvent::KeyframeNeeded => {
+                if let Some(b) = &room.broadcast {
+                    b.keyframe.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             RoomEvent::Problem(msg) => {
                 let me = self.me.id;
                 system(room, me, msg);
             }
             RoomEvent::Closed => {}
+        }
+        // Testing aid: GLANCE_AUTOWATCH=1 watches every stream automatically.
+        if std::env::var_os("GLANCE_AUTOWATCH").is_some() {
+            let me = self.me.id;
+            let to_watch: Vec<PeerId> = self
+                .room
+                .as_ref()
+                .map(|r| {
+                    r.participants
+                        .iter()
+                        .filter(|p| {
+                            p.profile.id != me
+                                && p.stream.is_some()
+                                && !r.watching.contains_key(&p.profile.id)
+                        })
+                        .map(|p| p.profile.id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for id in to_watch {
+                self.watch(id, cx);
+            }
         }
         cx.notify();
     }

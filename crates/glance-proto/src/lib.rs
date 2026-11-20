@@ -8,7 +8,7 @@ pub mod frame;
 pub mod room;
 pub mod ticket;
 
-pub use frame::{FrameError, MAX_FRAME, decode, encode};
+pub use frame::{FrameError, MAX_FRAME, MAX_VIDEO_FRAME, decode, encode, encode_with_limit};
 pub use room::*;
 pub use ticket::{RoomId, Ticket, TicketError};
 

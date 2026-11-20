@@ -10,7 +10,8 @@ use glance_proto::{MemberState, Ticket, WireProfile};
 
 use crate::net::Net;
 
-pub fn run(link: &str, name: &str) -> Result<()> {
+/// `stream`: share a test pattern of this size and frame rate.
+pub fn run(link: &str, name: &str, stream: Option<(u32, u32, u32)>) -> Result<()> {
     let ticket = Ticket::parse(link).context("parse room link")?;
     // A fresh identity each run, so a bot never collides with your app.
     let net = Net::start_ephemeral()?;
@@ -18,8 +19,43 @@ pub fn run(link: &str, name: &str) -> Result<()> {
         name: name.to_string(),
         color: 0x80848e,
     };
-    let room = net.block_on(net.join_room(ticket, profile, MemberState::default()))?;
+    let live = stream.map(|(w, h, fps)| glance_proto::WireStream {
+        width: w,
+        height: h,
+        fps,
+        has_audio: false,
+        source: "Test pattern".into(),
+    });
+    let initial = MemberState {
+        stream: live.clone(),
+        ..Default::default()
+    };
+    let room = net.block_on(net.join_room(ticket, profile, initial))?;
     println!("bot joined as {name}; me = {}", room.me.fmt_short());
+    // Share a moving test pattern through the real encoder and network path.
+    let broadcast = stream.map(|(w, h, fps)| {
+        let commander = room.commander();
+        let (control, _ended) = glance_media::pipeline::start_broadcast(
+            glance_media::capture::test_pattern(w, h, fps),
+            glance_media::pipeline::BroadcastConfig {
+                max_height: None,
+                fps,
+            },
+            None,
+            move |pkt| {
+                let _ = commander.send(Command::Video(std::sync::Arc::new(
+                    glance_proto::VideoPacket {
+                        ts_us: pkt.ts_us,
+                        keyframe: pkt.keyframe,
+                        width: pkt.width,
+                        height: pkt.height,
+                        data: pkt.data,
+                    },
+                )));
+            },
+        );
+        control
+    });
     let mut names = std::collections::HashMap::new();
     let mut muted = false;
     let tick = ticker(Duration::from_secs(5));
@@ -37,6 +73,16 @@ pub fn run(link: &str, name: &str) -> Result<()> {
                         room.send(Command::Chat(format!("echo: {text} (from {who})")));
                     }
                     RoomEvent::Closed => std::process::exit(0),
+                    RoomEvent::Watchers(n) => {
+                        if let Some(b) = &broadcast {
+                            b.watchers.store(*n, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                    RoomEvent::KeyframeNeeded => {
+                        if let Some(b) = &broadcast {
+                            b.keyframe.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                     _ => {}
                 }
                 println!("{ev:?}");
@@ -45,6 +91,7 @@ pub fn run(link: &str, name: &str) -> Result<()> {
                 muted = !muted;
                 room.send(Command::SetState(MemberState {
                     muted,
+                    stream: live.clone(),
                     ..Default::default()
                 }));
             })

@@ -175,3 +175,86 @@ async fn chat_sent_right_after_joining_arrives() {
         "{ev:?}"
     );
 }
+
+fn live() -> MemberState {
+    MemberState {
+        stream: Some(glance_proto::WireStream {
+            width: 64,
+            height: 64,
+            fps: 30,
+            has_audio: false,
+            source: "Screen".into(),
+        }),
+        ..Default::default()
+    }
+}
+
+fn packet(n: u8, keyframe: bool) -> std::sync::Arc<glance_proto::VideoPacket> {
+    std::sync::Arc::new(glance_proto::VideoPacket {
+        ts_us: n as u64,
+        keyframe,
+        width: 64,
+        height: 64,
+        data: vec![n; 1000 + n as usize * 1000],
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn video_reaches_watchers_starting_at_a_keyframe() {
+    let (na, nb, nc) = (node().await, node().await, node().await);
+    let a = na.create_room(profile("Ana"), live()).await.unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    let c = nc
+        .join_room(a.ticket.clone(), profile("Cy"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+    expect_members(&c, "c", &[na.id()]).await;
+
+    b.send(Command::Watch(na.id()));
+    c.send(Command::Watch(na.id()));
+    let mut watchers = 0;
+    while watchers < 2 {
+        if let RoomEvent::Watchers(n) =
+            expect(&a, "watchers", |e| matches!(e, RoomEvent::Watchers(_))).await
+        {
+            watchers = n;
+        }
+    }
+
+    // A non-keyframe first: viewers must skip it.
+    a.send(Command::Video(packet(1, false)));
+    a.send(Command::Video(packet(2, true)));
+    a.send(Command::Video(packet(3, false)));
+
+    for (room, who) in [(&b, "b"), (&c, "c")] {
+        let RoomEvent::Video { from, feed } = expect(room, &format!("video at {who}"), |e| {
+            matches!(e, RoomEvent::Video { .. })
+        })
+        .await
+        else {
+            unreachable!()
+        };
+        assert_eq!(from, na.id());
+        let first = tokio::time::timeout(Duration::from_secs(10), feed.0.recv_async())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.keyframe && first.ts_us == 2, "{who} got {first:?}");
+        let second = tokio::time::timeout(Duration::from_secs(10), feed.0.recv_async())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((second.ts_us, second.data.len()), (3, 4000));
+    }
+
+    b.send(Command::Unwatch(na.id()));
+    let ev = expect(&a, "watcher count drops", |e| {
+        matches!(e, RoomEvent::Watchers(1))
+    })
+    .await;
+    assert_eq!(ev, RoomEvent::Watchers(1));
+}

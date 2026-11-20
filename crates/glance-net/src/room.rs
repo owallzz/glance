@@ -12,9 +12,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use std::sync::Arc;
+
 use glance_proto::{
     Control, EndpointAddr, EndpointId, Hello, MemberInfo, MemberState, ROOM_ALPN, Ticket,
-    WireProfile, join_proof, verify_proof,
+    UNI_VIDEO, VideoPacket, WireProfile, join_proof, verify_proof,
 };
 use iroh::Endpoint;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -22,7 +24,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::RoomSlot;
-use crate::io::{read_frame, write_frame};
+use crate::io::{read_frame, read_video, write_frame, write_video};
 
 /// What the UI asks the room to do.
 #[derive(Debug, Clone)]
@@ -31,6 +33,23 @@ pub enum Command {
     SetProfile(WireProfile),
     Chat(String),
     Leave,
+    /// Ask a sharer to start/stop sending their screen.
+    Watch(EndpointId),
+    Unwatch(EndpointId),
+    /// Ask a sharer for a keyframe (decoder lost sync).
+    RequestKeyframe(EndpointId),
+    /// An encoded frame of our own stream, fanned out to watchers.
+    Video(Arc<VideoPacket>),
+}
+
+/// Incoming video packets from one sharer. Compares by channel identity.
+#[derive(Clone, Debug)]
+pub struct VideoFeed(pub flume::Receiver<VideoPacket>);
+
+impl PartialEq for VideoFeed {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same_channel(&other.0)
+    }
 }
 
 /// What happened in the room.
@@ -64,6 +83,15 @@ pub enum RoomEvent {
     },
     /// Something the user should know (couldn't reach the host, rejected...).
     Problem(String),
+    /// A sharer started sending us video (after we asked to watch).
+    Video {
+        from: EndpointId,
+        feed: VideoFeed,
+    },
+    /// How many people are watching our stream.
+    Watchers(usize),
+    /// Our encoder should produce a keyframe soon (new or lagging viewer).
+    KeyframeNeeded,
     /// The room actor stopped (after Leave).
     Closed,
 }
@@ -83,6 +111,12 @@ impl RoomHandle {
 
     pub fn send(&self, cmd: Command) {
         let _ = self.commands.send(cmd);
+    }
+
+    /// A cloneable, thread-safe sender for commands (encoder and decoder
+    /// threads use it to push video and keyframe requests).
+    pub fn commander(&self) -> flume::Sender<Command> {
+        self.commands.clone()
     }
 }
 
@@ -128,7 +162,19 @@ pub(crate) enum Inbound {
         conn_id: usize,
     },
     Cmd(Command),
+    /// A viewer's video stream failed.
+    WatcherGone(EndpointId),
 }
+
+/// Someone watching our stream.
+struct Watcher {
+    tx: mpsc::Sender<Arc<VideoPacket>>,
+    /// Drop frames until the next keyframe (just joined or fell behind).
+    need_key: bool,
+}
+
+/// Frames buffered per viewer before we start skipping to keyframes.
+const WATCHER_QUEUE: usize = 90;
 
 struct Peer {
     profile: WireProfile,
@@ -150,6 +196,7 @@ struct Actor {
     inbound: flume::Sender<Inbound>,
     events: flume::Sender<RoomEvent>,
     chat_seq: u64,
+    watchers: HashMap<EndpointId, Watcher>,
 }
 
 pub(crate) fn spawn(
@@ -176,6 +223,7 @@ pub(crate) fn spawn(
         inbound: inbound_tx.clone(),
         events: ev_tx,
         chat_seq: 0,
+        watchers: HashMap::new(),
     };
     let fwd = inbound_tx.clone();
     tokio::spawn(async move {
@@ -286,9 +334,11 @@ impl Actor {
                     .is_some_and(|p| p.conn.stable_id() == conn_id)
                 {
                     self.peers.remove(&id);
+                    self.remove_watcher(id);
                     let _ = self.events.send(RoomEvent::MemberLeft { id });
                 }
             }
+            Inbound::WatcherGone(id) => self.remove_watcher(id),
             Inbound::Cmd(cmd) => return self.on_command(cmd),
         }
         true
@@ -366,6 +416,7 @@ impl Actor {
         }
         spawn_writer(send, rx);
         spawn_reader(recv, id, conn.stable_id(), self.inbound.clone());
+        spawn_uni_acceptor(conn.clone(), id, self.inbound.clone(), self.events.clone());
         let is_new = !self.peers.contains_key(&id);
         // Tell everyone else about the newcomer.
         let info = MemberInfo {
@@ -430,7 +481,15 @@ impl Actor {
                 if let Some(p) = self.peers.remove(&from) {
                     p.conn.close(0u32.into(), b"left");
                 }
+                self.remove_watcher(from);
                 let _ = self.events.send(RoomEvent::MemberLeft { id: from });
+            }
+            Control::Watch => self.add_watcher(from),
+            Control::Unwatch => self.remove_watcher(from),
+            Control::KeyframeRequest => {
+                if self.watchers.contains_key(&from) {
+                    let _ = self.events.send(RoomEvent::KeyframeNeeded);
+                }
             }
             Control::Ping(n) => {
                 let _ = peer.tx.send(Control::Pong(n));
@@ -442,9 +501,18 @@ impl Actor {
     fn on_command(&mut self, cmd: Command) -> bool {
         match cmd {
             Command::SetState(state) => {
+                let stopped_streaming = self.state.stream.is_some() && state.stream.is_none();
                 self.state = state.clone();
                 self.broadcast(Control::State(state));
+                if stopped_streaming {
+                    self.watchers.clear();
+                    let _ = self.events.send(RoomEvent::Watchers(0));
+                }
             }
+            Command::Watch(id) => self.send_to(id, Control::Watch),
+            Command::Unwatch(id) => self.send_to(id, Control::Unwatch),
+            Command::RequestKeyframe(id) => self.send_to(id, Control::KeyframeRequest),
+            Command::Video(pkt) => self.fan_out(pkt),
             Command::SetProfile(profile) => {
                 self.profile = profile.clone();
                 self.broadcast(Control::Profile(profile));
@@ -471,6 +539,55 @@ impl Actor {
             }
         }
         true
+    }
+
+    fn send_to(&self, id: EndpointId, msg: Control) {
+        if let Some(p) = self.peers.get(&id) {
+            let _ = p.tx.send(msg);
+        }
+    }
+
+    /// A peer asked to watch: open a video stream to them.
+    fn add_watcher(&mut self, id: EndpointId) {
+        if self.state.stream.is_none() || self.watchers.contains_key(&id) {
+            return;
+        }
+        let Some(peer) = self.peers.get(&id) else {
+            return;
+        };
+        let (tx, rx) = mpsc::channel(WATCHER_QUEUE);
+        spawn_video_writer(peer.conn.clone(), id, rx, self.inbound.clone());
+        self.watchers.insert(id, Watcher { tx, need_key: true });
+        let _ = self.events.send(RoomEvent::Watchers(self.watchers.len()));
+        let _ = self.events.send(RoomEvent::KeyframeNeeded);
+    }
+
+    fn remove_watcher(&mut self, id: EndpointId) {
+        if self.watchers.remove(&id).is_some() {
+            let _ = self.events.send(RoomEvent::Watchers(self.watchers.len()));
+        }
+    }
+
+    /// Send one encoded frame to every watcher. Viewers that can't keep up
+    /// skip to the next keyframe instead of building a backlog.
+    fn fan_out(&mut self, pkt: Arc<VideoPacket>) {
+        let mut want_key = false;
+        for w in self.watchers.values_mut() {
+            if w.need_key && !pkt.keyframe {
+                continue;
+            }
+            match w.tx.try_send(pkt.clone()) {
+                Ok(()) => w.need_key = false,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    w.need_key = true;
+                    want_key = true;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+        if want_key {
+            let _ = self.events.send(RoomEvent::KeyframeNeeded);
+        }
     }
 
     fn broadcast(&self, msg: Control) {
@@ -621,4 +738,73 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Sharer side: one unidirectional stream per watcher carrying video packets.
+fn spawn_video_writer(
+    conn: Connection,
+    to: EndpointId,
+    mut rx: mpsc::Receiver<Arc<VideoPacket>>,
+    inbound: flume::Sender<Inbound>,
+) {
+    tokio::spawn(async move {
+        let result: Result<()> = async {
+            let mut send = conn.open_uni().await.context("open video stream")?;
+            send.write_all(&[UNI_VIDEO])
+                .await
+                .context("write stream kind")?;
+            while let Some(pkt) = rx.recv().await {
+                write_video(&mut send, &pkt).await?;
+            }
+            let _ = send.finish();
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            debug!("video stream to {to} ended: {e:#}");
+            let _ = inbound.send(Inbound::WatcherGone(to));
+        }
+    });
+}
+
+/// Viewer side: accept unidirectional streams from a peer and hand video
+/// packets to the UI through a bounded channel.
+fn spawn_uni_acceptor(
+    conn: Connection,
+    from: EndpointId,
+    inbound: flume::Sender<Inbound>,
+    events: flume::Sender<RoomEvent>,
+) {
+    tokio::spawn(async move {
+        while let Ok(mut recv) = conn.accept_uni().await {
+            let mut kind = [0u8; 1];
+            if recv.read_exact(&mut kind).await.is_err() || kind[0] != UNI_VIDEO {
+                continue;
+            }
+            let (tx, rx) = flume::bounded(120);
+            if events
+                .send(RoomEvent::Video {
+                    from,
+                    feed: VideoFeed(rx),
+                })
+                .is_err()
+            {
+                return;
+            }
+            let inbound = inbound.clone();
+            tokio::spawn(async move {
+                while let Ok(pkt) = read_video(&mut recv).await {
+                    match tx.try_send(pkt) {
+                        Ok(()) => {}
+                        // The UI dropped the feed (stopped watching).
+                        Err(flume::TrySendError::Disconnected(_)) => break,
+                        // Decoder is behind: drop and ask for a fresh keyframe.
+                        Err(flume::TrySendError::Full(_)) => {
+                            let _ = inbound.send(Inbound::Cmd(Command::RequestKeyframe(from)));
+                        }
+                    }
+                }
+            });
+        }
+    });
 }

@@ -8,7 +8,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{GlanceApp, GoLive};
+use crate::app::GlanceApp;
 use crate::theme::Palette;
 use crate::ui::{Avatar, icon, icon_button, live_badge, section_label};
 
@@ -617,15 +617,9 @@ impl GlanceApp {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if live {
-                        if let Some(room) = this.room.as_mut()
-                            && let Some(x) =
-                                room.participants.iter_mut().find(|x| x.profile.id == me)
-                        {
-                            x.stream = None;
-                        }
-                        this.push_state();
+                        this.stop_streaming(cx);
                     } else {
-                        this.go_live = Some(GoLive::default());
+                        this.open_go_live(cx);
                     }
                     cx.notify();
                 })),
