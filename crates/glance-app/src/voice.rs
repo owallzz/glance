@@ -35,6 +35,7 @@ impl GlanceApp {
                 seq: pkt.seq,
                 level: pkt.level,
                 data: pkt.data,
+                stream: false,
             };
             if let Ok(frame) = glance_proto::encode(&wire) {
                 let _ = commander.send(Command::Audio(bytes::Bytes::from(frame[4..].to_vec())));
@@ -61,7 +62,12 @@ impl GlanceApp {
                         level: d.level,
                         data: d.data,
                     };
-                    if into_engine.send((*from.as_bytes(), pkt)).is_err() {
+                    let key = if d.stream {
+                        glance_media::stream_audio::stream_key(*from.as_bytes())
+                    } else {
+                        *from.as_bytes()
+                    };
+                    if into_engine.send((key, pkt)).is_err() {
                         break;
                     }
                 }
@@ -71,6 +77,9 @@ impl GlanceApp {
         for p in &room.participants {
             if let Some(v) = self.volumes.get(&p.profile.id) {
                 engine.set_peer_volume(p.profile.id.0, *v);
+            }
+            if let Some(v) = self.stream_volumes.get(&p.profile.id) {
+                engine.set_peer_volume(glance_media::stream_audio::stream_key(p.profile.id.0), *v);
             }
         }
         let problems = engine.problems.clone();
@@ -152,6 +161,19 @@ impl GlanceApp {
 
     pub fn user_volume(&self, peer: PeerId) -> f32 {
         self.volumes.get(&peer).copied().unwrap_or(1.0)
+    }
+
+    /// Volume of the audio shared with someone's screen, 0–200%.
+    pub fn set_stream_volume(&mut self, peer: PeerId, volume: f32) {
+        let v = volume.clamp(0.0, 2.0);
+        self.stream_volumes.insert(peer, v);
+        if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
+            engine.set_peer_volume(glance_media::stream_audio::stream_key(peer.0), v);
+        }
+    }
+
+    pub fn stream_volume(&self, peer: PeerId) -> f32 {
+        self.stream_volumes.get(&peer).copied().unwrap_or(1.0)
     }
 
     pub fn apply_audio_processing(&mut self) {

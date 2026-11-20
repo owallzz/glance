@@ -328,7 +328,9 @@ impl GlanceApp {
             })
         });
         let vol = self.user_volume(id);
-        let step = |delta: f32, label: &'static str, key: &str| {
+        let stream_vol = self.stream_volume(id);
+        let has_stream_audio = person.stream.as_ref().is_some_and(|s| s.has_audio);
+        let step = |delta: f32, label: &'static str, key: &str, stream: bool| {
             div()
                 .id(SharedString::from(format!("{key}-{}", id.short())))
                 .size(px(24.))
@@ -342,8 +344,13 @@ impl GlanceApp {
                 .text_color(p.text_header)
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    let v = this.user_volume(id);
-                    this.set_user_volume(id, ((v + delta) * 10.0).round() / 10.0);
+                    if stream {
+                        let v = this.stream_volume(id);
+                        this.set_stream_volume(id, ((v + delta) * 10.0).round() / 10.0);
+                    } else {
+                        let v = this.user_volume(id);
+                        this.set_user_volume(id, ((v + delta) * 10.0).round() / 10.0);
+                    }
                     cx.notify();
                 }))
         };
@@ -370,9 +377,32 @@ impl GlanceApp {
                                 .text_color(p.text_muted)
                                 .child(format!("User volume {:.0}%", vol * 100.0)),
                         )
-                        .child(step(-0.1, "−", "vol-down"))
-                        .child(step(0.1, "+", "vol-up")),
+                        .child(step(-0.1, "−", "vol-down", false))
+                        .child(step(0.1, "+", "vol-up", false)),
                 )
+                .when(has_stream_audio, |d| {
+                    d.child(
+                        div()
+                            .ml(px(20.))
+                            .mr_2()
+                            .mb_1()
+                            .p_2()
+                            .rounded(px(4.))
+                            .bg(p.bg_rail)
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_xs()
+                                    .text_color(p.text_muted)
+                                    .child(format!("Stream volume {:.0}%", stream_vol * 100.0)),
+                            )
+                            .child(step(-0.1, "−", "svol-down", true))
+                            .child(step(0.1, "+", "svol-up", true)),
+                    )
+                })
                 .child(contact_action)
             })
             .into_any_element()

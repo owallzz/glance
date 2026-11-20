@@ -11,5 +11,6 @@ pub mod codec;
 pub mod frame;
 pub mod pattern;
 pub mod pipeline;
+pub mod stream_audio;
 
 pub use frame::{FrameScaler, TargetSize, VideoFrame, fit_within};

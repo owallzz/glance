@@ -32,7 +32,23 @@ impl GlanceApp {
             resolution: Resolution::P1080,
             fps: 60,
             error: None,
+            audio_sources: Vec::new(),
+            audio: None,
         });
+        // Listing audio apps talks to PipeWire; keep it off the UI thread.
+        if glance_media::stream_audio::supported() {
+            let list = cx.background_spawn(async { glance_media::stream_audio::list_sources() });
+            cx.spawn(async move |this, cx| {
+                let sources = list.await;
+                let _ = this.update(cx, |app, cx| {
+                    if let Some(gl) = app.go_live.as_mut() {
+                        gl.audio_sources = sources;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -64,8 +80,8 @@ impl GlanceApp {
             cx.notify();
             return;
         };
-        let (resolution, fps) = match &self.go_live {
-            Some(gl) => (gl.resolution, gl.fps),
+        let (resolution, fps, audio_source) = match &self.go_live {
+            Some(gl) => (gl.resolution, gl.fps, gl.audio.clone()),
             None => return,
         };
         if !capture::has_permission() && !capture::request_permission() {
@@ -190,8 +206,39 @@ impl GlanceApp {
             }
         });
 
+        // Audio goes only to people watching; a failure keeps the video.
+        let mut audio_error = None;
+        let stream_audio = audio_source.and_then(|src| {
+            let commander = handle.commander();
+            let sink = move |pkt: glance_media::audio::EncodedAudio| {
+                let wire = glance_proto::AudioDatagram {
+                    seq: pkt.seq,
+                    level: pkt.level,
+                    data: pkt.data,
+                    stream: true,
+                };
+                if let Ok(frame) = glance_proto::encode(&wire) {
+                    let _ = commander.send(Command::StreamAudio(bytes::Bytes::from(
+                        frame[4..].to_vec(),
+                    )));
+                }
+            };
+            match glance_media::stream_audio::start(src, sink) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    audio_error = Some(format!("Sharing audio didn't work: {e:#}"));
+                    None
+                }
+            }
+        });
+        let has_audio = stream_audio.is_some();
+        if let Some(e) = audio_error {
+            self.system_message(e);
+        }
+
         let room = self.room.as_mut().expect("room");
         room.broadcast = Some(control);
+        room.stream_audio = stream_audio;
         room._broadcast_task = Some(task);
         room.watching.insert(me, preview);
         if let Some(x) = room.participants.iter_mut().find(|x| x.profile.id == me) {
@@ -199,7 +246,7 @@ impl GlanceApp {
                 width: w,
                 height: h,
                 fps,
-                has_audio: false,
+                has_audio,
                 source: source_name,
             });
         }
@@ -232,6 +279,7 @@ impl GlanceApp {
                 b.stop();
             }
             room._broadcast_task = None;
+            room.stream_audio = None;
             room.watching.remove(&me);
             if room.focused == Some(me) {
                 room.focused = None;

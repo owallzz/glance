@@ -33,7 +33,7 @@ pub fn run(
         width: w,
         height: h,
         fps,
-        has_audio: false,
+        has_audio: true,
         source: "Test pattern".into(),
     });
     let initial = MemberState {
@@ -124,17 +124,52 @@ pub fn run(
                 seq: pkt.seq,
                 level: pkt.level,
                 data: pkt.data,
+                stream: false,
             };
             if let Ok(f) = glance_proto::encode(&wire) {
                 let _ = commander.send(Command::Audio(bytes::Bytes::from(f[4..].to_vec())));
             }
         },
     )?;
+    // A streaming bot also shares a 440 Hz tone as its stream's audio, sent
+    // only to people watching.
+    let _stream_audio = if stream.is_some() {
+        let commander = room.commander();
+        Some(glance_media::audio::AudioEngine::start(
+            glance_media::audio::EngineConfig {
+                input: glance_media::audio::InputKind::Tone(440.0),
+                output: glance_media::audio::OutputKind::Null,
+                echo_cancel: false,
+                noise_suppression: false,
+            },
+            move |pkt| {
+                let wire = glance_proto::AudioDatagram {
+                    seq: pkt.seq,
+                    level: pkt.level,
+                    data: pkt.data,
+                    stream: true,
+                };
+                if let Ok(f) = glance_proto::encode(&wire) {
+                    let _ =
+                        commander.send(Command::StreamAudio(bytes::Bytes::from(f[4..].to_vec())));
+                }
+            },
+        )?)
+    } else {
+        None
+    };
     let (atx, arx) = flume::bounded::<(glance_net::EndpointId, glance_proto::AudioDatagram)>(512);
     room.send(Command::SetAudioSink(Some(atx)));
     let into_engine = engine.incoming();
     std::thread::spawn(move || {
+        let mut stream_audio_seen = std::collections::HashSet::new();
         while let Ok((from, d)) = arx.recv() {
+            if d.stream {
+                if stream_audio_seen.insert(from) {
+                    println!("hearing stream audio from {}", from.fmt_short());
+                }
+                continue;
+            }
             let _ = into_engine.send((
                 *from.as_bytes(),
                 glance_media::audio::EncodedAudio {
@@ -185,21 +220,37 @@ pub fn run(
     let mut heard: Vec<[u8; 32]> = Vec::new();
     let names = std::cell::RefCell::new(std::collections::HashMap::new());
     let mut muted = false;
+    // Testing aid: GLANCE_AUTOWATCH=1 makes the bot watch every screen share
+    // (frames are discarded; it reports stream audio it hears).
+    let autowatch = std::env::var_os("GLANCE_AUTOWATCH").is_some();
     let tick = ticker(Duration::from_secs(if tone { 1 } else { 5 }));
     loop {
         flume::Selector::new()
             .recv(&room.events, |ev| {
                 let Ok(ev) = ev else { std::process::exit(0) };
                 match &ev {
-                    RoomEvent::MemberJoined { id, profile, .. } => {
+                    RoomEvent::MemberJoined { id, profile, state } => {
                         names.borrow_mut().insert(*id, profile.name.clone());
                         room.send(Command::Chat(format!("hi {}!", profile.name)));
+                        if autowatch && state.stream.is_some() {
+                            room.send(Command::Watch(*id, glance_proto::Track::Screen));
+                        }
+                    }
+                    RoomEvent::MemberUpdated { id, state }
+                        if autowatch && state.stream.is_some() =>
+                    {
+                        room.send(Command::Watch(*id, glance_proto::Track::Screen));
                     }
                     RoomEvent::Chat { from, text, .. } if !text.starts_with("echo:") => {
                         let who = names.borrow().get(from).cloned().unwrap_or_default();
                         room.send(Command::Chat(format!("echo: {text} (from {who})")));
                     }
                     RoomEvent::Closed => std::process::exit(0),
+                    RoomEvent::Video { feed, .. } => {
+                        // Discard frames so the sharer doesn't see us as congested.
+                        let rx = feed.0.clone();
+                        std::thread::spawn(move || while rx.recv().is_ok() {});
+                    }
                     RoomEvent::FileOffered { from, file, .. } => {
                         let (tx, rx) = flume::unbounded();
                         let dest = glance_net::files::unique_path(&dl_dir, &file.name);

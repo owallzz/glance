@@ -44,6 +44,9 @@ pub enum Command {
     /// A voice frame (already postcard-encoded `AudioDatagram`), sent to
     /// everyone as a datagram.
     Audio(bytes::Bytes),
+    /// A frame of the audio shared with our screen (encoded `AudioDatagram`
+    /// with `stream: true`), sent only to people watching it.
+    StreamAudio(bytes::Bytes),
     /// Offer a file (already added to our store) to the room.
     OfferFile(glance_proto::WireFile),
     /// Tell the room we now have a file and can serve it.
@@ -650,6 +653,13 @@ impl Actor {
                 for p in self.peers.values() {
                     // Dropped if the path is congested; that's fine for voice.
                     let _ = p.conn.send_datagram(bytes.clone());
+                }
+            }
+            Command::StreamAudio(bytes) => {
+                for (id, _) in self.watchers.keys().filter(|(_, t)| *t == Track::Screen) {
+                    if let Some(p) = self.peers.get(id) {
+                        let _ = p.conn.send_datagram(bytes.clone());
+                    }
                 }
             }
             Command::SetAudioSink(sink) => *self.audio_sink.lock().expect("audio sink") = sink,

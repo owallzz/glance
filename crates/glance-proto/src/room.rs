@@ -130,6 +130,8 @@ pub struct AudioDatagram {
     /// Loudness 0–100, for speaking indicators.
     pub level: u8,
     pub data: Vec<u8>,
+    /// Audio shared with a screen (not the sender's voice).
+    pub stream: bool,
 }
 
 /// A member's video sources.

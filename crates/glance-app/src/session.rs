@@ -183,6 +183,7 @@ impl GlanceApp {
             popouts: Default::default(),
             cameras: Default::default(),
             camera_broadcast: None,
+            stream_audio: None,
             _camera_task: None,
             files: Default::default(),
             history_names: Default::default(),

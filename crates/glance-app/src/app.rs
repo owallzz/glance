@@ -84,6 +84,10 @@ pub struct GoLive {
     pub resolution: Resolution,
     pub fps: u32,
     pub error: Option<String>,
+    /// Audio that can go with the stream (filled in shortly after opening).
+    pub audio_sources: Vec<glance_media::stream_audio::AudioSource>,
+    /// Chosen audio source; `None` shares no audio.
+    pub audio: Option<glance_media::stream_audio::AudioSource>,
 }
 
 /// User settings, saved as settings.json in the data dir.
@@ -221,6 +225,8 @@ pub struct Room {
     /// Our running screen share, if any.
     pub broadcast: Option<glance_media::pipeline::BroadcastControl>,
     pub _broadcast_task: Option<Task<()>>,
+    /// Audio shared with our screen, if any.
+    pub stream_audio: Option<glance_media::stream_audio::StreamAudio>,
     /// Voice engine (None in the demo room or if audio failed).
     pub audio: Option<glance_media::audio::AudioEngine>,
     pub _voice_task: Option<Task<()>>,
@@ -278,6 +284,8 @@ pub struct GlanceApp {
     pub settings: Settings,
     /// Per-user volume (kept across rooms for this session).
     pub volumes: HashMap<PeerId, f32>,
+    /// Per-person volume for the audio shared with their screen.
+    pub stream_volumes: HashMap<PeerId, f32>,
     pub book: glance_core::contacts::ContactBook,
     pub live: crate::contacts::Live,
     pub incoming_call: Option<crate::contacts::IncomingCall>,
@@ -378,6 +386,7 @@ impl GlanceApp {
             settings,
             link_copied: false,
             volumes: HashMap::new(),
+            stream_volumes: HashMap::new(),
             audio_devices: None,
             camera_list: None,
             book: Default::default(),
@@ -450,6 +459,7 @@ impl GlanceApp {
             _events: None,
             broadcast: None,
             _broadcast_task: None,
+            stream_audio: None,
             audio: None,
             _voice_task: None,
             volume_open: None,

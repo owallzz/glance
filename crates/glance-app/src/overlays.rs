@@ -196,6 +196,43 @@ impl GlanceApp {
                 cx.notify();
             }))
         });
+        let audio_pill = |key: String,
+                          label: String,
+                          value: Option<glance_media::stream_audio::AudioSource>,
+                          selected: bool| {
+            pill(SharedString::from(key), label, selected, false, p).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    if let Some(gl) = this.go_live.as_mut() {
+                        gl.audio = value.clone();
+                    }
+                    cx.notify();
+                },
+            ))
+        };
+        let mut audio_pills = vec![audio_pill(
+            "aud-none".into(),
+            "No audio".into(),
+            None,
+            gl.audio.is_none(),
+        )];
+        for (i, src) in gl.audio_sources.iter().enumerate() {
+            audio_pills.push(audio_pill(
+                format!("aud-{i}"),
+                src.label(),
+                Some(src.clone()),
+                gl.audio.as_ref() == Some(src),
+            ));
+        }
+        let audio_note = match &gl.audio {
+            Some(glance_media::stream_audio::AudioSource::System) => Some(
+                "Shares everything your computer plays, including other people's voices from this call.",
+            ),
+            None if gl.audio_sources.len() == 1 => Some(
+                "Start the app you want to share so it shows up here, or share the whole system.",
+            ),
+            _ => None,
+        };
+        let audio_supported = glance_media::stream_audio::supported();
         let summary = match (&selected_src, out, gl.system_picker) {
             (_, _, true) => format!(
                 "Streams at up to {} and {} FPS. Viewers on smaller tiles get it scaled to fit.",
@@ -290,6 +327,17 @@ impl GlanceApp {
                                 ),
                         )
                         .child(div().text_xs().text_color(p.text_muted).child(summary))
+                        .when(audio_supported, |d| {
+                            d.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(div().text_xs().text_color(p.text_muted).child("SOUND"))
+                                    .child(div().flex().flex_wrap().gap_1().children(audio_pills)),
+                            )
+                            .children(audio_note.map(|n| div().text_xs().text_color(p.text_muted).child(n)))
+                        })
                         .when(heavy, |d| {
                             d.child(div().text_xs().text_color(p.yellow).child(
                                 "This quality uses software encoding for now and may drop frames on slower computers.",

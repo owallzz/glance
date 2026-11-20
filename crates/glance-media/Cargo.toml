@@ -32,6 +32,6 @@ windows-capture = "=1.4.4"
 # current PipeWire).
 [target.'cfg(target_os = "linux")'.dependencies]
 scap = { package = "zed-scap", version = "=0.0.8-zed", default-features = false, features = ["x11"] }
-pipewire = "0.10"
+pipewire = { version = "0.10", features = ["v0_3_44"] }
 ashpd = { version = "0.14", default-features = false, features = ["tokio", "screencast"] }
 tokio = { version = "1", features = ["rt", "macros"] }

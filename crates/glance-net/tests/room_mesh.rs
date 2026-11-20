@@ -296,6 +296,7 @@ async fn voice_datagrams_reach_the_audio_sink() {
         seq: 7,
         level: 40,
         data: vec![1, 2, 3],
+        stream: false,
     };
     let bytes = bytes::Bytes::from(glance_proto::encode(&pkt).unwrap()[4..].to_vec());
     // Datagrams are unreliable: send a few.
@@ -309,6 +310,50 @@ async fn voice_datagrams_reach_the_audio_sink() {
         .unwrap();
     assert_eq!(from, na.id());
     assert_eq!(got, pkt);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_audio_goes_only_to_screen_watchers() {
+    let (na, nb, nc) = (node().await, node().await, node().await);
+    let a = na.create_room(profile("Ana"), live()).await.unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    let c = nc
+        .join_room(a.ticket.clone(), profile("Cy"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id(), nc.id()]).await;
+    expect_members(&c, "c", &[na.id(), nb.id()]).await;
+    expect_members(&a, "a", &[nb.id(), nc.id()]).await;
+    let (btx, brx) = flume::unbounded();
+    let (ctx, crx) = flume::unbounded();
+    b.send(Command::SetAudioSink(Some(btx)));
+    c.send(Command::SetAudioSink(Some(ctx)));
+    b.send(Command::Watch(na.id(), glance_proto::Track::Screen));
+    expect(&a, "watcher", |e| {
+        matches!(e, RoomEvent::Watchers { count: 1, .. })
+    })
+    .await;
+    let pkt = glance_proto::AudioDatagram {
+        seq: 1,
+        level: 10,
+        data: vec![9; 40],
+        stream: true,
+    };
+    let bytes = bytes::Bytes::from(glance_proto::encode(&pkt).unwrap()[4..].to_vec());
+    for _ in 0..5 {
+        a.send(Command::StreamAudio(bytes.clone()));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (from, got) = tokio::time::timeout(Duration::from_secs(5), brx.recv_async())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((from, got), (na.id(), pkt));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(crx.is_empty(), "a non-watcher got stream audio");
 }
 
 #[tokio::test(flavor = "multi_thread")]

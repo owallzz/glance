@@ -8,10 +8,11 @@ glance: peer-to-peer screen sharing rooms (multi-sharer, voice, chat, webcam, co
 | Host env (immutable Fedora only) | `source scripts/env.sh` |
 | Build | `cargo build` |
 | Run | `cargo run -p glance-app` (`-- --demo` for a populated fake room, `-- --spike N W H FPS` for the video spike) |
-| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]` (headless: joins, greets, echoes chat, toggles mute, accepts contact requests and answers rings by joining; `--ring-back` instead rings a new contact back once they leave; `--stream` shares a test pattern through the real encoder; `--tone` talks with a sine tone and prints who it hears speaking) |
+| Test peer | `cargo run -p glance-app -- bot <link> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]` (headless: joins, greets, echoes chat, toggles mute, accepts contact requests and answers rings by joining; `--ring-back` instead rings a new contact back once they leave; `--stream` shares a test pattern through the real encoder plus a 440 Hz tone as stream audio; `--tone` talks with a sine tone and prints who it hears speaking) |
 | Capture probe | `cargo run --release -p glance-media --example capture_probe [secs] [max_height]` (captures, encodes, prints fps and encode cost) |
 | Second identity | `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app` |
-| Auto-watch | `GLANCE_AUTOWATCH=1` watches every stream automatically (lets a second instance test viewing without clicks) |
+| Auto-watch | `GLANCE_AUTOWATCH=1` watches every stream automatically (lets a second instance test viewing without clicks; a bot with it prints `hearing stream audio from ...`) |
+| Audio share probe | `cargo run -p glance-media --example stream_audio_probe -- [app-name]` lists shareable audio and captures it for 3 s. To test without sound playing aloud, route a tone into a temporary null sink: `pw-cli -m create-node adapter '{ factory.name=support.null-audio-sink node.name=glance-test-sink media.class=Audio/Sink object.linger=false }' &` then `pw-play --target glance-test-sink --properties '{ application.name="ToneApp" }' tone.wav &` |
 | Skip portal | `GLANCE_PW_NODE=<id>` reads an existing PipeWire node instead of opening the share dialog (pair with a Mutter screencast for tests) |
 | Local only | `GLANCE_RELAY=off` (no relays, direct addresses only); `GLANCE_RELAY=<url>` for a custom relay |
 | Screenshot | `scripts/shot.sh out.png 2 --demo` (see `.claude/skills/run-glance`) |
