@@ -120,11 +120,16 @@ impl AutoHide {
         self.arm()
     }
 
-    /// The hide timer fired.
-    pub fn timer_fired(&mut self, now: Instant) -> TimerOutcome {
+    /// The hide timer fired. `busy` means the user is in the middle of
+    /// something with the controls (dragging the volume slider), which gpui
+    /// reports as "not hovered": count it as activity.
+    pub fn timer_fired(&mut self, now: Instant, busy: bool) -> TimerOutcome {
         self.armed = false;
         if !self.visible || self.pinned {
             return TimerOutcome::Stop;
+        }
+        if busy {
+            self.last_activity = now;
         }
         let due = self.last_activity + Self::DELAY;
         if now >= due {
@@ -437,11 +442,11 @@ impl PopoutView {
         window.remove_window();
     }
 
-    fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Esc only leaves fullscreen; closing is Ctrl/Cmd+W or the buttons, so a
+    /// stray Esc never sends the stream back.
+    fn escape(&mut self, window: &mut Window) {
         if window.is_fullscreen() {
             window.toggle_fullscreen();
-        } else {
-            self.close(window, cx);
         }
     }
 
@@ -468,9 +473,15 @@ impl PopoutView {
             loop {
                 cx.background_executor().timer(delay).await;
                 let next = this.update_in(cx, |view, window, cx| {
-                    match view.chrome.timer_fired(Instant::now()) {
+                    match view
+                        .chrome
+                        .timer_fired(Instant::now(), cx.has_active_drag())
+                    {
                         TimerOutcome::Hide => {
-                            hide_cursor(window, cx);
+                            // Never hide the pointer over another window.
+                            if window.is_window_hovered() {
+                                hide_cursor(window, cx);
+                            }
                             cx.notify();
                             None
                         }
@@ -566,6 +577,7 @@ impl PopoutView {
                 .rounded(px(8.))
                 .bg(gpui_kit::black().opacity(0.6))
                 .occlude()
+                .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
                 .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
                     this.set_pinned(*hovered, window, cx)
                 }))
@@ -672,6 +684,7 @@ impl PopoutView {
             .rounded(px(8.))
             .bg(gpui_kit::black().opacity(0.6))
             .occlude()
+            .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
             .on_hover(
                 cx.listener(|this, hovered: &bool, window, cx| {
                     this.set_pinned(*hovered, window, cx)
@@ -729,6 +742,38 @@ impl PopoutView {
     }
 }
 
+/// Hides the controls when the pointer leaves the window.
+///
+/// Not an `on_hover`/`on_mouse_exit` on the root: those go through the root's
+/// hitbox, which the occluding control bars cover (so hovering a bar would
+/// count as leaving), and they also turn false on key presses and during a
+/// slider drag. A raw `MouseExitEvent` is the platform telling us the pointer
+/// really left. An exit with a button held (a drag or a window move under way)
+/// is ignored.
+fn window_exit_watcher(view: WeakEntity<PopoutView>) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, window, _| {
+            let view = view.clone();
+            window.on_mouse_event(move |ev: &MouseExitEvent, phase, _, cx| {
+                if phase != DispatchPhase::Bubble
+                    || ev.pressed_button.is_some()
+                    || cx.has_active_drag()
+                {
+                    return;
+                }
+                let _ = view.update(cx, |this, cx| {
+                    if this.chrome.hide_now() {
+                        cx.notify();
+                    }
+                });
+            });
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 /// Round translucent button for the overlay (the video is dark in both themes).
 fn overlay_button(id: &'static str, glyph: IconName, tip: &'static str) -> Stateful<Div> {
     div()
@@ -784,7 +829,7 @@ impl Render for PopoutView {
             .on_action(
                 cx.listener(|_, _: &PopoutToggleFullscreen, window, _| window.toggle_fullscreen()),
             )
-            .on_action(cx.listener(|this, _: &PopoutEscape, window, cx| this.escape(window, cx)))
+            .on_action(cx.listener(|this, _: &PopoutEscape, window, _| this.escape(window)))
             .on_action(
                 cx.listener(|this, _: &PopoutToggleMute, window, cx| this.toggle_mute(window, cx)),
             )
@@ -796,12 +841,8 @@ impl Render for PopoutView {
             .on_mouse_move(
                 cx.listener(|this, _: &MouseMoveEvent, window, cx| this.activity(window, cx)),
             )
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !*hovered && this.chrome.hide_now() {
-                    cx.notify();
-                }
-            }))
             .child(self.render_surface(cx))
+            .child(window_exit_watcher(cx.entity().downgrade()))
             .when(visible, |d| {
                 d.child(self.render_controls(&p, window, cx))
                     .child(self.render_info_bar(&p, cx))
@@ -979,17 +1020,17 @@ mod tests {
         assert_eq!(c.activity(t0 + SEC + SEC / 2), None);
         // The timer fires 2 s after the first move: wait out the rest.
         assert_eq!(
-            c.timer_fired(t0 + 2 * SEC),
+            c.timer_fired(t0 + 2 * SEC, false),
             TimerOutcome::Wait(SEC + SEC / 2)
         );
         assert!(c.visible());
         // Moving now doesn't double the timer (it re-armed itself).
         assert_eq!(c.activity(t0 + 2 * SEC), None);
         assert_eq!(
-            c.timer_fired(t0 + 3 * SEC + SEC / 2),
+            c.timer_fired(t0 + 3 * SEC + SEC / 2, false),
             TimerOutcome::Wait(SEC / 2)
         );
-        assert_eq!(c.timer_fired(t0 + 4 * SEC), TimerOutcome::Hide);
+        assert_eq!(c.timer_fired(t0 + 4 * SEC, false), TimerOutcome::Hide);
         assert!(!c.visible());
         // Next movement shows again and arms a fresh timer.
         assert_eq!(c.activity(t0 + 10 * SEC), Some(AutoHide::DELAY));
@@ -1003,14 +1044,14 @@ mod tests {
         assert!(c.activity(t0).is_some());
         assert_eq!(c.set_pinned(true, t0 + SEC), None);
         // The running timer ends without hiding.
-        assert_eq!(c.timer_fired(t0 + 5 * SEC), TimerOutcome::Stop);
+        assert_eq!(c.timer_fired(t0 + 5 * SEC, false), TimerOutcome::Stop);
         assert!(c.visible());
         // Movement over the controls arms nothing while pinned.
         assert_eq!(c.activity(t0 + 6 * SEC), None);
         // Leaving them restarts the countdown from now.
         assert_eq!(c.set_pinned(false, t0 + 7 * SEC), Some(AutoHide::DELAY));
-        assert_eq!(c.timer_fired(t0 + 8 * SEC), TimerOutcome::Wait(SEC));
-        assert_eq!(c.timer_fired(t0 + 9 * SEC), TimerOutcome::Hide);
+        assert_eq!(c.timer_fired(t0 + 8 * SEC, false), TimerOutcome::Wait(SEC));
+        assert_eq!(c.timer_fired(t0 + 9 * SEC, false), TimerOutcome::Hide);
     }
 
     #[test]
@@ -1024,8 +1065,27 @@ mod tests {
         // The control's own hover-out arriving after the window's doesn't re-show.
         assert_eq!(c.set_pinned(false, t0), None);
         assert!(!c.visible());
-        assert_eq!(c.timer_fired(t0 + 2 * SEC), TimerOutcome::Stop);
+        assert_eq!(c.timer_fired(t0 + 2 * SEC, false), TimerOutcome::Stop);
         assert_eq!(c.activity(t0 + 3 * SEC), Some(AutoHide::DELAY));
+    }
+
+    #[test]
+    fn controls_stay_while_the_volume_slider_is_dragged() {
+        let t0 = Instant::now();
+        let mut c = AutoHide::new(t0);
+        assert!(c.activity(t0).is_some());
+        // Pressing the slider starts a gpui drag, which reads as unhovered.
+        assert_eq!(c.set_pinned(true, t0 + SEC / 2), None);
+        // The first timer still runs, so no second one starts.
+        assert_eq!(c.set_pinned(false, t0 + SEC), None);
+        // The timer fires mid-drag: no hiding, wait a full delay.
+        assert_eq!(
+            c.timer_fired(t0 + 3 * SEC, true),
+            TimerOutcome::Wait(AutoHide::DELAY)
+        );
+        assert!(c.visible());
+        // Drag released (pointer off the bar): the countdown runs out.
+        assert_eq!(c.timer_fired(t0 + 5 * SEC, false), TimerOutcome::Hide);
     }
 
     #[test]
