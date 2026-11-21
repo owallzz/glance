@@ -7,6 +7,7 @@
       "name": "Glance Dark",
       "mode": "dark",
       "radius": 8,
+      "font.family": "Inter",
       "colors": {
         "background": "#313338",
         "foreground": "#dbdee1",
@@ -96,6 +97,7 @@
       "name": "Glance Light",
       "mode": "light",
       "radius": 8,
+      "font.family": "Inter",
       "colors": {
         "background": "#ffffff",
         "foreground": "#313338",

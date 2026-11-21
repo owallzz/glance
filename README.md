@@ -152,3 +152,5 @@ cargo fmt --all --check
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.
+
+The bundled [Inter](https://github.com/rsms/inter) font is under the SIL Open Font License 1.1 ([crates/glance-app/assets/fonts/LICENSE.txt](crates/glance-app/assets/fonts/LICENSE.txt)).

@@ -9,6 +9,7 @@ mod contacts;
 mod direct;
 mod dms;
 mod files;
+mod fonts;
 mod home;
 mod idle;
 mod instance;
@@ -161,6 +162,8 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        // Before the theme names the family and before any window lays out.
+        fonts::register(cx);
         gpui_kit::init(cx);
         theme::init(ThemeMode::Dark, cx);
 

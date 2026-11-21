@@ -229,5 +229,9 @@ mod tests {
         let (dark, light) = bundled_themes().unwrap();
         assert!(dark.mode.is_dark());
         assert!(!light.mode.is_dark());
+        // Both use the bundled font (it has real bold faces).
+        for theme in [&dark, &light] {
+            assert_eq!(theme.font_family.as_deref(), Some(crate::fonts::UI_FAMILY));
+        }
     }
 }
