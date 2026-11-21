@@ -622,8 +622,8 @@ impl GlanceApp {
         self.join_error = None;
         let state = crate::session::member_state(&glance_core::Participant {
             profile: self.me.clone(),
-            muted: self.muted,
-            deafened: self.deafened,
+            muted: self.voice.muted,
+            deafened: self.voice.deafened,
             speaking: false,
             camera: false,
             stream: None,

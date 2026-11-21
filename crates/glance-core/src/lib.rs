@@ -8,7 +8,7 @@ pub mod demo;
 pub mod dms;
 pub mod format;
 pub mod model;
-pub mod voice;
 pub mod rooms;
+pub mod voice;
 
 pub use model::*;

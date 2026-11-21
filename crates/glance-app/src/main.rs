@@ -102,9 +102,9 @@ fn main() {
             .position(|a| a == "--mute")
             .and_then(|i| args.get(i + 1))
             .cloned();
-        if let Err(e) =
-            bot::run(link, name, stream, tone, file, ring_back, camera, mute, switch)
-        {
+        if let Err(e) = bot::run(
+            link, name, stream, tone, file, ring_back, camera, mute, switch,
+        ) {
             eprintln!("glance bot: {e:#}");
             std::process::exit(1);
         }
@@ -142,6 +142,9 @@ fn main() {
             tracing::info!("hardware decoder: {}", found.unwrap_or("none"));
         })
         .ok();
+    // Render the chimes and call tones on a background thread now, so the
+    // first join chime of a call isn't skipped while they render.
+    glance_media::audio::sounds::prewarm();
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     // macOS delivers clicked links as open-URL events, not arguments.
     let url_tx = instance_tx.clone();
