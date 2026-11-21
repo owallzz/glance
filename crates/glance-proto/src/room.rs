@@ -185,6 +185,55 @@ pub fn join_proof(secret: &[u8; 16], room: RoomId, from: EndpointId, to: Endpoin
     *h.finalize().as_bytes()
 }
 
+/// First (and only) frame from a prober on [`crate::ROOM_PROBE_ALPN`]:
+/// "is this room alive, and who's in it?" Only someone holding the room's
+/// link can ask, so strangers can't enumerate members.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProbeRequest {
+    pub room: RoomId,
+    /// [`probe_proof`] for (prober -> member).
+    pub proof: [u8; 32],
+}
+
+/// A member's answer to a [`ProbeRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProbeReply {
+    /// We're in the room. `members` includes the answering peer itself.
+    Members {
+        /// [`probe_proof`] for (member -> prober), so the answer can't be faked
+        /// by someone without the secret either.
+        proof: [u8; 32],
+        members: Vec<MemberInfo>,
+    },
+    /// We're not in that room (any more).
+    NotHere,
+    /// The proof was wrong.
+    Rejected,
+}
+
+/// Like [`join_proof`], for room probes (a probe proof can't be used to
+/// join, and vice versa).
+pub fn probe_proof(secret: &[u8; 16], room: RoomId, from: EndpointId, to: EndpointId) -> [u8; 32] {
+    let key = blake3::derive_key("glance room secret v1", secret);
+    let mut h = blake3::Hasher::new_keyed(&key);
+    h.update(b"glance-probe-v1");
+    h.update(&room.0);
+    h.update(from.as_bytes());
+    h.update(to.as_bytes());
+    *h.finalize().as_bytes()
+}
+
+/// Constant-time check of a received probe proof.
+pub fn verify_probe_proof(
+    secret: &[u8; 16],
+    room: RoomId,
+    from: EndpointId,
+    to: EndpointId,
+    proof: &[u8; 32],
+) -> bool {
+    blake3::Hash::from(probe_proof(secret, room, from, to)) == blake3::Hash::from(*proof)
+}
+
 /// Constant-time check of a received proof.
 pub fn verify_proof(
     secret: &[u8; 16],
@@ -212,6 +261,20 @@ mod tests {
         assert!(!verify_proof(&secret, room, b, a, &p));
         assert!(!verify_proof(&[5; 16], room, a, b, &p));
         assert!(!verify_proof(&secret, RoomId([0; 8]), a, b, &p));
+    }
+
+    #[test]
+    fn probe_proof_differs_from_join_proof() {
+        let a = SecretKey::from_bytes(&[1; 32]).public();
+        let b = SecretKey::from_bytes(&[2; 32]).public();
+        let room = RoomId([3; 8]);
+        let secret = [4; 16];
+        let p = probe_proof(&secret, room, a, b);
+        assert!(verify_probe_proof(&secret, room, a, b, &p));
+        assert!(!verify_probe_proof(&secret, room, b, a, &p));
+        assert!(!verify_probe_proof(&[5; 16], room, a, b, &p));
+        assert!(!verify_proof(&secret, room, a, b, &p));
+        assert_ne!(p, join_proof(&secret, room, a, b));
     }
 
     #[test]
