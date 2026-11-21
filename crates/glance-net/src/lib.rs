@@ -136,7 +136,12 @@ impl Node {
         let files = files::FileStore::open(config.files_dir.as_deref()).await?;
         let (contacts, contacts_tx) = contacts::spawn(endpoint.clone());
         let router = Router::builder(endpoint)
-            .accept(glance_proto::CONTACTS_ALPN, ContactsProtocol(contacts_tx))
+            // Preferred first: dialers offering both get version 2.
+            .accept(
+                glance_proto::CONTACTS_ALPN,
+                ContactsProtocol(contacts_tx.clone()),
+            )
+            .accept(glance_proto::CONTACTS_ALPN_V1, ContactsProtocol(contacts_tx))
             .accept(ROOM_ALPN, RoomProtocol(room_slot.clone()))
             .accept(
                 iroh_blobs::ALPN,

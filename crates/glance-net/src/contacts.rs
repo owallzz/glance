@@ -4,16 +4,21 @@
 //!
 //! Policy: blocked peers are refused at connect; peers that aren't contacts
 //! may only send `Request` (and the initial `Hello`).
+//!
+//! Direct messages need a `glance/contacts/2` connection on both ends. The
+//! actor doesn't keep them: the app persists its outbox and resends whatever
+//! wasn't acked when the contact comes online (receivers dedupe by id).
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use glance_proto::{
-    CONTACTS_ALPN, ContactMsg, EndpointAddr, EndpointId, PresenceInfo, WireProfile,
+    CONTACTS_ALPN, CONTACTS_ALPN_V1, ContactMsg, EndpointAddr, EndpointId, MAX_DM_LEN,
+    PresenceInfo, WireDm, WireProfile,
 };
 use iroh::Endpoint;
-use iroh::endpoint::{Connection, RecvStream, SendStream};
+use iroh::endpoint::{ConnectOptions, Connection, RecvStream, SendStream};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -67,6 +72,23 @@ pub enum ContactCommand {
         to: EndpointId,
         file: glance_proto::WireFile,
     },
+    /// Send a direct message to a mutual contact (dialing them if needed).
+    /// Answered by [`ContactEvent::DmAcked`] or [`ContactEvent::DmFailed`].
+    SendDm {
+        to: EndpointId,
+        dm: WireDm,
+    },
+}
+
+/// Why a direct message didn't go out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DmFailure {
+    /// They're offline or unreachable; resend when they come online.
+    Offline,
+    /// Their glance predates direct messages (`glance/contacts/1`).
+    Unsupported,
+    /// They aren't a mutual contact.
+    NotContact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +143,23 @@ pub enum ContactEvent {
         to: EndpointId,
         what: String,
     },
+    /// A mutual contact sent us a direct message (already acked; the same
+    /// id may arrive again if our ack got lost).
+    DmReceived {
+        from: EndpointId,
+        dm: WireDm,
+    },
+    /// A contact confirmed they got our message.
+    DmAcked {
+        from: EndpointId,
+        id: u64,
+    },
+    /// Our message couldn't be sent now.
+    DmFailed {
+        to: EndpointId,
+        id: u64,
+        reason: DmFailure,
+    },
 }
 
 pub(crate) enum Inbound {
@@ -153,6 +192,8 @@ struct Peer {
     dialer: EndpointId,
     tx: mpsc::UnboundedSender<ContactMsg>,
     profile: WireProfile,
+    /// The connection speaks `glance/contacts/2` (direct messages).
+    dms: bool,
 }
 
 struct Actor {
@@ -273,6 +314,14 @@ impl Actor {
             Inbound::DialFailed { id } => {
                 for m in self.pending.remove(&id).unwrap_or_default() {
                     let what = match m {
+                        ContactMsg::Dm(dm) => {
+                            let _ = self.events.send(ContactEvent::DmFailed {
+                                to: id,
+                                id: dm.id,
+                                reason: DmFailure::Offline,
+                            });
+                            continue;
+                        }
                         ContactMsg::Request { .. } => "contact request",
                         ContactMsg::Ring { .. } => "call",
                         ContactMsg::JoinRequest => "join request",
@@ -345,8 +394,20 @@ impl Actor {
         if dialer == id {
             let _ = tx.send(self.hello(&id));
         }
+        let dms = conn.alpn() == CONTACTS_ALPN;
         for m in self.pending.remove(&id).unwrap_or_default() {
-            let _ = tx.send(m);
+            match m {
+                ContactMsg::Dm(dm) if !dms => {
+                    let _ = self.events.send(ContactEvent::DmFailed {
+                        to: id,
+                        id: dm.id,
+                        reason: DmFailure::Unsupported,
+                    });
+                }
+                m => {
+                    let _ = tx.send(m);
+                }
+            }
         }
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
@@ -381,6 +442,7 @@ impl Actor {
                 dialer,
                 tx,
                 profile: profile.clone(),
+                dms,
             },
         );
         if mutual || dialer == id {
@@ -479,6 +541,15 @@ impl Actor {
             ContactMsg::JoinTicket { link } if mutual => {
                 let _ = self.events.send(ContactEvent::JoinTicket { from, link });
             }
+            ContactMsg::Dm(dm) if mutual && dm.text.len() <= MAX_DM_LEN => {
+                if let Some(p) = self.peers.get(&from) {
+                    let _ = p.tx.send(ContactMsg::DmAck { id: dm.id });
+                }
+                let _ = self.events.send(ContactEvent::DmReceived { from, dm });
+            }
+            ContactMsg::DmAck { id } if mutual => {
+                let _ = self.events.send(ContactEvent::DmAcked { from, id });
+            }
             other => debug!("ignoring {other:?} from {from} (relation {rel:?})"),
         }
     }
@@ -503,13 +574,22 @@ impl Actor {
         let me = self.me;
         tokio::spawn(async move {
             let result: Result<(Connection, SendStream, RecvStream, ContactMsg)> = async {
-                let conn = tokio::time::timeout(
-                    Duration::from_secs(15),
-                    endpoint.connect(EndpointAddr::new(to), CONTACTS_ALPN),
-                )
+                // Offer both versions; the acceptor picks the newest it has.
+                let conn = tokio::time::timeout(Duration::from_secs(15), async {
+                    endpoint
+                        .connect_with_opts(
+                            EndpointAddr::new(to),
+                            CONTACTS_ALPN,
+                            ConnectOptions::new()
+                                .with_additional_alpns(vec![CONTACTS_ALPN_V1.to_vec()]),
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!("connect: {e}"))?
+                        .await
+                        .map_err(|e| anyhow::anyhow!("connect: {e}"))
+                })
                 .await
-                .context("timed out")?
-                .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
+                .context("timed out")??;
                 let (mut send, mut recv) = conn.open_bi().await?;
                 write_frame(&mut send, &hello).await?;
                 let reply = tokio::time::timeout(Duration::from_secs(10), read_frame(&mut recv))
@@ -618,6 +698,26 @@ impl Actor {
             }
             ContactCommand::Remove(to) => self.deliver(to, ContactMsg::Remove),
             ContactCommand::SendFile { to, file } => self.deliver(to, ContactMsg::File(file)),
+            ContactCommand::SendDm { to, mut dm } => {
+                let fail = |reason| ContactEvent::DmFailed {
+                    to,
+                    id: dm.id,
+                    reason,
+                };
+                if self.relation(&to) != Some(Relation::Mutual) {
+                    let _ = self.events.send(fail(DmFailure::NotContact));
+                    return;
+                }
+                match self.peers.get(&to) {
+                    Some(p) if !p.dms => {
+                        let _ = self.events.send(fail(DmFailure::Unsupported));
+                    }
+                    _ => {
+                        truncate_utf8(&mut dm.text, MAX_DM_LEN);
+                        self.deliver(to, ContactMsg::Dm(dm));
+                    }
+                }
+            }
             ContactCommand::Ring {
                 to,
                 call_id,
@@ -646,5 +746,31 @@ impl Actor {
                 self.deliver(to, ContactMsg::JoinTicket { link })
             }
         }
+    }
+}
+
+/// Cut `s` to at most `max` bytes on a character boundary.
+fn truncate_utf8(s: &mut String, max: usize) {
+    if s.len() > max {
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_utf8;
+
+    #[test]
+    fn truncates_on_char_boundaries() {
+        let mut s = "aé".repeat(3);
+        truncate_utf8(&mut s, 4);
+        assert_eq!(s, "aéa");
+        let mut s = "short".to_string();
+        truncate_utf8(&mut s, 10);
+        assert_eq!(s, "short");
     }
 }
