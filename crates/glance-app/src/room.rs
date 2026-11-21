@@ -1364,8 +1364,20 @@ impl GlanceApp {
             .child(
                 div().px_4().pt_2().pb(px(PANEL_MARGIN)).child(
                     div()
+                        .id("chat-composer")
                         .rounded(px(8.))
                         .bg(p.bg_hover)
+                        .cursor_text()
+                        // The whole box is the message box: a click anywhere
+                        // in it puts the caret in the input.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.chat_input.update(cx, |s, cx| s.focus(window, cx));
+                                // Or the window root, also focusable, takes focus back.
+                                window.prevent_default();
+                            }),
+                        )
                         .flex()
                         // Like the DM box: the + stays level with the last
                         // line, and a long message grows the box upwards.

@@ -6,6 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::slider::{Slider, SliderState};
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -754,12 +755,18 @@ impl GlanceApp {
                                 "INPUT VOLUME",
                                 &self.input_volume_slider,
                                 self.settings.input_volume,
+                                cx.listener(|this, _, window, cx| {
+                                    this.reset_volume(true, window, cx)
+                                }),
                             ))
                             .child(volume_slider(
                                 p,
                                 "OUTPUT VOLUME",
                                 &self.output_volume_slider,
                                 self.settings.output_volume,
+                                cx.listener(|this, _, window, cx| {
+                                    this.reset_volume(false, window, cx)
+                                }),
                             )),
                     )
                     .child(mic_test)
@@ -1337,13 +1344,35 @@ enum Processing {
     AutoGain,
 }
 
-/// A labelled 0–200% volume slider.
+/// A labelled 0–200% volume slider with a reset-to-100% button.
 fn volume_slider(
     p: &Palette,
     label: &'static str,
     state: &Entity<SliderState>,
     volume: f32,
+    on_reset: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let changed = (volume - 1.0).abs() > 0.005;
+    let hover = p.bg_hover;
+    let reset = div()
+        .id(label)
+        .size(px(20.))
+        .rounded(px(4.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon(
+            IconName::RotateCcw,
+            12.,
+            if changed { p.interactive } else { p.text_muted },
+        ))
+        .when(!changed, |d| d.opacity(0.4))
+        .when(changed, |d| {
+            d.cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .tooltip(|window, cx| Tooltip::new("Reset to 100%").build(window, cx))
+                .on_click(on_reset)
+        });
     div()
         .flex_1()
         .flex()
@@ -1353,12 +1382,20 @@ fn volume_slider(
             div()
                 .flex()
                 .justify_between()
+                .items_center()
                 .child(section_label(p, label))
                 .child(
                     div()
-                        .text_xs()
-                        .text_color(p.text_muted)
-                        .child(format!("{:.0}%", volume * 100.0)),
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.text_muted)
+                                .child(format!("{:.0}%", volume * 100.0)),
+                        )
+                        .child(reset),
                 ),
         )
         .child(Slider::new(state).accessibility_label(label))

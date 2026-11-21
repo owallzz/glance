@@ -676,8 +676,20 @@ impl GlanceApp {
             .children(note.map(|n| div().text_xs().text_color(p.text_muted).child(n)))
             .child(
                 div()
+                    .id("dm-composer")
                     .rounded(px(8.))
                     .bg(p.bg_hover)
+                    .cursor_text()
+                    // The whole box is the message box: a click anywhere in
+                    // it (not just on the text line) puts the caret there.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.dm_input.update(cx, |s, cx| s.focus(window, cx));
+                            // Or the window root, also focusable, takes focus back.
+                            window.prevent_default();
+                        }),
+                    )
                     .flex()
                     // The + sits level with a one-line message and stays by
                     // the last line as the message grows (upwards: the box
@@ -709,7 +721,9 @@ impl GlanceApp {
                             .min_w_0()
                             // A one-line textarea is 40 px tall.
                             .py(px((COMPOSER_HEIGHT - 40.) / 2.))
-                            .child(Textarea::new(&self.dm_input)),
+                            // No border or background of its own: the
+                            // grey box around it is the input.
+                            .child(Textarea::new(&self.dm_input).appearance(false)),
                     ),
             );
 

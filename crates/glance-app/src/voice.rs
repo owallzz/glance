@@ -186,6 +186,24 @@ impl GlanceApp {
         cx.notify();
     }
 
+    /// Settings → Voice: put the mic or speaker volume back to 100%.
+    pub fn reset_volume(&mut self, input: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let slider = if input {
+            self.settings.input_volume = 1.0;
+            &self.input_volume_slider
+        } else {
+            self.settings.output_volume = 1.0;
+            &self.output_volume_slider
+        };
+        slider.update(cx, |s, cx| s.set_value(100.0, window, cx));
+        for engine in self.live_engines() {
+            engine.set_input_volume(self.settings.input_volume);
+            engine.set_output_volume(self.settings.output_volume);
+        }
+        self.save_settings();
+        cx.notify();
+    }
+
     /// Change what you chose for one person and apply it live. With
     /// `persist` it's also saved (it's remembered by peer id across rooms
     /// and restarts); a slider passes false while dragging and true on
