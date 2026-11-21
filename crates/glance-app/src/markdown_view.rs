@@ -212,7 +212,7 @@ pub fn render_message(
         .min_w_0()
         .text_size(size)
         .line_height(relative(LINE_HEIGHT))
-        .children(r.blocks(&msg.msg.blocks, true))
+        .children(r.blocks(&msg.msg.blocks))
         .into_any_element()
 }
 
@@ -271,27 +271,51 @@ impl Renderer<'_> {
         if self.hidden { c.opacity(0.) } else { c }
     }
 
-    fn blocks(&mut self, blocks: &[Block], top: bool) -> Vec<AnyElement> {
+    /// The children of one container, spaced like CSS block flow: adjacent
+    /// vertical margins collapse to the larger one (flex layout would add
+    /// them), and `first` means first child of its parent, as `:first-child`.
+    fn blocks(&mut self, blocks: &[Block]) -> Vec<AnyElement> {
+        let margins: Vec<(f32, f32)> = blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| block_margins(b, i == 0))
+            .collect();
         blocks
             .iter()
             .enumerate()
-            .map(|(i, b)| self.block(b, top && i == 0))
+            .map(|(i, b)| {
+                let top = if i == 0 { margins[i].0 } else { 0. };
+                let bottom = match margins.get(i + 1) {
+                    Some(next) => margins[i].1.max(next.0),
+                    None => margins[i].1,
+                };
+                let el = self.block(b);
+                if top == 0. && bottom == 0. {
+                    return el;
+                }
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .mt(px(top))
+                    .mb(px(bottom))
+                    .child(el)
+                    .into_any_element()
+            })
             .collect()
     }
 
-    fn block(&mut self, block: &Block, first: bool) -> AnyElement {
+    fn block(&mut self, block: &Block) -> AnyElement {
         let p = self.p;
         match block {
             Block::Paragraph(line) => self.line(line, p.text_normal, false),
             Block::Heading { level, line } => {
-                let (scale, first_top) = match level {
-                    1 => (1.5, 8.),
-                    2 => (1.25, 8.),
-                    _ => (1.0, 4.),
+                let scale = match level {
+                    1 => 1.5,
+                    2 => 1.25,
+                    _ => 1.0,
                 };
                 div()
-                    .mt(px(if first { first_top } else { 16. }))
-                    .mb(px(8.))
                     .text_size(self.size * scale)
                     .child(self.line(line, p.text_header, true))
                     .into_any_element()
@@ -315,7 +339,7 @@ impl Renderer<'_> {
                             .pr(px(8.))
                             .flex()
                             .flex_col()
-                            .children(self.blocks(inner, false)),
+                            .children(self.blocks(inner)),
                     )
                     .into_any_element()
             }
@@ -367,14 +391,13 @@ impl Renderer<'_> {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .children(self.blocks(item, false)),
+                            .children(self.blocks(item)),
                     )
                     .into_any_element()
             })
             .collect();
         self.depth -= 1;
         div()
-            .mt(px(4.))
             .flex()
             .flex_col()
             .gap(px(4.))
@@ -424,7 +447,6 @@ impl Renderer<'_> {
             rich = rich.masked_ranges(std::iter::once(0..text.len()).collect());
         }
         div()
-            .my(px(4.))
             .p(px(8.))
             .rounded(px(4.))
             .border_1()
@@ -459,7 +481,7 @@ impl Renderer<'_> {
         let (was_hidden, was_spoiler) = (self.hidden, self.block_spoiler);
         self.hidden = self.hidden || !shown;
         self.block_spoiler = Some(id);
-        let inner = self.blocks(blocks, false);
+        let inner = self.blocks(blocks);
         self.hidden = was_hidden;
         self.block_spoiler = was_spoiler;
         let el = div()
@@ -624,6 +646,21 @@ impl Renderer<'_> {
     }
 }
 
+/// A block's (top, bottom) margin in px, Discord's values: headings 16/8
+/// (8, or 4 for h3, as a first child), lists 4 on top and 4 under the last
+/// item (`li { margin-bottom: 4px }`), code blocks 4/4.
+fn block_margins(block: &Block, first: bool) -> (f32, f32) {
+    match block {
+        Block::Heading { level, .. } => {
+            let first_top = if *level <= 2 { 8. } else { 4. };
+            (if first { first_top } else { 16. }, 8.)
+        }
+        Block::List { .. } => (4., 4.),
+        Block::CodeBlock { .. } => (4., 4.),
+        _ => (0., 0.),
+    }
+}
+
 fn reveal(app: &WeakEntity<GlanceApp>, key: SpoilerKey, cx: &mut App) {
     let _ = app.update(cx, |app, cx| {
         app.revealed_spoilers.insert(key);
@@ -706,7 +743,38 @@ mod tests {
 
     use glance_core::PeerId;
 
-    use super::{MarkdownCache, Parsed, room_message_key, web_domain};
+    use glance_core::markdown::parse;
+
+    use super::{MarkdownCache, Parsed, block_margins, room_message_key, web_domain};
+
+    /// The gaps between a message's top-level blocks after collapsing.
+    fn gaps(src: &str) -> Vec<f32> {
+        let blocks = parse(src).blocks;
+        let m: Vec<(f32, f32)> = blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| block_margins(b, i == 0))
+            .collect();
+        m.windows(2).map(|w| w[0].1.max(w[1].0)).collect()
+    }
+
+    #[test]
+    fn block_margins_collapse_like_css() {
+        // Heading then list: max(8, 4), not 8 + 4.
+        assert_eq!(gaps("### t\n- a"), vec![8.]);
+        // A list's last item keeps its 4px under it.
+        assert_eq!(gaps("- a\n\n-# s"), vec![4., 0.]);
+        // Paragraph then heading: the heading's 16.
+        assert_eq!(gaps("x\n# h"), vec![16.]);
+        // First child of anything: 8 for h1/h2, 4 for h3.
+        let first = |src: &str| block_margins(&parse(src).blocks[0], true).0;
+        assert_eq!(first("# h"), 8.);
+        assert_eq!(first("### h"), 4.);
+        let glance_core::markdown::Block::Quote(inner) = &parse("> # h").blocks[0] else {
+            panic!("quote");
+        };
+        assert_eq!(block_margins(&inner[0], true), (8., 8.));
+    }
 
     #[test]
     fn room_message_keys_follow_the_message_not_its_position() {
