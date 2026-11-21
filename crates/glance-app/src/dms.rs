@@ -391,6 +391,15 @@ impl GlanceApp {
         }
     }
 
+    /// Take back a message that is still waiting for the contact to come
+    /// online. One that may already have reached them can't be recalled.
+    pub fn cancel_dm(&mut self, peer: PeerId, id: u64) {
+        if self.dms.conv(peer).cancel(id) {
+            self.dms.save(peer);
+            self.dms.flush();
+        }
+    }
+
     pub fn on_dm_received(&mut self, from: PeerId, dm: WireDm) {
         let seen = self.dm_visible(from);
         let text = dm.text.clone();
@@ -428,7 +437,10 @@ impl GlanceApp {
         if reason == DmFailure::Unsupported {
             self.dms.unsupported.insert(to);
         }
-        if self.dms.conv(to).mark_queued(id) {
+        // Only a lost connection or a missing ack means it left us; the
+        // other failures happen before anything is sent.
+        let maybe_delivered = reason == DmFailure::Offline;
+        if self.dms.conv(to).mark_queued(id, maybe_delivered) {
             self.dms.save(to);
         }
     }
@@ -756,11 +768,25 @@ impl GlanceApp {
         let mut rows = Vec::with_capacity(msgs.len());
         for m in msgs {
             let pending = m.state.is_pending();
+            let msg_id = m.id;
             let state_note = match m.state {
                 DmState::Queued => Some(format!("Waiting for {their_name}")),
                 DmState::Sending => Some("Sending…".to_string()),
                 _ => None,
             };
+            // A message still waiting for them can be taken back.
+            let cancel = m.cancellable().then(|| {
+                div()
+                    .id(SharedString::from(format!("dm-cancel-{msg_id}")))
+                    .text_color(p.link)
+                    .cursor_pointer()
+                    .hover(|s| s.underline())
+                    .child("Cancel")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_dm(peer, msg_id);
+                        cx.notify();
+                    }))
+            });
             let body = match m.body {
                 DmBody::Text(t) => {
                     let msg = self.md_cache.get(&t);
@@ -792,6 +818,7 @@ impl GlanceApp {
                             .text_color(p.text_muted)
                             .child(icon(IconName::Clock, 12., p.text_muted))
                             .child(n)
+                            .when_some(cancel, |d, cancel| d.child("·").child(cancel))
                     }))
                     .into_any_element(),
             );

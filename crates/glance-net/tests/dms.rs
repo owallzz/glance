@@ -150,7 +150,7 @@ async fn messages_are_acked_queued_offline_and_delivered_on_reconnect() {
         ContactEvent::DmFailed {
             to: ben_addr.id,
             id: 3,
-            reason: DmFailure::Offline
+            reason: DmFailure::Unreachable
         }
     );
 

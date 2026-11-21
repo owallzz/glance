@@ -93,8 +93,12 @@ pub enum ContactCommand {
 /// Why a direct message didn't go out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmFailure {
-    /// They're offline or unreachable; resend when they come online.
+    /// It was sent but no ack came back (the connection dropped or the ack
+    /// timed out): it may have arrived. Resend when they come online.
     Offline,
+    /// We couldn't reach them, so it was never sent. Resend when they come
+    /// online.
+    Unreachable,
     /// Their glance predates direct messages (`glance/contacts/1`).
     Unsupported,
     /// They aren't a mutual contact.
@@ -332,7 +336,7 @@ impl Actor {
                 for m in self.pending.remove(&id).unwrap_or_default() {
                     let what = match m {
                         ContactMsg::Dm(dm) => {
-                            self.dm_failed(id, dm.id, DmFailure::Offline);
+                            self.dm_failed(id, dm.id, DmFailure::Unreachable);
                             continue;
                         }
                         ContactMsg::Request { .. } => "contact request",

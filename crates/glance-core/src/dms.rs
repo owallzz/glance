@@ -64,9 +64,20 @@ pub struct DmMessage {
     pub sent_at: u64,
     pub body: DmBody,
     pub state: DmState,
+    /// Ours, and it was handed to the network at least once without an ack
+    /// (the connection dropped, the ack timed out, or the app quit while it
+    /// was sending). It may have arrived, so it can't be cancelled.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maybe_delivered: bool,
 }
 
 impl DmMessage {
+    /// Ours, still waiting, and never handed to the network: taking it back
+    /// is safe because the contact can't have it.
+    pub fn cancellable(&self) -> bool {
+        self.mine && self.state == DmState::Queued && !self.maybe_delivered
+    }
+
     /// One line for the conversation list: the first line of the message
     /// as plain text (markdown removed, spoilers masked).
     pub fn preview(&self) -> String {
@@ -114,6 +125,7 @@ impl Conversation {
         for m in &mut c.messages {
             if m.state == DmState::Sending {
                 m.state = DmState::Queued;
+                m.maybe_delivered = true;
             }
         }
         Ok(c)
@@ -139,6 +151,7 @@ impl Conversation {
             sent_at,
             body,
             state,
+            maybe_delivered: false,
         });
         self.trim();
     }
@@ -164,6 +177,7 @@ impl Conversation {
                 sent_at,
                 body,
                 state: DmState::Received,
+                maybe_delivered: false,
             },
         );
         if !seen {
@@ -185,11 +199,13 @@ impl Conversation {
         }
     }
 
-    /// Our message couldn't go out (they're offline): wait for them.
-    pub fn mark_queued(&mut self, id: u64) -> bool {
+    /// Our message didn't get through: wait for them. `maybe_delivered`:
+    /// it left us (no ack came back), so it may have arrived anyway.
+    pub fn mark_queued(&mut self, id: u64, maybe_delivered: bool) -> bool {
         match self.find_mut(id) {
             Some(m) if m.mine && m.state == DmState::Sending => {
                 m.state = DmState::Queued;
+                m.maybe_delivered |= maybe_delivered;
                 true
             }
             _ => false,
@@ -201,6 +217,19 @@ impl Conversation {
         match self.find_mut(id) {
             Some(m) if m.mine && m.state.is_pending() => {
                 m.state = DmState::Delivered;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Take back one of our messages that is still waiting for the contact.
+    /// Returns false if it's unknown, not ours, or may already have reached
+    /// them (see [`DmMessage::cancellable`]).
+    pub fn cancel(&mut self, id: u64) -> bool {
+        match self.messages.iter().rposition(|m| m.id == id) {
+            Some(i) if self.messages[i].cancellable() => {
+                self.messages.remove(i);
                 true
             }
             _ => false,
@@ -396,6 +425,7 @@ mod tests {
             sent_at: 0,
             body: text(t),
             state: DmState::Delivered,
+            maybe_delivered: false,
         };
         assert_eq!(msg("**hi** _there_").preview(), "hi there");
         assert_eq!(msg("look ||secret||").preview(), "look ▮▮▮▮");
@@ -419,6 +449,62 @@ fn main() {}
     }
 
     #[test]
+    fn only_a_waiting_message_can_be_cancelled() {
+        let mut c = Conversation::default();
+        c.push_mine(1, 10, text("sent"), DmState::Delivered);
+        c.push_mine(2, 20, text("in flight"), DmState::Sending);
+        c.push_mine(3, 30, text("waiting"), DmState::Queued);
+        c.push_mine(4, 40, text("also waiting"), DmState::Queued);
+        assert!(c.receive(5, 50, text("theirs"), true));
+        assert!(!c.cancel(1));
+        assert!(!c.cancel(2));
+        assert!(!c.cancel(5));
+        assert!(!c.cancel(99));
+        assert!(c.cancel(3));
+        assert!(!c.cancel(3));
+        let ids: Vec<u64> = c.messages.iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![1, 2, 4, 5]);
+        // The rest of the outbox is untouched.
+        let pending: Vec<u64> = c.pending().iter().map(|m| m.id).collect();
+        assert_eq!(pending, vec![2, 4]);
+        assert_eq!(c.summary().pending, 2);
+    }
+
+    #[test]
+    fn a_message_that_may_have_arrived_cannot_be_cancelled() {
+        let mut c = Conversation::default();
+        for id in 1..=3 {
+            c.push_mine(id, id, text("hi"), DmState::Queued);
+            assert!(c.mark_sending(id));
+        }
+        // Dial failed: it never left, so it can still be taken back.
+        assert!(c.mark_queued(1, false));
+        assert!(c.messages[0].cancellable());
+        // Sent, but no ack: it may be on their screen already.
+        assert!(c.mark_queued(2, true));
+        assert!(!c.cancel(2));
+        // Once maybe delivered, a later clean failure doesn't undo that.
+        assert!(c.mark_sending(2));
+        assert!(c.mark_queued(2, false));
+        assert!(!c.messages[1].cancellable());
+        assert!(c.cancel(1));
+        // The app quit while 3 was sending: after loading it's queued again
+        // but no longer cancellable.
+        let path =
+            std::env::temp_dir().join(format!("glance-dms-cancel-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&c).unwrap()).unwrap();
+        let loaded = Conversation::load(&path).unwrap();
+        let three = loaded.messages.iter().find(|m| m.id == 3).unwrap();
+        assert_eq!(three.state, DmState::Queued);
+        assert!(!three.cancellable());
+        // Files written before the flag existed still load.
+        let old = r#"{"messages":[{"id":7,"mine":true,"sent_at":1,"body":{"Text":"x"},"state":"Queued"}]}"#;
+        std::fs::write(&path, old).unwrap();
+        assert!(Conversation::load(&path).unwrap().messages[0].cancellable());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn outgoing_moves_from_queued_to_delivered() {
         let mut c = Conversation::default();
         c.push_mine(1, 10, text("hi"), DmState::Queued);
@@ -426,7 +512,7 @@ fn main() {}
         assert!(c.mark_sending(1));
         assert_eq!(c.messages[0].state, DmState::Sending);
         // Offline again: back to waiting.
-        assert!(c.mark_queued(1));
+        assert!(c.mark_queued(1, false));
         assert_eq!(c.messages[0].state, DmState::Queued);
         assert!(c.mark_sending(1));
         assert!(c.ack(1));
@@ -435,7 +521,7 @@ fn main() {}
         // A second ack (from a resend) changes nothing.
         assert!(!c.ack(1));
         assert!(!c.mark_sending(1));
-        assert!(!c.mark_queued(1));
+        assert!(!c.mark_queued(1, false));
         assert!(!c.ack(99));
     }
 
