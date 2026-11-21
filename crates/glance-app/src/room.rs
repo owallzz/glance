@@ -725,6 +725,7 @@ impl GlanceApp {
                 }
                 if let Some(view) = room.watching.get(&peer).cloned() {
                     let stream_muted = self.stream_muted(peer);
+                    let focused = room.focused == Some(peer);
                     // Controls show while the pointer is over the tile.
                     let group = SharedString::from(format!("tile-{}", peer.short()));
                     let hover_bar = div()
@@ -738,9 +739,13 @@ impl GlanceApp {
                         .child(
                             tile_button(
                                 p,
-                                &format!("focus-{}", peer.short()),
-                                IconName::Maximize2,
-                                if large { "Exit focus" } else { "Focus" },
+                                &format!("focus-{}-{focused}", peer.short()),
+                                if focused {
+                                    IconName::Minimize2
+                                } else {
+                                    IconName::Maximize2
+                                },
+                                if focused { "Exit focus" } else { "Focus" },
                             )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
