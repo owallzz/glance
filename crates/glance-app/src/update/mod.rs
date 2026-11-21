@@ -74,6 +74,7 @@ impl Config {
             test_override: testing,
             flatpak: flatpak_info || var("FLATPAK_ID").is_some(),
             appimage: var("APPIMAGE").map(PathBuf::from),
+            appdir: var("APPDIR").map(PathBuf::from),
             exe,
             local_app_data: var("LOCALAPPDATA").map(PathBuf::from),
             portable_marker,

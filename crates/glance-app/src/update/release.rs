@@ -69,6 +69,8 @@ pub struct Facts {
     pub flatpak: bool,
     /// `$APPIMAGE`.
     pub appimage: Option<PathBuf>,
+    /// `$APPDIR`, where the AppImage runtime mounted the image.
+    pub appdir: Option<PathBuf>,
     /// `std::env::current_exe()`.
     pub exe: PathBuf,
     /// `%LOCALAPPDATA%` (Windows).
@@ -85,7 +87,11 @@ pub fn detect(f: &Facts) -> InstallKind {
     if dev && !f.test_override {
         return InstallKind::Dev;
     }
-    if let Some(path) = &f.appimage {
+    // Only when we run from inside the mounted image: anything started by
+    // another AppImage inherits that one's $APPIMAGE.
+    if let (Some(path), Some(appdir)) = (&f.appimage, &f.appdir)
+        && f.exe.starts_with(appdir)
+    {
         return InstallKind::AppImage(path.clone());
     }
     if f.os == "macos"
@@ -445,12 +451,21 @@ mod tests {
         fp.flatpak = true;
         fp.appimage = Some("/x.AppImage".into());
         assert_eq!(detect(&fp), InstallKind::Flatpak);
-        // AppImage.
-        let mut ai = f.clone();
+        // AppImage: $APPIMAGE plus running from inside its mount.
+        let mut ai = facts("linux", "/tmp/.mount_glanceX/usr/bin/glance");
         ai.appimage = Some("/home/u/glance.AppImage".into());
+        ai.appdir = Some("/tmp/.mount_glanceX".into());
         assert_eq!(
             detect(&ai),
             InstallKind::AppImage("/home/u/glance.AppImage".into())
+        );
+        // $APPIMAGE inherited from another AppImage that launched us.
+        let mut inherited = f.clone();
+        inherited.appimage = Some("/home/u/OtherApp.AppImage".into());
+        inherited.appdir = Some("/tmp/.mount_OtherA".into());
+        assert_eq!(
+            detect(&inherited),
+            InstallKind::Binary("/home/u/bin/glance".into())
         );
         // Dev: debug build, test identity, cargo target dir.
         let mut d = f.clone();
