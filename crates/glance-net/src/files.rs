@@ -10,6 +10,7 @@ use iroh::Endpoint;
 use iroh_blobs::api::Store;
 use iroh_blobs::api::blobs::{AddPathOptions, ImportMode};
 use iroh_blobs::api::downloader::DownloadProgressItem;
+use iroh_blobs::api::proto::BlobStatus;
 use iroh_blobs::{BlobFormat, Hash};
 use n0_future::StreamExt;
 
@@ -97,6 +98,21 @@ impl FileStore {
         endpoint: &Endpoint,
         hash: [u8; 32],
         providers: Vec<EndpointId>,
+        progress: impl FnMut(Progress) + Send,
+    ) -> Result<()> {
+        self.download_at_most(endpoint, hash, providers, u64::MAX, progress)
+            .await
+    }
+
+    /// [`download`](Self::download), but give up (and keep nothing) once
+    /// more than `max_size` bytes arrive: a peer's offer states the size,
+    /// and a blob bigger than that isn't the file we agreed to fetch.
+    pub async fn download_at_most(
+        &self,
+        endpoint: &Endpoint,
+        hash: [u8; 32],
+        providers: Vec<EndpointId>,
+        max_size: u64,
         mut progress: impl FnMut(Progress) + Send,
     ) -> Result<()> {
         let hash = Hash::from_bytes(hash);
@@ -109,6 +125,13 @@ impl FileStore {
         let mut failed = None;
         while let Some(item) = stream.next().await {
             match item {
+                DownloadProgressItem::Progress(n) if n > max_size => {
+                    // Dropping the stream stops the download.
+                    drop(stream);
+                    let msg = "the file is bigger than its sender said".to_string();
+                    progress(Progress::Failed(msg.clone()));
+                    anyhow::bail!(msg)
+                }
                 DownloadProgressItem::Progress(n) => progress(Progress::Bytes(n)),
                 DownloadProgressItem::Error(e) => failed = Some(e.to_string()),
                 DownloadProgressItem::DownloadError => {
@@ -117,7 +140,15 @@ impl FileStore {
                 _ => {}
             }
         }
-        if self.has(*hash.as_bytes()).await {
+        let status = self.store.blobs().status(hash).await;
+        if let Ok(BlobStatus::Complete { size }) = status
+            && size > max_size
+        {
+            let msg = "the file is bigger than its sender said".to_string();
+            progress(Progress::Failed(msg.clone()));
+            anyhow::bail!(msg)
+        }
+        if matches!(status, Ok(BlobStatus::Complete { .. })) {
             // Keep it from garbage collection and so we can re-serve it.
             let _ = self.store.tags().create(hash).await;
             progress(Progress::Done);

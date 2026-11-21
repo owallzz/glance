@@ -285,8 +285,9 @@ impl GlanceApp {
         }
         let dest = glance_net::files::unique_path(&download_dir(), &offer.name);
         let (tx, rx) = flume::unbounded();
-        entry.abort = Some(net.download_file(hash, entry.providers.clone(), dest.clone(), tx));
         let size = offer.size;
+        entry.abort =
+            Some(net.download_file(hash, entry.providers.clone(), dest.clone(), size, tx));
         let task = cx.spawn(async move |this, cx| {
             let start = Instant::now();
             while let Ok(p) = rx.recv_async().await {

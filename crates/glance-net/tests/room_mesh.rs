@@ -430,6 +430,17 @@ async fn files_transfer_and_second_downloader_can_fetch_from_first() {
         .unwrap();
     expect_members(&c, "c", &[na.id(), nb.id()]).await;
     na.shutdown().await;
+    // An offer that understates the size is refused part way.
+    let mut failed = false;
+    let r = nc
+        .files()
+        .download_at_most(nc.endpoint(), hash, vec![nb.id()], 1000, |p| {
+            if matches!(p, glance_net::files::Progress::Failed(_)) {
+                failed = true;
+            }
+        })
+        .await;
+    assert!(r.is_err() && failed);
     nc.files()
         .download(nc.endpoint(), hash, vec![nb.id()], |_| {})
         .await

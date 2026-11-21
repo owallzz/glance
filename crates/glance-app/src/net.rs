@@ -348,6 +348,7 @@ impl Net {
         hash: [u8; 32],
         providers: Vec<glance_net::EndpointId>,
         dest: PathBuf,
+        max_size: u64,
         progress: flume::Sender<glance_net::files::Progress>,
     ) -> tokio::task::AbortHandle {
         let node = self.node.clone();
@@ -355,7 +356,7 @@ impl Net {
             let p = progress.clone();
             let result = node
                 .files()
-                .download(node.endpoint(), hash, providers, move |ev| {
+                .download_at_most(node.endpoint(), hash, providers, max_size, move |ev| {
                     // Done is sent after the export below.
                     if !matches!(ev, glance_net::files::Progress::Done) {
                         let _ = p.try_send(ev);

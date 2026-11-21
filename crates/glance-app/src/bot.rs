@@ -340,7 +340,7 @@ pub fn run(
                         let (tx, rx) = flume::unbounded();
                         let dest = glance_net::files::unique_path(&dl_dir, &file.name);
                         let _ = std::fs::create_dir_all(&dl_dir);
-                        net.download_file(file.hash, vec![*from], dest.clone(), tx);
+                        net.download_file(file.hash, vec![*from], dest.clone(), file.size, tx);
                         let name = file.name.clone();
                         let cmd = room.commander();
                         let hash = file.hash;
