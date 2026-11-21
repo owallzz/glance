@@ -3,6 +3,7 @@
 
 use glance_core::{ChatBody, ChatMessage, FileOffer, Participant, PeerId, Route, Transfer, format};
 use gpui_kit::assets::IconName;
+use gpui_kit::base::SelectableText;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
@@ -1099,12 +1100,16 @@ impl GlanceApp {
                             .text_color(color)
                             .child(name),
                     )
-                    .children(msgs.into_iter().map(|m| match m.body {
-                        ChatBody::Text(t) => {
-                            div().text_color(p.text_normal).child(t).into_any_element()
+                    .children(msgs.into_iter().map(|m| {
+                        match m.body {
+                            // Drag to select, then copy with the usual shortcut.
+                            ChatBody::Text(t) => div()
+                                .text_color(p.text_normal)
+                                .child(SelectableText::new(("chat-text", m.id), t))
+                                .into_any_element(),
+                            ChatBody::File(f) => self.file_card(p, m.id, f, cx).into_any_element(),
+                            ChatBody::System(_) => div().into_any_element(),
                         }
-                        ChatBody::File(f) => self.file_card(p, m.id, f, cx).into_any_element(),
-                        ChatBody::System(_) => div().into_any_element(),
                     })),
             )
             .into_any_element()
