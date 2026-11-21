@@ -587,6 +587,8 @@ enum DecoderBackend {
     Software(Box<Decoder>),
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     Nvdec(crate::hw::nvdec::NvdecDecoder),
+    #[cfg(target_os = "macos")]
+    VideoToolbox(crate::hw::vtdecode::VtDecoder),
 }
 
 static HARDWARE_DECODING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -601,6 +603,9 @@ pub fn hardware_decoder() -> Option<&'static str> {
         if crate::hw::nvdec::available() {
             return Some("NVIDIA NVDEC");
         }
+        #[cfg(target_os = "macos")]
+        return Some("Apple VideoToolbox");
+        #[allow(unreachable_code)]
         None
     })
 }
@@ -637,6 +642,13 @@ impl VideoDecoder {
                 Ok(d) => return Ok(Self::wrap(DecoderBackend::Nvdec(d))),
                 Err(e) => tracing::debug!("NVDEC unavailable, decoding with OpenH264: {e:#}"),
             }
+            #[cfg(target_os = "macos")]
+            match crate::hw::vtdecode::VtDecoder::new() {
+                Ok(d) => return Ok(Self::wrap(DecoderBackend::VideoToolbox(d))),
+                Err(e) => {
+                    tracing::debug!("VideoToolbox unavailable, decoding with OpenH264: {e:#}")
+                }
+            }
         }
         Self::new()
     }
@@ -655,6 +667,20 @@ impl VideoDecoder {
             DecoderBackend::Software(_) => "OpenH264 (software)",
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             DecoderBackend::Nvdec(_) => "NVIDIA NVDEC",
+            #[cfg(target_os = "macos")]
+            DecoderBackend::VideoToolbox(_) => "Apple VideoToolbox",
+        }
+    }
+
+    /// Make the GPU decoder's next decode fail (tests).
+    #[cfg(test)]
+    fn fail_next_hardware_decode(&mut self) {
+        match &mut self.backend {
+            DecoderBackend::Software(_) => {}
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            DecoderBackend::Nvdec(d) => d.fail_next(),
+            #[cfg(target_os = "macos")]
+            DecoderBackend::VideoToolbox(d) => d.fail_next(),
         }
     }
 
@@ -673,46 +699,59 @@ impl VideoDecoder {
     /// If the GPU decoder fails, this switches to OpenH264 and returns the
     /// error; the caller should ask for a keyframe.
     pub fn decode(&mut self, data: &[u8], target: (u32, u32)) -> Result<Option<VideoFrame>> {
-        match &mut self.backend {
+        let gpu = match &mut self.backend {
             DecoderBackend::Software(d) => {
                 let Some(yuv) = d.decode(data).context("decode packet")? else {
                     return Ok(None);
                 };
-                to_bgra(&mut self.planes, &yuv, target).map(Some)
+                return to_bgra(&mut self.planes, &yuv, target).map(Some);
             }
             #[cfg(any(target_os = "linux", target_os = "windows"))]
-            DecoderBackend::Nvdec(d) => match d.decode(data, target) {
-                Ok(Some(f)) if tile_size((f.width, f.height), target) == (f.width, f.height) => {
-                    // Already scaled on the GPU.
-                    let (w, h) = (f.width as usize, f.height as usize);
-                    let mut bgra = vec![0u8; w * h * 4];
-                    nv12_to_bgra((&f.y, w), (&f.uv, w), (w & !1, h & !1), w, &mut bgra);
-                    Ok(Some(VideoFrame {
-                        width: f.width,
-                        height: f.height,
-                        bgra,
-                    }))
-                }
-                Ok(Some(f)) => {
-                    let (u, v) = &mut self.chroma;
-                    split_chroma(&f.uv, u, v);
-                    let yuv = I420 {
-                        width: f.width as usize,
-                        height: f.height as usize,
-                        y: &f.y,
-                        u,
-                        v,
-                    };
-                    to_bgra(&mut self.planes, &yuv, target).map(Some)
-                }
-                Ok(None) => Ok(None),
-                Err(e) => {
-                    tracing::warn!("NVDEC failed, decoding with OpenH264 from now on: {e:#}");
-                    *self = Self::new()?;
-                    Err(e.context("hardware decode"))
-                }
-            },
+            DecoderBackend::Nvdec(d) => d.decode(data, target),
+            #[cfg(target_os = "macos")]
+            DecoderBackend::VideoToolbox(d) => d.decode(data, target),
+        };
+        match gpu {
+            Ok(Some(f)) => self.gpu_frame_to_bgra(f, target).map(Some),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                tracing::warn!(
+                    "{} failed, decoding with OpenH264 from now on: {e:#}",
+                    self.backend_name()
+                );
+                *self = Self::new()?;
+                Err(e.context("hardware decode"))
+            }
         }
+    }
+
+    /// BGRA from a GPU decoder's NV12, scaled to `target` if the GPU
+    /// hasn't already (its output size changes only at keyframes).
+    fn gpu_frame_to_bgra(
+        &mut self,
+        f: crate::hw::Nv12Frame,
+        target: (u32, u32),
+    ) -> Result<VideoFrame> {
+        if tile_size((f.width, f.height), target) == (f.width, f.height) {
+            let (w, h) = (f.width as usize, f.height as usize);
+            let mut bgra = vec![0u8; w * h * 4];
+            nv12_to_bgra((&f.y, w), (&f.uv, w), (w & !1, h & !1), w, &mut bgra);
+            return Ok(VideoFrame {
+                width: f.width,
+                height: f.height,
+                bgra,
+            });
+        }
+        let (u, v) = &mut self.chroma;
+        split_chroma(&f.uv, u, v);
+        let yuv = I420 {
+            width: f.width as usize,
+            height: f.height as usize,
+            y: &f.y,
+            u,
+            v,
+        };
+        to_bgra(&mut self.planes, &yuv, target)
     }
 }
 
@@ -775,7 +814,6 @@ fn to_bgra(
 }
 
 /// Tightly packed I420 planes borrowed from elsewhere.
-#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 struct I420<'a> {
     width: usize,
     height: usize,
@@ -807,7 +845,6 @@ impl YUVSource for I420<'_> {
 }
 
 /// NV12's interleaved UV plane into separate U and V planes.
-#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 fn split_chroma(uv: &[u8], u: &mut Vec<u8>, v: &mut Vec<u8>) {
     u.clear();
     v.clear();
@@ -893,7 +930,6 @@ fn i420_to_bgra(p: Planes<'_>, (w, h): (usize, usize), out_w: usize, out: &mut [
 }
 
 /// [`i420_to_bgra`] for NV12 (interleaved U and V), as GPU decoders give.
-#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 fn nv12_to_bgra(
     y: (&[u8], usize),
     uv: (&[u8], usize),
@@ -1315,10 +1351,7 @@ mod tests {
         if !dec.is_hardware() {
             return;
         }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if let DecoderBackend::Nvdec(d) = &mut dec.backend {
-            d.fail_next();
-        }
+        dec.fail_next_hardware_decode();
         assert!(dec.decode(&[0, 0, 0, 1, 0x09, 0xf0], (0, 0)).is_err());
         assert!(!dec.is_hardware(), "now on OpenH264");
         // And it decodes the stream from the next keyframe.

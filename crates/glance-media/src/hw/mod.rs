@@ -1,6 +1,7 @@
 //! Hardware video encoders, loaded at run time so glance still starts (and
 //! falls back to OpenH264) on machines without them.
 
+pub mod annexb;
 #[cfg(target_os = "linux")]
 mod h264_headers;
 #[cfg(target_os = "windows")]
@@ -51,6 +52,17 @@ mod va_sys;
 pub mod vaapi;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
+#[cfg(target_os = "macos")]
+pub mod vtdecode;
+
+/// A decoded picture from a GPU decoder, tightly packed (both strides are
+/// `width`).
+pub struct Nv12Frame {
+    pub width: u32,
+    pub height: u32,
+    pub y: Vec<u8>,
+    pub uv: Vec<u8>,
+}
 
 /// The hardware backends `GLANCE_ENCODER` can name.
 pub(crate) const BACKENDS: [&str; 4] = ["nvenc", "vaapi", "videotoolbox", "mediafoundation"];

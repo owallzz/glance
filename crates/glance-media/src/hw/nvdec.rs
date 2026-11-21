@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result, anyhow, bail};
 use libloading::Library;
 
+use super::Nv12Frame;
 use super::nvdec_sys as sys;
 
 #[cfg(target_os = "windows")]
@@ -109,14 +110,6 @@ fn check(rc: CuResult, what: &str) -> Result<()> {
     } else {
         Err(anyhow!("{what} failed (CUDA error {rc})"))
     }
-}
-
-/// A decoded picture, tightly packed (both strides are `width`).
-pub struct Nv12Frame {
-    pub width: u32,
-    pub height: u32,
-    pub y: Vec<u8>,
-    pub uv: Vec<u8>,
 }
 
 /// What the parser callbacks work on. Boxed so its address stays fixed.

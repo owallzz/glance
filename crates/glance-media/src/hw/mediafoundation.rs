@@ -566,51 +566,22 @@ fn friendly_name(activate: &IMFActivate) -> &'static str {
 
 /// The NAL unit types in an Annex-B stream.
 fn nal_types(data: &[u8]) -> Vec<u8> {
-    nal_units(data).map(|(_, nal)| nal[0] & 0x1f).collect()
+    super::annexb::nal_units(data)
+        .iter()
+        .map(|nal| nal[0] & 0x1f)
+        .collect()
 }
 
 /// The SPS and PPS NAL units of an Annex-B stream, with start codes.
 fn parameter_sets(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    for (_, nal) in nal_units(data) {
+    for nal in super::annexb::nal_units(data) {
         if matches!(nal[0] & 0x1f, 7 | 8) {
             out.extend_from_slice(&[0, 0, 0, 1]);
             out.extend_from_slice(nal);
         }
     }
     out
-}
-
-/// (start offset, NAL bytes without the start code) for each NAL unit.
-fn nal_units(data: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
-    let mut starts = Vec::new();
-    let mut i = 0;
-    while i + 3 <= data.len() {
-        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
-            starts.push(i + 3);
-            i += 3;
-        } else {
-            i += 1;
-        }
-    }
-    let ends: Vec<usize> = starts
-        .iter()
-        .skip(1)
-        .map(|&s| {
-            // Back over the start code and any zero of a 4-byte one.
-            let mut e = s - 3;
-            while e > 0 && data[e - 1] == 0 {
-                e -= 1;
-            }
-            e
-        })
-        .chain(std::iter::once(data.len()))
-        .collect();
-    starts
-        .into_iter()
-        .zip(ends)
-        .filter(|(s, e)| e > s)
-        .map(move |(s, e)| (s, &data[s..e]))
 }
 
 /// The hardware encoder's name, if one opens on this machine (cached).
