@@ -159,7 +159,7 @@ pub struct ComposerSpan {
 
 /// Parse a message. Leading and trailing whitespace is ignored.
 pub fn parse(src: &str) -> Message {
-    let nodes = parse_nodes(src);
+    let nodes = parse_nodes(src, false);
     let mut lw = Lowerer::default();
     let blocks = lw.blocks(&nodes, Style::default());
     Message {
@@ -183,14 +183,72 @@ pub fn plain_text(src: &str) -> String {
 /// Live formatting for the composer: style runs over the RAW source (byte
 /// ranges into `src`). They are ordered and non-overlapping but need not
 /// cover everything; uncovered text is plain.
+///
+/// Unlike [`parse`], an unclosed ``` fence counts as a code block running to
+/// the end of the text, since it is usually one being typed.
 pub fn composer_spans(src: &str) -> Vec<ComposerSpan> {
-    let nodes = parse_nodes(src);
-    let mut out = Vec::new();
-    composer_walk(&nodes, ComposerStyle::default(), &mut out);
-    finish_composer(out)
+    composer(src).spans
 }
 
-fn parse_nodes(src: &str) -> Vec<Node> {
+/// A code block in the composer's source, for syntax highlighting it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComposerCodeBlock {
+    /// The language tag, lowercased; `None` without one.
+    pub lang: Option<String>,
+    /// The code as the renderer would see it.
+    pub code: String,
+    /// Where `code` is in the source, in order: byte ranges whose texts,
+    /// joined, are exactly `code` (a quoted block skips each line's `> `).
+    pub pieces: Vec<Range<usize>>,
+}
+
+/// Everything the composer shows: [`composer_spans`] plus the code blocks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Composer {
+    pub spans: Vec<ComposerSpan>,
+    pub code_blocks: Vec<ComposerCodeBlock>,
+}
+
+/// [`composer_spans`] and the code blocks to syntax highlight, in one parse.
+pub fn composer(src: &str) -> Composer {
+    let nodes = parse_nodes(src, true);
+    let mut out = Vec::new();
+    composer_walk(&nodes, ComposerStyle::default(), &mut out);
+    let mut code_blocks = Vec::new();
+    collect_code_blocks(&nodes, &mut code_blocks);
+    Composer {
+        spans: finish_composer(out),
+        code_blocks,
+    }
+}
+
+fn collect_code_blocks(nodes: &[Node], out: &mut Vec<ComposerCodeBlock>) {
+    for node in nodes {
+        match node {
+            Node::CodeBlock {
+                lang, code, raw, ..
+            } => out.push(ComposerCodeBlock {
+                lang: lang.clone(),
+                code: code.clone(),
+                pieces: raw.iter().filter(|r| !r.is_empty()).cloned().collect(),
+            }),
+            Node::Emph { children, .. }
+            | Node::Spoiler { children, .. }
+            | Node::Link { children, .. }
+            | Node::Heading { children, .. }
+            | Node::Subtext { children, .. }
+            | Node::Quote { children, .. } => collect_code_blocks(children, out),
+            Node::List { items, .. } => {
+                for (_, children) in items {
+                    collect_code_blocks(children, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn parse_nodes(src: &str, composer: bool) -> Vec<Node> {
     let start = src.len() - src.trim_start().len();
     let text = src.trim();
     let ctx = Ctx {
@@ -199,6 +257,7 @@ fn parse_nodes(src: &str) -> Vec<Node> {
         in_quote: false,
         in_link: false,
         inline_only: false,
+        composer,
     };
     Parser::new(text, SegMap::at(start), ctx).run()
 }
@@ -361,6 +420,9 @@ struct Ctx {
     /// Heading, subtext and link-label content: no line-start rules and no
     /// code blocks.
     inline_only: bool,
+    /// Parsing for the composer: an unclosed ``` fence is a code block that
+    /// runs to the end (it is being typed), instead of literal backticks.
+    composer: bool,
 }
 
 /// "First position >= from where a fixed predicate holds", remembered so
@@ -792,6 +854,9 @@ impl<'a> Parser<'a> {
                 found = Some((None, q - 1..q, q));
             }
         }
+        if found.is_none() && self.ctx.composer && self.fence_from(bs).is_none() {
+            return Some(self.open_code_block(i));
+        }
         let (lang, content, f) = found?;
         let open_end = lang.as_ref().map_or(bs, |l| l.end + 1);
         let node = Node::CodeBlock {
@@ -801,6 +866,31 @@ impl<'a> Parser<'a> {
             raw: self.raw(content),
         };
         Some((node, f + 3))
+    }
+
+    /// The composer's reading of a ``` with no fence after it: a code block
+    /// from there to the end. A language tag counts when a newline or the
+    /// end follows it (```json alone is a tag being typed).
+    fn open_code_block(&mut self, i: usize) -> (Node, usize) {
+        let n = self.n();
+        let bs = i + 3;
+        let mut p = bs;
+        while p < n && is_lang_byte(self.b[p]) {
+            p += 1;
+        }
+        let has_lang = p > bs && (p == n || self.b[p] == b'\n');
+        let content_start = if has_lang {
+            p + self.count_newlines(p)
+        } else {
+            bs + self.count_newlines(bs)
+        };
+        let node = Node::CodeBlock {
+            lang: has_lang.then(|| self.s[bs..p].to_ascii_lowercase()),
+            code: self.s[content_start..].to_string(),
+            markers: self.raw(i..content_start),
+            raw: self.raw(content_start..n),
+        };
+        (node, n)
     }
 
     // -- block quote: ^( *>>> ([\s\S]*))|^( *> [^\n]*(\n *> [^\n]*)*\n?)
@@ -3051,6 +3141,77 @@ mod tests {
     }
 
     #[test]
+    fn composer_unclosed_fence_is_a_block_being_typed() {
+        let block = |src: &str| {
+            let c = composer(src);
+            assert_eq!(c.code_blocks.len(), 1, "{src:?}: {c:?}");
+            let b = c.code_blocks[0].clone();
+            (b.lang, b.code, b.pieces, c.spans)
+        };
+        // Only the fence so far, then the tag.
+        let (lang, code, _, spans) = block("```");
+        assert_eq!((lang, code.as_str()), (None, ""));
+        assert_eq!(
+            spans,
+            vec![ComposerSpan {
+                range: 0..3,
+                style: cs("m")
+            }]
+        );
+        let (lang, _, _, spans) = block("```json");
+        assert_eq!(lang.as_deref(), Some("json"));
+        assert_eq!(
+            spans,
+            vec![ComposerSpan {
+                range: 0..7,
+                style: cs("m")
+            }]
+        );
+        // Backticks and markdown inside are code, not inline code or bold.
+        let src = "```json\n{\"a\": `x`, \"b\": \"**c**\"}";
+        let (lang, code, pieces, spans) = block(src);
+        assert_eq!(lang.as_deref(), Some("json"));
+        assert_eq!(code, &src[8..]);
+        assert_eq!(pieces, vec![8..src.len()]);
+        assert_eq!(
+            spans,
+            vec![
+                ComposerSpan {
+                    range: 0..8,
+                    style: cs("m")
+                },
+                ComposerSpan {
+                    range: 8..src.len(),
+                    style: cs("c")
+                },
+            ]
+        );
+        // No tag when something other than a newline follows it.
+        let (lang, code, _, _) = block("hi ```x y");
+        assert_eq!((lang, code.as_str()), (None, "x y"));
+        // In a quote, the pieces skip each line's `> `.
+        let src = "> ```py\n> a\n> b";
+        let (lang, code, pieces, _) = block(src);
+        assert_eq!(lang.as_deref(), Some("py"));
+        assert_eq!(code, "a\nb");
+        assert_eq!(
+            pieces.iter().map(|r| &src[r.clone()]).collect::<String>(),
+            code
+        );
+        // A closed fence is unchanged, and what follows it still parses.
+        let c = composer("```js\nx\n```\n**b**");
+        assert_eq!(c.code_blocks.len(), 1);
+        assert!(c.spans.iter().any(|s| s.style.bold));
+        // A sent message keeps Discord's reading: no block without a fence.
+        assert!(
+            parse("```json\n{}")
+                .blocks
+                .iter()
+                .all(|b| !matches!(b, Block::CodeBlock { .. }))
+        );
+    }
+
+    #[test]
     fn composer_typing_in_progress() {
         for src in [
             "**bol",
@@ -3059,7 +3220,6 @@ mod tests {
             "~~s",
             "||sp",
             "`co",
-            "```rs\nfn",
             "[a](https://x",
             "[a]",
             "#",
@@ -3159,7 +3319,12 @@ mod tests {
         }
         let plain = plain_text(src);
         assert!(plain.len() <= src.len() * 4 + 16);
-        let spans = composer_spans(src);
+        let c = composer(src);
+        for b in &c.code_blocks {
+            let joined: String = b.pieces.iter().map(|r| &src[r.clone()]).collect();
+            assert_eq!(joined, b.code, "{src:?}: {b:?}");
+        }
+        let spans = c.spans;
         let mut end = 0;
         for sp in &spans {
             assert!(sp.range.start >= end, "{src:?}: overlap {spans:?}");
