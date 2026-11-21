@@ -28,6 +28,10 @@ pub const REPO: &str = "owallzz/glance";
 const API_BASE: &str = "https://api.github.com";
 /// The release signing key (a placeholder until the real key is added).
 const PUBLIC_KEY: &str = include_str!("../../../../packaging/minisign.pub");
+/// What a Flatpak bundle install is told about a newer release.
+pub const FLATPAK_HINT: &str = "download the new .flatpak from the release page";
+/// Where people download releases by hand.
+pub const RELEASES_URL: &str = "https://github.com/owallzz/glance/releases/latest";
 /// Nothing we ship is anywhere near this; refuse anything bigger.
 const MAX_ASSET: u64 = 512 * 1024 * 1024;
 
@@ -51,7 +55,7 @@ impl Config {
         let exe = std::env::current_exe().unwrap_or_default();
         Self::from_vars(
             |k| std::env::var(k).ok().filter(|v| !v.is_empty()),
-            Path::new("/.flatpak-info").exists(),
+            std::fs::read_to_string("/.flatpak-info").ok().as_deref(),
             exe,
             data_dir,
         )
@@ -60,7 +64,7 @@ impl Config {
     /// `from_env` with the environment passed in (for tests).
     pub fn from_vars(
         var: impl Fn(&str) -> Option<String>,
-        flatpak_info: bool,
+        flatpak_info: Option<&str>,
         exe: PathBuf,
         data_dir: &Path,
     ) -> Self {
@@ -72,7 +76,7 @@ impl Config {
             debug_build: cfg!(debug_assertions),
             data_dir_override: var("GLANCE_DATA_DIR").is_some(),
             test_override: testing,
-            flatpak: flatpak_info || var("FLATPAK_ID").is_some(),
+            flatpak: flatpak_info.is_some() || var("FLATPAK_ID").is_some(),
             appimage: var("APPIMAGE").map(PathBuf::from),
             appdir: var("APPDIR").map(PathBuf::from),
             exe,
@@ -92,7 +96,13 @@ impl Config {
             Some("Updates are turned off (GLANCE_UPDATE=off)".to_string())
         } else {
             match &kind {
-                InstallKind::Flatpak => Some("Updates come from Flatpak".to_string()),
+                // Flathub updates it; a bundle installed from a release's
+                // .flatpak file never updates, so that one checks and says
+                // when there's a new .flatpak to download.
+                InstallKind::Flatpak if flatpak_info.is_some_and(release::from_flathub) => {
+                    Some("Updates come from Flathub".to_string())
+                }
+                InstallKind::Flatpak => None,
                 InstallKind::Dev => Some("Development build".to_string()),
                 _ if key.is_none() => Some("Updates are disabled: no signing key".to_string()),
                 _ => None,
@@ -225,6 +235,9 @@ pub async fn check_and_stage(cfg: &Config, progress: impl Fn(Status)) -> Result<
     let (version, asset, signature) =
         match release::plan(&release, &cfg.current, &cfg.kind, &cfg.os, &cfg.arch) {
             Plan::UpToDate => return Ok(Status::UpToDate),
+            Plan::NoAsset(v) if cfg.kind == InstallKind::Flatpak => {
+                return Ok(Status::Available(v, FLATPAK_HINT.into()));
+            }
             Plan::NoAsset(v) => {
                 return Ok(Status::Available(
                     v,

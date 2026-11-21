@@ -267,6 +267,13 @@ fn reports_without_downloading() {
     assert_eq!(status, Status::NotPublished(Version::new(9, 0, 0)));
     assert!(status.retry_soon());
     assert!(!Status::UpToDate.retry_soon());
+    // A Flatpak bundle never downloads, but hears there's a new .flatpak.
+    let mut bundle = cfg.clone();
+    bundle.kind = InstallKind::Flatpak;
+    assert_eq!(
+        run(&bundle).0.unwrap(),
+        Status::Available(Version::new(9, 0, 0), super::FLATPAK_HINT.into())
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -281,7 +288,12 @@ fn config_from_environment() {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        Config::from_vars(|k| map.get(k).cloned(), flatpak, exe.clone(), &dir)
+        Config::from_vars(
+            |k| map.get(k).cloned(),
+            flatpak.then_some("[Instance]\norigin=glance-origin\n"),
+            exe.clone(),
+            &dir,
+        )
     };
     // Test knobs are ignored without GLANCE_UPDATE_URL.
     let plain = cfg_with(
@@ -320,10 +332,8 @@ fn config_from_environment() {
     assert!(off.unavailable.unwrap().contains("turned off"));
     let flatpak = cfg_with(&[("GLANCE_UPDATE_URL", "http://x")], true);
     assert_eq!(flatpak.kind, InstallKind::Flatpak);
-    assert_eq!(
-        flatpak.unavailable.as_deref(),
-        Some("Updates come from Flatpak")
-    );
+    // Installed from a bundle file: it checks (and points at the release).
+    assert_eq!(flatpak.unavailable, None);
     // The checked-in placeholder key disables updates instead of panicking.
     let nokey = cfg_with(&[("GLANCE_UPDATE_URL", "http://x")], false);
     if parse_public_key(super::PUBLIC_KEY).is_none() {

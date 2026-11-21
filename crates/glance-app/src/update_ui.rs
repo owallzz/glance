@@ -165,6 +165,37 @@ impl GlanceApp {
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if let Status::Available(v, why) = &self.update.status
+            && why == crate::update::FLATPAK_HINT
+        {
+            // A Flatpak bundle can't update itself: point at the release.
+            return Some(
+                div()
+                    .id("update-pill")
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .ml_3()
+                    .px_2()
+                    .py(px(1.))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .rounded_full()
+                    .bg(p.green)
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(gpui_kit::white())
+                    .cursor_pointer()
+                    .child(icon(IconName::Download, 12., gpui_kit::white()))
+                    .child(format!("v{v} is out · Download"))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Opens the release page for the new .flatpak")
+                            .build(window, cx)
+                    })
+                    .on_click(|_, _, cx| cx.open_url(crate::update::RELEASES_URL))
+                    .into_any_element(),
+            );
+        }
         let Status::Ready(staged) = &self.update.status else {
             return None;
         };
@@ -221,6 +252,14 @@ impl GlanceApp {
         let unavailable = matches!(status, Status::Unavailable(_));
         let action = match &status {
             Status::Unavailable(_) => None,
+            Status::Available(_, why) if why == crate::update::FLATPAK_HINT => Some(
+                Button::new("update-download")
+                    .primary()
+                    .small()
+                    .label("Download")
+                    .on_click(|_, _, cx| cx.open_url(crate::update::RELEASES_URL))
+                    .into_any_element(),
+            ),
             Status::Ready(_) => Some(
                 Button::new("update-restart-now")
                     .primary()

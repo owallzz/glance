@@ -112,6 +112,15 @@ pub fn detect(f: &Facts) -> InstallKind {
     InstallKind::Binary(f.exe.clone())
 }
 
+/// Whether `/.flatpak-info` says this Flatpak came from Flathub (which
+/// updates it), rather than from a bundle file.
+pub fn from_flathub(flatpak_info: &str) -> bool {
+    flatpak_info
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("origin="))
+        .any(|o| o.trim().eq_ignore_ascii_case("flathub"))
+}
+
 /// `.../target/debug/glance` or `.../target/<triple>/release/glance`.
 fn in_cargo_target(exe: &Path) -> bool {
     let Some(profile_dir) = exe.parent() else {
@@ -557,6 +566,15 @@ mod tests {
         .unwrap();
         assert!(verify(&pk, &other_sig, data).is_err());
         assert!(parse_signature("garbage", "x").is_err());
+    }
+
+    #[test]
+    fn flathub_origin_is_read_from_flatpak_info() {
+        assert!(from_flathub(
+            "[Application]\nname=x\n\n[Instance]\norigin=flathub\n"
+        ));
+        assert!(!from_flathub("[Instance]\norigin=glance-origin\n"));
+        assert!(!from_flathub(""));
     }
 
     #[test]
