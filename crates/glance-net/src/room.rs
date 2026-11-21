@@ -405,7 +405,9 @@ impl Actor {
                 mut history,
             } => {
                 let id = conn.remote_id();
-                history.retain(|h| !too_long(&h.body));
+                for h in &mut history {
+                    cap_body(&mut h.body);
+                }
                 if !self.got_history {
                     self.got_history = true;
                     self.present_at_join.insert(id);
@@ -633,10 +635,11 @@ impl Actor {
                     .events
                     .send(RoomEvent::MemberProfile { id: from, profile });
             }
-            Control::Chat { text, .. } if text.len() > MAX_CHAT_LEN => {
-                debug!("dropping an oversized chat message from {from}");
-            }
-            Control::Chat { sent_at, text, .. } => {
+            Control::Chat {
+                sent_at, mut text, ..
+            } => {
+                // Older peers have no cap: show their long messages cut.
+                truncate_utf8(&mut text, MAX_CHAT_LEN);
                 let (name, color) = (peer.profile.name.clone(), peer.profile.color);
                 self.remember(from, name, color, sent_at, HistoryBody::Text(text.clone()));
                 let _ = self.events.send(RoomEvent::Chat {
@@ -1146,7 +1149,29 @@ fn spawn_datagram_reader(conn: Connection, from: EndpointId, sink: AudioSink) {
     });
 }
 
-/// A history entry with a chat message longer than peers accept.
-fn too_long(body: &HistoryBody) -> bool {
-    matches!(body, HistoryBody::Text(t) if t.len() > MAX_CHAT_LEN)
+/// Cuts a history chat message longer than peers accept (older peers have no
+/// cap), so it shows cut instead of not at all.
+fn cap_body(body: &mut HistoryBody) {
+    if let HistoryBody::Text(t) = body {
+        truncate_utf8(t, MAX_CHAT_LEN);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HistoryBody, MAX_CHAT_LEN, cap_body};
+
+    #[test]
+    fn long_history_text_is_cut_on_a_char_boundary() {
+        let mut body = HistoryBody::Text("é".repeat(MAX_CHAT_LEN));
+        cap_body(&mut body);
+        let HistoryBody::Text(t) = body else {
+            unreachable!()
+        };
+        assert_eq!(t.len(), MAX_CHAT_LEN);
+        assert!(t.chars().all(|c| c == 'é'));
+        let mut short = HistoryBody::Text("hi".into());
+        cap_body(&mut short);
+        assert!(matches!(short, HistoryBody::Text(ref t) if t == "hi"));
+    }
 }
