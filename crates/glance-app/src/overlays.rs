@@ -1197,6 +1197,71 @@ impl GlanceApp {
             )
     }
 
+    /// "Join another room?": an invite from chat while in a different room.
+    pub fn render_join_confirm(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.room.as_ref().map_or("this room", |r| r.name.as_str());
+        let body = format!("You'll leave {current} to join this room.");
+        modal_backdrop("join-confirm-backdrop")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.join_confirm = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("join-confirm")
+                    .occlude()
+                    .w(px(440.))
+                    .rounded(px(8.))
+                    .bg(p.bg_content)
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .p_4()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(p.text_header)
+                                    .child("Join another room?"),
+                            )
+                            .child(div().text_color(p.text_normal).child(body)),
+                    )
+                    .child(
+                        div()
+                            .p_4()
+                            .bg(p.bg_sidebar)
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("join-confirm-cancel")
+                                    .ghost()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.join_confirm = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("join-confirm-join")
+                                    .primary()
+                                    .label("Join")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(link) = this.join_confirm.take() {
+                                            this.join_link(&link, cx);
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+    }
+
     /// "Visit Site": remember the domain if asked, then open the link.
     fn visit_leaving(&mut self, cx: &mut Context<Self>) {
         let Some(leaving) = self.leaving.take() else {

@@ -545,6 +545,9 @@ pub struct GlanceApp {
     pub md_cache: crate::markdown_view::MarkdownCache,
     /// The "Leaving glance" dialog for a clicked web link.
     pub leaving: Option<LeavingLink>,
+    /// An invite link from chat for another room, waiting for "Join" in the
+    /// "Join another room?" dialog (joining leaves the current room).
+    pub join_confirm: Option<String>,
     /// Spoilers clicked open this session.
     pub revealed_spoilers: std::collections::HashSet<crate::markdown_view::SpoilerKey>,
 }
@@ -702,6 +705,7 @@ impl GlanceApp {
             update: Default::default(),
             md_cache: Default::default(),
             leaving: None,
+            join_confirm: None,
             revealed_spoilers: Default::default(),
         };
         // While the tray icon is up, closing the window minimizes it so calls
@@ -812,6 +816,8 @@ impl GlanceApp {
     }
 
     pub fn leave_room(&mut self, cx: &mut Context<Self>) {
+        // An invite asking to leave this room has nothing left to ask.
+        self.join_confirm = None;
         self.record_call_end();
         self.cancel_rings();
         self.remember_room(true);
@@ -1245,6 +1251,8 @@ impl Render for GlanceApp {
                     // Just the menu.
                 } else if this.leaving.is_some() {
                     this.leaving = None;
+                } else if this.join_confirm.is_some() {
+                    this.join_confirm = None;
                 } else if this.immersive.is_some() {
                     this.exit_fullscreen(window, cx);
                 } else if this.settings_open {
@@ -1294,6 +1302,9 @@ impl Render for GlanceApp {
         }
         if self.leaving.is_some() {
             content = content.child(self.render_leaving(&p, cx));
+        }
+        if self.join_confirm.is_some() && self.room.is_some() {
+            content = content.child(self.render_join_confirm(&p, cx));
         }
         if self.incoming_call.is_some() {
             content = content.child(self.render_incoming_call(&p, cx));

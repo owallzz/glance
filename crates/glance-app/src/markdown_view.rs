@@ -657,9 +657,26 @@ impl GlanceApp {
     pub fn open_chat_link(&mut self, link: &Link, window: &mut Window, cx: &mut Context<Self>) {
         match link.kind {
             markdown::LinkKind::GlanceInvite => {
-                // Like a link handed over by the OS: switches rooms if needed.
-                self.join_link(&link.url, cx);
-                self.screen = crate::app::Screen::Room;
+                let Ok(ticket) = glance_proto::Ticket::parse(&link.url) else {
+                    return;
+                };
+                let current = self
+                    .room
+                    .as_ref()
+                    .map(|r| glance_proto::Ticket::parse(&r.link).map(|t| t.room));
+                match current {
+                    // Joining finishes on the room screen.
+                    None => self.join_link(&link.url, cx),
+                    Some(Ok(room)) if room == ticket.room => {
+                        self.screen = crate::app::Screen::Room;
+                    }
+                    // Another room: leaving this one ends the call, so ask.
+                    Some(_) => {
+                        self.join_confirm = Some(link.url.clone());
+                        // Escape closes the dialog.
+                        self.focus.focus(window, cx);
+                    }
+                }
             }
             markdown::LinkKind::Web => {
                 // The parser only makes http(s) links; check again anyway.
