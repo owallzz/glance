@@ -205,18 +205,39 @@ impl GlanceApp {
             && file.mime.starts_with("image/")
             && file.size <= crate::files::AUTO_PREVIEW_MAX;
         let hash = file.hash;
+        // Already downloading it: keep that card and its download.
+        if self
+            .direct_files
+            .iter()
+            .any(|d| d.incoming && d.offer.hash == hash && d.abort.is_some())
+        {
+            return;
+        }
+        // A resend of a file we already have keeps the copy we saved.
+        let saved = self
+            .direct_files
+            .iter()
+            .find(|d| d.incoming && d.offer.hash == hash && d.offer.transfer == Transfer::Done)
+            .and_then(|d| d.path.clone())
+            .filter(|p| p.exists());
         // A resend of the same file replaces the old card.
         self.direct_files
             .retain(|d| !(d.incoming && d.offer.hash == file.hash));
+        let transfer = if saved.is_some() {
+            Transfer::Done
+        } else {
+            Transfer::Available
+        };
+        let have = saved.is_some();
         self.push_direct(DirectFile {
             peer: peer_id(from),
             incoming: true,
-            offer: offer(file, Transfer::Available),
-            path: None,
+            offer: offer(file, transfer),
+            path: saved,
             abort: None,
             _task: None,
         });
-        if auto {
+        if auto && !have {
             self.toggle_direct_download(hash, cx);
         }
     }
