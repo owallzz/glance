@@ -179,11 +179,28 @@ async fn hosting_a_room_again_lets_old_links_find_it() {
     };
     assert_eq!(members.len(), 1);
     let a = na
-        .join_room_via(ticket, vec![b_addr], profile("Ana"), MemberState::default())
+        .join_room_via(
+            ticket.clone(),
+            vec![b_addr],
+            profile("Ana"),
+            MemberState::default(),
+        )
         .await
         .unwrap();
     expect_members(&a, "a", &[nb.id()]).await;
     expect_members(&b, "b", &[na.id()]).await;
+
+    // The link Ben hands out now names him, same room: a newcomer with just
+    // that link gets in.
+    let fresh = Ticket::parse(&b.link()).unwrap();
+    assert_eq!(fresh.host.id, nb.id());
+    assert_eq!((fresh.room, fresh.secret), (ticket.room, ticket.secret));
+    let nc = node().await;
+    let c = nc
+        .join_room(fresh, profile("Cy"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&c, "c", &[na.id(), nb.id()]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -207,4 +224,92 @@ async fn own_posts_keep_their_timestamp() {
         matches!(ev, RoomEvent::Chat { sent_at: 1234, ref text, .. } if text == "stamped"),
         "{ev:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_member_who_left_does_not_make_a_room_read_empty() {
+    let (na, nb, nc) = (node().await, node().await, node().await);
+    let a = na
+        .create_room(profile("Ana"), MemberState::default())
+        .await
+        .unwrap();
+    let ticket = Ticket::parse(&a.link()).unwrap();
+    let b = nb
+        .join_room(ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+    a.send(Command::Leave);
+    expect(
+        &b,
+        "ana leaving",
+        |e| matches!(e, RoomEvent::MemberLeft { id } if *id == na.id()),
+    )
+    .await;
+    drop(a);
+    let timeout = Duration::from_secs(3);
+
+    // Ana (the link's host) answers at once that she left; a member we
+    // remember can't be reached. That's not enough to call the room empty.
+    let unreachable = iroh::EndpointAddr::new(SecretKey::generate().public())
+        .with_ip_addr("127.0.0.1:9".parse().unwrap());
+    assert_eq!(
+        nc.probe_room(&ticket, vec![unreachable.clone()], timeout)
+            .await,
+        RoomStatus::Unknown
+    );
+
+    // "Start again" from Cy, who saw it as empty earlier: the fresh check
+    // finds Ben, so Cy joins him rather than starting a second copy.
+    let c = nc
+        .restart_room(
+            ticket.clone(),
+            vec![unreachable, na.endpoint().addr(), nb.endpoint().addr()],
+            profile("Cy"),
+            MemberState::default(),
+            timeout,
+        )
+        .await
+        .unwrap();
+    expect_members(&c, "c", &[nb.id()]).await;
+    expect_members(&b, "b", &[nc.id()]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restarting_a_room_everyone_left_hosts_it() {
+    let (na, nb) = (node().await, node().await);
+    let a = na
+        .create_room(profile("Ana"), MemberState::default())
+        .await
+        .unwrap();
+    let ticket = Ticket::parse(&a.link()).unwrap();
+    a.send(Command::Leave);
+    drop(a);
+    let mut status = RoomStatus::Unknown;
+    for _ in 0..50 {
+        status = nb.probe_room(&ticket, vec![], Duration::from_secs(3)).await;
+        if status == RoomStatus::Empty {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, RoomStatus::Empty);
+    let _b = nb
+        .restart_room(
+            ticket.clone(),
+            vec![na.endpoint().addr()],
+            profile("Ben"),
+            MemberState::default(),
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+    let RoomStatus::Alive(members) = na
+        .probe_room(&ticket, vec![nb.endpoint().addr()], Duration::from_secs(3))
+        .await
+    else {
+        panic!("Ben should be hosting the room")
+    };
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].addr.id, nb.id());
 }

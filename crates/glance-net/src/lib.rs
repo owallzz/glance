@@ -197,13 +197,16 @@ impl Node {
     }
 
     /// Start an existing room again, with us as its first member (everyone
-    /// else left). Old links still work: a probe or rejoin finds us.
+    /// else left). The room keeps its id and secret, so old links still work
+    /// for anyone who remembers us (a probe or rejoin finds us); the link it
+    /// hands out names us as the host, so people new to it can join too.
     pub async fn host_room(
         &self,
-        ticket: Ticket,
+        mut ticket: Ticket,
         profile: WireProfile,
         state: MemberState,
     ) -> Result<RoomHandle> {
+        ticket.host = invite_addr(self.endpoint().addr());
         Ok(self.start_room(ticket, profile, state, Vec::new()))
     }
 
@@ -233,6 +236,37 @@ impl Node {
             entry.push(ticket.host.clone());
         }
         Ok(self.start_room(ticket, profile, state, entry))
+    }
+
+    /// "Start again" for a room that looked empty: check once more, and if
+    /// someone turned out to be in it after all, join them instead of
+    /// starting a second copy of the room next to theirs. Only when every
+    /// remembered member answers that they've left does it host the room.
+    pub async fn restart_room(
+        &self,
+        ticket: Ticket,
+        candidates: Vec<EndpointAddr>,
+        profile: WireProfile,
+        state: MemberState,
+        timeout: Duration,
+    ) -> Result<RoomHandle> {
+        match self.probe_room(&ticket, candidates.clone(), timeout).await {
+            probe::RoomStatus::Empty => self.host_room(ticket, profile, state).await,
+            status => {
+                let mut via: Vec<EndpointAddr> = match status {
+                    probe::RoomStatus::Alive(members) => {
+                        members.into_iter().map(|m| m.addr).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                for addr in candidates {
+                    if !via.iter().any(|a| a.id == addr.id) {
+                        via.push(addr);
+                    }
+                }
+                self.join_room_via(ticket, via, profile, state).await
+            }
+        }
     }
 
     /// Ask the given peers (and the ticket's host) whether the room is still

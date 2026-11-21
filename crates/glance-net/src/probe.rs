@@ -27,10 +27,13 @@ pub enum RoomStatus {
     /// Someone answered from inside the room; these are its members
     /// (including whoever answered).
     Alive(Vec<MemberInfo>),
-    /// Everyone we reached said they aren't in it (or there was no one
-    /// else to ask).
+    /// Everyone we asked answered that they aren't in it (or there was no
+    /// one else to ask).
     Empty,
-    /// Nobody could be reached (offline, or too old to answer probes).
+    /// Not everyone could be reached (offline, slow, or too old to answer
+    /// probes), and nobody who answered is in it. The room may still be
+    /// going with the ones we couldn't reach, so it must not be started
+    /// again from scratch.
     Unknown,
 }
 
@@ -145,7 +148,10 @@ async fn probe_one(endpoint: &Endpoint, ticket: &Ticket, addr: EndpointAddr) -> 
 }
 
 /// Ask every candidate at once; the first one inside the room wins. Each
-/// probe gives up after `timeout`.
+/// probe gives up after `timeout`. The room only reads as empty when every
+/// candidate answered that it isn't in it: someone who left (often the
+/// link's creator) answers at once, while members still inside may just be
+/// slow to reach, and starting the room again next to them would split it.
 pub async fn probe(
     endpoint: &Endpoint,
     ticket: &Ticket,
@@ -168,16 +174,19 @@ pub async fn probe(
         });
     }
     // Nobody else was ever in it: as far as we can tell, it's empty.
-    let mut reached = tasks.is_empty();
+    let mut all_answered = true;
     while let Some(done) = tasks.join_next().await {
         match done {
             Ok(Ok(Outcome::Alive(members))) => return RoomStatus::Alive(members),
-            Ok(Ok(Outcome::NotHere)) => reached = true,
-            Ok(Err(e)) => tracing::debug!("room probe failed: {e:#}"),
-            Err(_) => {}
+            Ok(Ok(Outcome::NotHere)) => {}
+            Ok(Err(e)) => {
+                tracing::debug!("room probe failed: {e:#}");
+                all_answered = false;
+            }
+            Err(_) => all_answered = false,
         }
     }
-    if reached {
+    if all_answered {
         RoomStatus::Empty
     } else {
         RoomStatus::Unknown
