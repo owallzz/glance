@@ -329,13 +329,7 @@ impl GlanceApp {
     /// Write a message to a contact: it goes out now if they're online,
     /// otherwise it waits for them.
     pub fn send_dm(&mut self, peer: PeerId, mut text: String) {
-        if text.len() > MAX_DM_LEN {
-            let mut end = MAX_DM_LEN;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text.truncate(end);
-        }
+        glance_proto::truncate_utf8(&mut text, MAX_DM_LEN);
         let id: u64 = rand::random();
         let sent_at = now_ms();
         let online = self.live.online.contains(&peer) && !self.dms.unsupported.contains(&peer);

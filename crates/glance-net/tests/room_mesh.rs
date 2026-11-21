@@ -188,6 +188,32 @@ async fn chat_sent_right_after_joining_arrives() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn long_chat_is_cut_to_the_limit() {
+    let (na, nb) = (node().await, node().await);
+    let a = na
+        .create_room(profile("Ana"), MemberState::default())
+        .await
+        .unwrap();
+    let b = nb
+        .join_room(a.ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id()]).await;
+    // Multi-byte characters straddle the limit: the cut lands on a boundary.
+    let long = "é".repeat(glance_proto::MAX_CHAT_LEN);
+    b.send(Command::Chat(long));
+    let ev = expect(&a, "long chat at a", |e| {
+        matches!(e, RoomEvent::Chat { .. })
+    })
+    .await;
+    let RoomEvent::Chat { text, .. } = ev else {
+        unreachable!()
+    };
+    assert_eq!(text.len(), glance_proto::MAX_CHAT_LEN);
+    assert!(text.chars().all(|c| c == 'é'));
+}
+
 fn live() -> MemberState {
     MemberState {
         stream: Some(glance_proto::WireStream {

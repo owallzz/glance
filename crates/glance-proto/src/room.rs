@@ -112,6 +112,11 @@ pub enum HistoryBody {
 /// How many history items a peer keeps and sends to newcomers.
 pub const HISTORY_LIMIT: usize = 200;
 
+/// Longest room chat message, in bytes (longer ones are cut by the sender
+/// and dropped by the receiver). Keeps a full history inside one Welcome
+/// frame.
+pub const MAX_CHAT_LEN: usize = 4000;
+
 /// A shared file's metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireFile {

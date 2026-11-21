@@ -22,9 +22,9 @@ use anyhow::{Context, Result, bail};
 use std::sync::Arc;
 
 use glance_proto::{
-    Control, EndpointAddr, EndpointId, HISTORY_LIMIT, Hello, HistoryBody, HistoryItem, MemberInfo,
-    MemberState, ROOM_ALPN, Ticket, Track, UNI_VIDEO, VideoPacket, WireProfile, join_proof,
-    verify_proof,
+    Control, EndpointAddr, EndpointId, HISTORY_LIMIT, Hello, HistoryBody, HistoryItem,
+    MAX_CHAT_LEN, MemberInfo, MemberState, ROOM_ALPN, Ticket, Track, UNI_VIDEO, VideoPacket,
+    WireProfile, join_proof, truncate_utf8, verify_proof,
 };
 use iroh::Endpoint;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -402,9 +402,10 @@ impl Actor {
                 profile,
                 state,
                 members,
-                history,
+                mut history,
             } => {
                 let id = conn.remote_id();
+                history.retain(|h| !too_long(&h.body));
                 if !self.got_history {
                     self.got_history = true;
                     self.present_at_join.insert(id);
@@ -632,6 +633,9 @@ impl Actor {
                     .events
                     .send(RoomEvent::MemberProfile { id: from, profile });
             }
+            Control::Chat { text, .. } if text.len() > MAX_CHAT_LEN => {
+                debug!("dropping an oversized chat message from {from}");
+            }
             Control::Chat { sent_at, text, .. } => {
                 let (name, color) = (peer.profile.name.clone(), peer.profile.color);
                 self.remember(from, name, color, sent_at, HistoryBody::Text(text.clone()));
@@ -737,7 +741,10 @@ impl Actor {
     }
 
     /// Send our own chat message or file offer and keep it in the history.
-    fn post(&mut self, sent_at: u64, body: HistoryBody) {
+    fn post(&mut self, sent_at: u64, mut body: HistoryBody) {
+        if let HistoryBody::Text(text) = &mut body {
+            truncate_utf8(text, MAX_CHAT_LEN);
+        }
         let (me, name, color) = (self.me, self.profile.name.clone(), self.profile.color);
         self.remember(me, name, color, sent_at, body.clone());
         match body {
@@ -1137,4 +1144,9 @@ fn spawn_datagram_reader(conn: Connection, from: EndpointId, sink: AudioSink) {
             }
         }
     });
+}
+
+/// A history entry with a chat message longer than peers accept.
+fn too_long(body: &HistoryBody) -> bool {
+    matches!(body, HistoryBody::Text(t) if t.len() > MAX_CHAT_LEN)
 }
