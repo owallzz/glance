@@ -748,11 +748,15 @@ impl GlanceApp {
             secondary: false,
         } = event
         {
-            let mut text = input.read(cx).value().trim().to_string();
+            if crate::composer::too_long(input.read(cx), glance_proto::MAX_CHAT_LEN).is_some() {
+                // Keep it in the box; the note above it says why.
+                cx.notify();
+                return;
+            }
+            let text = input.read(cx).value().trim().to_string();
             if text.is_empty() {
                 return;
             }
-            glance_proto::truncate_utf8(&mut text, glance_proto::MAX_CHAT_LEN);
             let me = self.me.id;
             if let Some(room) = self.room.as_mut() {
                 let id = room.chat.last().map_or(1, |m| m.id + 1);

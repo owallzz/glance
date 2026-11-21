@@ -234,6 +234,11 @@ impl GlanceApp {
                     secondary: false,
                 } = ev
                 {
+                    if crate::composer::too_long(input.read(cx), MAX_DM_LEN).is_some() {
+                        // Keep it in the box; the note above it says why.
+                        cx.notify();
+                        return;
+                    }
                     let text = input.read(cx).value().trim().to_string();
                     if text.is_empty() {
                         return;
@@ -652,6 +657,11 @@ impl GlanceApp {
             .flex_col()
             .gap_1()
             .children(note.map(|n| div().text_xs().text_color(p.text_muted).child(n)))
+            .children(crate::composer::too_long_note(
+                &self.dm_input,
+                MAX_DM_LEN,
+                cx,
+            ))
             .child(
                 div()
                     .rounded(px(8.))

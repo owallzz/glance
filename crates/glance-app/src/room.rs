@@ -1130,46 +1130,56 @@ impl GlanceApp {
                     }),
             )
             .child(
-                div().p_4().child(
-                    div()
-                        .rounded(px(8.))
-                        .bg(p.bg_hover)
-                        .flex()
-                        .items_start()
-                        .gap_2()
-                        .px_2()
-                        .child(
-                            // Level with the first row of text.
-                            div().py(px(6.)).child(
-                                icon_button(
-                                    "attach",
-                                    IconName::CirclePlus,
-                                    "Send a file",
-                                    p.interactive,
-                                    p,
-                                )
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.pick_files_to_send(cx)),
+                div()
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(crate::composer::too_long_note(
+                        &self.chat_input,
+                        glance_proto::MAX_CHAT_LEN,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .rounded(px(8.))
+                            .bg(p.bg_hover)
+                            .flex()
+                            .items_start()
+                            .gap_2()
+                            .px_2()
+                            .child(
+                                // Level with the first row of text.
+                                div().py(px(6.)).child(
+                                    icon_button(
+                                        "attach",
+                                        IconName::CirclePlus,
+                                        "Send a file",
+                                        p.interactive,
+                                        p,
+                                    )
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.pick_files_to_send(cx)),
+                                    ),
                                 ),
-                            ),
-                        )
-                        .child(div().flex_1().min_w_0().child({
-                            // Pasted files or images are sent; text pastes as usual.
-                            let app = cx.entity().downgrade();
-                            crate::composer::composer_element_with_paste(
-                                &self.chat_input,
-                                move |item, _, cx| {
-                                    let paths = crate::files::pasted_files(item);
-                                    if paths.is_empty() {
-                                        return false;
-                                    }
-                                    let _ = app.update(cx, |app, cx| app.send_files(paths, cx));
-                                    true
-                                },
-                                cx,
                             )
-                        })),
-                ),
+                            .child(div().flex_1().min_w_0().child({
+                                // Pasted files or images are sent; text pastes as usual.
+                                let app = cx.entity().downgrade();
+                                crate::composer::composer_element_with_paste(
+                                    &self.chat_input,
+                                    move |item, _, cx| {
+                                        let paths = crate::files::pasted_files(item);
+                                        if paths.is_empty() {
+                                            return false;
+                                        }
+                                        let _ = app.update(cx, |app, cx| app.send_files(paths, cx));
+                                        true
+                                    },
+                                    cx,
+                                )
+                            })),
+                    ),
             )
     }
 

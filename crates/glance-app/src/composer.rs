@@ -8,6 +8,8 @@
 //!
 //! - Enter emits `InputEvent::PressEnter { shift: false, secondary: false }`
 //!   and inserts nothing; Shift+Enter inserts a newline (`submit_on_enter`).
+//! - Text over the send cap stays in the box ([`too_long`]); the views show
+//!   [`too_long_note`] until it is short enough.
 //! - Tab and Shift+Tab move focus instead of indenting.
 //! - The box grows from one visual (wrapped) row up to `max_rows`, then
 //!   scrolls. The editor kind has no auto-grow, so `composer_element` sizes it
@@ -125,6 +127,28 @@ pub fn new_composer(
 
 /// The editor, styled to sit inside the existing input pill (no background or
 /// border of its own), sized to its content.
+/// The length of what Enter would send (trimmed), when that is over `max`
+/// bytes: such a message stays in the composer instead of being cut.
+pub fn too_long(state: &EditorState, max: usize) -> Option<usize> {
+    // Cheap (no copy) while the whole text fits.
+    if state.text().len() <= max {
+        return None;
+    }
+    let n = state.text().to_string().trim().len();
+    (n > max).then_some(n)
+}
+
+/// Discord's "too long" note for a composer, while its text is over `max`.
+pub fn too_long_note(state: &Entity<EditorState>, max: usize, cx: &App) -> Option<Div> {
+    let n = too_long(state.read(cx), max)?;
+    Some(
+        div()
+            .text_xs()
+            .text_color(Palette::current(cx).red)
+            .child(format!("Your message is too long ({n}/{max})")),
+    )
+}
+
 pub fn composer_element(state: &Entity<EditorState>, cx: &App) -> impl IntoElement {
     build(state, None, cx)
 }
