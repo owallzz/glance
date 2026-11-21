@@ -246,7 +246,7 @@ fn visual_rows(wrapped: usize, max_rows: usize) -> usize {
 }
 
 /// Styles the raw source with `composer_spans`, recomputed on every edit
-/// (chat messages are short).
+/// (over at most the first [`HIGHLIGHT_CAP`] bytes).
 struct MarkdownHighlighter {
     spans: Vec<ComposerSpan>,
     colors: Rc<Cell<ComposerColors>>,
@@ -259,6 +259,25 @@ impl MarkdownHighlighter {
             colors,
         }
     }
+}
+
+/// The composer highlights at most this much of its text; the rest shows
+/// plain. Highlighting is linear but runs on every keystroke, and a pasted
+/// megabyte would cost ~100 ms each time. Four times the send cap, so
+/// anything sendable (and a fair bit more) is styled.
+const HIGHLIGHT_CAP: usize = 4 * glance_proto::MAX_CHAT_LEN;
+
+/// The start of the text, up to [`HIGHLIGHT_CAP`] bytes on a char boundary.
+fn highlight_source<'a>(chunks: impl Iterator<Item = &'a str>) -> String {
+    let mut src = String::new();
+    for chunk in chunks {
+        src.push_str(chunk);
+        if src.len() >= HIGHLIGHT_CAP {
+            break;
+        }
+    }
+    glance_proto::truncate_utf8(&mut src, HIGHLIGHT_CAP);
+    src
 }
 
 impl InputHighlighter for MarkdownHighlighter {
@@ -275,7 +294,7 @@ impl InputHighlighter for MarkdownHighlighter {
         cx: &mut Context<EditorState>,
     ) {
         self.colors.set(ComposerColors::new(&Palette::current(cx)));
-        self.spans = composer_spans(&text.to_string());
+        self.spans = composer_spans(&highlight_source(text.chunks()));
     }
 
     fn update_batch(
@@ -377,7 +396,19 @@ fn style_runs(
 
 #[cfg(test)]
 mod tests {
-    use super::{ComposerColors, highlight_style, style_runs, visual_rows};
+    use super::{
+        ComposerColors, HIGHLIGHT_CAP, highlight_source, highlight_style, style_runs, visual_rows,
+    };
+
+    #[test]
+    fn highlighting_stops_at_the_cap() {
+        let short = ["**a**", " b"];
+        assert_eq!(highlight_source(short.into_iter()), "**a** b");
+        let big = "é".repeat(HIGHLIGHT_CAP);
+        let src = highlight_source([big.as_str(), "tail"].into_iter());
+        assert!(src.len() <= HIGHLIGHT_CAP && src.len() > HIGHLIGHT_CAP - 2);
+        assert!(src.chars().all(|c| c == 'é'));
+    }
     use glance_core::markdown::{ComposerSpan, ComposerStyle, composer_spans};
     use gpui_kit::{FontStyle, FontWeight, HighlightStyle, Hsla, hsla};
     use std::ops::Range;
