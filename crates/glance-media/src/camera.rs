@@ -2,9 +2,6 @@
 //! Foundation on Windows). Frames come out as BGRA like screen capture, so
 //! the same broadcast pipeline encodes and sends them.
 
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
 use anyhow::{Result, anyhow};
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{
@@ -12,7 +9,7 @@ use nokhwa::utils::{
     Resolution,
 };
 
-use crate::capture::{Capture, Sink};
+use crate::capture::Capture;
 use crate::frame::VideoFrame;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,14 +55,7 @@ pub fn rgb_to_bgra(rgb: &[u8], width: u32, height: u32) -> Option<VideoFrame> {
 
 /// Start a camera (`None` = the first one) at about `width`×`height`@`fps`.
 pub fn start(index: Option<u32>, width: u32, height: u32, fps: u32) -> Result<Capture> {
-    let (frames_tx, frames_rx) = flume::bounded(2);
-    let (ended_tx, ended_rx) = flume::bounded(1);
-    let stop = Arc::new(AtomicBool::new(false));
-    let sink = Sink {
-        frames: frames_tx,
-        stop: stop.clone(),
-        ended: ended_tx,
-    };
+    let (sink, capture) = crate::capture::channel(fps);
     let (ready_tx, ready_rx) = flume::bounded::<Result<()>>(1);
     // nokhwa cameras aren't Send: open and read on one thread.
     std::thread::Builder::new()
@@ -109,11 +99,7 @@ pub fn start(index: Option<u32>, width: u32, height: u32, fps: u32) -> Result<Ca
     ready_rx
         .recv_timeout(std::time::Duration::from_secs(10))
         .map_err(|_| anyhow!("the camera didn't start"))??;
-    Ok(Capture {
-        frames: frames_rx,
-        stop,
-        ended: ended_rx,
-    })
+    Ok(capture)
 }
 
 #[cfg(test)]

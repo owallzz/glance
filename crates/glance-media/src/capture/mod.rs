@@ -9,7 +9,7 @@
 //! channel; slow consumers just miss frames.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anyhow::Result;
 
@@ -101,13 +101,26 @@ pub fn request_permission() -> bool {
 pub struct Capture {
     pub frames: flume::Receiver<VideoFrame>,
     pub(crate) stop: Arc<AtomicBool>,
-    /// What the user picked, once known (the portal reports it after the dialog).
+    /// Why capture ended (the user stopped it in the OS, an error...).
     pub ended: flume::Receiver<String>,
+    /// Frame rate the backend delivers at; changeable while running.
+    pub(crate) fps: Arc<AtomicU32>,
 }
 
 impl Capture {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Deliver at most `fps` frames per second from now on. Wayland and the
+    /// test pattern just pace differently; zed-scap restarts its capturer
+    /// on the same source (no picker).
+    pub fn set_fps(&self, fps: u32) {
+        self.fps.store(fps.max(1), Ordering::Relaxed);
+    }
+
+    pub fn fps(&self) -> u32 {
+        self.fps.load(Ordering::Relaxed)
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -126,11 +139,39 @@ pub(crate) struct Sink {
     pub frames: flume::Sender<VideoFrame>,
     pub stop: Arc<AtomicBool>,
     pub ended: flume::Sender<String>,
+    pub fps: Arc<AtomicU32>,
+}
+
+/// A connected backend [`Sink`] and the [`Capture`] that reads it.
+pub(crate) fn channel(fps: u32) -> (Sink, Capture) {
+    let (frames_tx, frames_rx) = flume::bounded(2);
+    let (ended_tx, ended_rx) = flume::bounded(1);
+    let stop = Arc::new(AtomicBool::new(false));
+    let fps = Arc::new(AtomicU32::new(fps.max(1)));
+    let sink = Sink {
+        frames: frames_tx,
+        stop: stop.clone(),
+        ended: ended_tx,
+        fps: fps.clone(),
+    };
+    let capture = Capture {
+        frames: frames_rx,
+        stop,
+        ended: ended_rx,
+        fps,
+    };
+    (sink, capture)
 }
 
 impl Sink {
     pub fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
+    }
+
+    /// The frame rate currently asked for.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn fps(&self) -> u32 {
+        self.fps.load(Ordering::Relaxed).max(1)
     }
 
     /// Offer a frame; drop it if the consumer is behind.
@@ -147,45 +188,31 @@ impl Sink {
 
 /// Start capturing at up to `fps` frames per second.
 pub fn start(selection: Selection, fps: u32) -> Result<Capture> {
-    let (frames_tx, frames_rx) = flume::bounded(2);
-    let (ended_tx, ended_rx) = flume::bounded(1);
-    let stop = Arc::new(AtomicBool::new(false));
-    let sink = Sink {
-        frames: frames_tx,
-        stop: stop.clone(),
-        ended: ended_tx,
-    };
+    let (sink, capture) = channel(fps);
     match selection {
         #[cfg(target_os = "linux")]
-        Selection::SystemPicker => wayland::start(sink, fps)?,
+        Selection::SystemPicker => wayland::start(sink)?,
         #[cfg(not(target_os = "linux"))]
         Selection::SystemPicker => anyhow::bail!("this platform has no system capture picker"),
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        Selection::Source(src) => scap_backend::start(sink, src, fps)?,
+        Selection::Source(src) => scap_backend::start(sink, src)?,
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         Selection::Source(_) => anyhow::bail!("screen capture isn't supported on this platform"),
     }
-    Ok(Capture {
-        frames: frames_rx,
-        stop,
-        ended: ended_rx,
-    })
+    Ok(capture)
 }
 
 /// A synthetic capture (moving test pattern) for bots and tests.
 pub fn test_pattern(width: u32, height: u32, fps: u32) -> Capture {
-    let (frames_tx, frames_rx) = flume::bounded(2);
-    let (_ended_tx, ended_rx) = flume::bounded(1);
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_thread = stop.clone();
+    let (sink, capture) = channel(fps);
     std::thread::Builder::new()
         .name("capture-pattern".into())
         .spawn(move || {
             let mut pattern = crate::pattern::Pattern::new(width, height, 90);
-            let period = std::time::Duration::from_secs_f64(1.0 / fps.max(1) as f64);
             let mut next = std::time::Instant::now();
-            while !stop_thread.load(Ordering::Relaxed) {
-                let _ = frames_tx.try_send(pattern.next_frame());
+            while !sink.stopped() {
+                sink.offer(pattern.next_frame());
+                let period = std::time::Duration::from_secs_f64(1.0 / sink.fps() as f64);
                 next += period;
                 match next.checked_duration_since(std::time::Instant::now()) {
                     Some(wait) => std::thread::sleep(wait),
@@ -194,11 +221,7 @@ pub fn test_pattern(width: u32, height: u32, fps: u32) -> Capture {
             }
         })
         .expect("spawn pattern capture");
-    Capture {
-        frames: frames_rx,
-        stop,
-        ended: ended_rx,
-    }
+    capture
 }
 
 /// Pack rows of 4-byte pixels into a tight BGRA buffer. `order` maps output
