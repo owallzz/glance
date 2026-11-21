@@ -26,7 +26,7 @@ impl GlanceApp {
     ) -> impl IntoElement {
         let page = match self.dm_open {
             Some(peer) if self.contacts.iter().any(|c| c.profile.id == peer) => {
-                let window_width = f32::from(window.viewport_size().width);
+                let window_width = crate::room::content_width(window);
                 self.render_dm(p, peer, window_width, cx)
             }
             _ => div()
