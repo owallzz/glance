@@ -14,7 +14,6 @@
 //!   from the wrapped row count of the last layout.
 //! - The composer can't change font size or family per span: headings are
 //!   bold, inline code gets the code background, and quotes are unstyled.
-#![allow(dead_code)]
 
 use std::cell::Cell;
 use std::collections::HashMap;

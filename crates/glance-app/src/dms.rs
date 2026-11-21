@@ -13,7 +13,7 @@ use glance_core::{ContactState, PeerId, Presence, Profile, format};
 use glance_net::contacts::{ContactCommand, DmFailure};
 use glance_proto::{MAX_DM_LEN, WireDm, WireFile};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{EditorState, InputEvent};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -223,13 +223,8 @@ fn file_entry_id(hash: &[u8; 32]) -> u64 {
 }
 
 impl GlanceApp {
-    pub fn new_dm_input(window: &mut Window, cx: &mut Context<Self>) -> Entity<TextareaState> {
-        let input = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .placeholder("Message")
-                .submit_on_enter(true)
-                .auto_grow(1, 8)
-        });
+    pub fn new_dm_input(window: &mut Window, cx: &mut Context<Self>) -> Entity<EditorState> {
+        let input = crate::composer::new_composer("Message", 8, window, cx);
         cx.subscribe_in(
             &input,
             window,
@@ -661,27 +656,28 @@ impl GlanceApp {
                     .items_start()
                     .gap_2()
                     .px_2()
-                    .py(px(6.))
                     .when(online && mutual, |d| {
                         d.child(
-                            icon_button(
-                                "dm-attach",
-                                IconName::CirclePlus,
-                                "Send a file",
-                                p.interactive,
-                                p,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.send_file_to_contact(peer, cx),
-                            )),
+                            // Level with the first row of text.
+                            div().py(px(6.)).child(
+                                icon_button(
+                                    "dm-attach",
+                                    IconName::CirclePlus,
+                                    "Send a file",
+                                    p.interactive,
+                                    p,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| this.send_file_to_contact(peer, cx),
+                                )),
+                            ),
                         )
                     })
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .py(px(6.))
-                            .child(Textarea::new(&self.dm_input)),
+                            .child(crate::composer::composer_element(&self.dm_input, cx)),
                     ),
             );
 

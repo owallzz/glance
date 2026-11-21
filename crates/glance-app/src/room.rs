@@ -5,7 +5,6 @@ use glance_core::{ChatBody, ChatMessage, FileOffer, Participant, PeerId, Route, 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -1136,23 +1135,29 @@ impl GlanceApp {
                         .rounded(px(8.))
                         .bg(p.bg_hover)
                         .flex()
-                        .items_center()
+                        .items_start()
                         .gap_2()
                         .px_2()
                         .child(
-                            icon_button(
-                                "attach",
-                                IconName::CirclePlus,
-                                "Send a file",
-                                p.interactive,
-                                p,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| this.pick_files_to_send(cx))),
+                            // Level with the first row of text.
+                            div().py(px(6.)).child(
+                                icon_button(
+                                    "attach",
+                                    IconName::CirclePlus,
+                                    "Send a file",
+                                    p.interactive,
+                                    p,
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.pick_files_to_send(cx)),
+                                ),
+                            ),
                         )
-                        .child(div().flex_1().child(
-                            Input::new(&self.chat_input).appearance(false).on_paste({
-                                // Pasted files or images are sent; text pastes as usual.
-                                let app = cx.entity().downgrade();
+                        .child(div().flex_1().min_w_0().child({
+                            // Pasted files or images are sent; text pastes as usual.
+                            let app = cx.entity().downgrade();
+                            crate::composer::composer_element_with_paste(
+                                &self.chat_input,
                                 move |item, _, cx| {
                                     let paths = crate::files::pasted_files(item);
                                     if paths.is_empty() {
@@ -1160,9 +1165,10 @@ impl GlanceApp {
                                     }
                                     let _ = app.update(cx, |app, cx| app.send_files(paths, cx));
                                     true
-                                }
-                            }),
-                        )),
+                                },
+                                cx,
+                            )
+                        })),
                 ),
             )
     }

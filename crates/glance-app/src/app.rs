@@ -487,7 +487,7 @@ pub struct GlanceApp {
     pub calls: Vec<CallRecord>,
     pub room: Option<Room>,
     pub join_input: Entity<InputState>,
-    pub chat_input: Entity<InputState>,
+    pub chat_input: Entity<gpui_kit::component::input::EditorState>,
     pub go_live: Option<GoLive>,
     pub settings_open: bool,
     pub settings: Settings,
@@ -507,7 +507,7 @@ pub struct GlanceApp {
     pub dms: crate::dms::Dms,
     /// The conversation open on the home screen.
     pub dm_open: Option<PeerId>,
-    pub dm_input: Entity<gpui_kit::component::input::TextareaState>,
+    pub dm_input: Entity<gpui_kit::component::input::EditorState>,
     /// The window has focus (unread counts and notifications depend on it).
     pub window_active: bool,
     /// We switched to Idle automatically (and switch back on activity).
@@ -561,7 +561,7 @@ impl GlanceApp {
             .detach();
         let join_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Paste a glance link or code"));
-        let chat_input = cx.new(|cx| InputState::new(window, cx).placeholder("Message the room"));
+        let chat_input = crate::composer::new_composer("Message the room", 8, window, cx);
         let nickname_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Nickname (blank to use their name)")
         });
@@ -735,14 +735,19 @@ impl GlanceApp {
         app
     }
 
+    /// Enter sends (Shift+Enter is a newline in the composer).
     fn on_chat_input(
         &mut self,
-        input: &Entity<InputState>,
+        input: &Entity<gpui_kit::component::input::EditorState>,
         event: &gpui_kit::component::input::InputEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let gpui_kit::component::input::InputEvent::PressEnter { shift: false, .. } = event {
+        if let gpui_kit::component::input::InputEvent::PressEnter {
+            shift: false,
+            secondary: false,
+        } = event
+        {
             let mut text = input.read(cx).value().trim().to_string();
             if text.is_empty() {
                 return;
