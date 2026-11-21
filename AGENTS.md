@@ -57,13 +57,13 @@ Run the tests and the linter before every commit; CI runs the same checks.
 ## Workflow
 - Commit in small steps, one idea per commit, imperative messages. Push after each commit and keep CI green.
 - Tick off milestones in `PLAN.md` in the commit that finishes them.
-- Git identity for this repo is set locally (`owallz`); don't change it.
-- CI: Linux jobs run on the owallzz org's self-hosted runner (`runs-on: [self-hosted, Linux, X64]`) in a `fedora:44` container. macOS and Windows jobs run on Blacksmith (`blacksmith-6vcpu-macos-latest`, `blacksmith-4vcpu-windows-2025`), and only those platforms use Blacksmith. Never use GitHub-hosted runners. Blacksmith jobs don't use containers or the ownership-fix step; caching uses upstream `actions/cache` via `Swatinem/rust-cache` (Blacksmith backs it). Don't `sudo` in workflows. System packages go in the `dnf install` line. Keep the "Fix workspace ownership" step last in every job.
+- Git identity for this repo is set locally to the GitHub noreply address; don't change it.
+- CI runs on GitHub-hosted runners only (`ubuntu-latest`, `macos-latest`, `windows-latest`); the repo is public, so never point a workflow at a self-hosted runner. Linux system packages go in the `apt-get install` line of each Linux job. Caching uses `Swatinem/rust-cache`. Keep `permissions: contents: read` at the top of `ci.yml`, and never run fork PR code with secrets (`pull_request_target`).
 - Project skills live in `.claude/skills/`. Use them, and add one when a multi-step task keeps coming up.
 
 ## Releasing
 1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`), run `cargo build` to refresh `Cargo.lock`, commit, push, and wait for CI to pass on all three platforms.
-2. `git tag -a vX.Y.Z -m "glance vX.Y.Z" && git push origin vX.Y.Z`. `release.yml` checks the tag against the version and attaches plain binaries (no archives) for Linux (self-hosted), macOS aarch64 and Windows x86_64 (Blacksmith).
+2. `git tag -a vX.Y.Z -m "glance vX.Y.Z" && git push origin vX.Y.Z`. `release.yml` checks the tag against the version and attaches plain binaries (no archives) for Linux x86_64, macOS aarch64 (plus a .dmg) and Windows x86_64.
 3. Write release notes with `gh release edit vX.Y.Z --notes-file ...`: what works, what doesn't, and the unsigned-build workarounds.
 
 ## Privacy

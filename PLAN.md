@@ -7,11 +7,11 @@
   - P2P: **iroh 1.x** (QUIC, hole punching, encrypted, peers addressed by public key, relay fallback).
   - Media: H.264 (openh264 software, hardware encoders added later), Opus audio, cpal, WebRTC audio processing (echo cancel / noise suppression).
   - Why: native and GPU-rendered, so it starts fast and stays light. No Electron, no WebRTC stack, and no server of our own.
-- **Platform:** desktop Linux (Wayland + X11), macOS 13+, Windows 10/11. Developed and tested first on Linux (Fedora, this machine).
+- **Platform:** desktop Linux (Wayland + X11), macOS 13+, Windows 10/11. Developed and tested first on Linux (Fedora).
 - **License:** none (all rights reserved). No LICENSE file.
-- **Repo:** `owallzz/glance`, private.
-- **CI:** fmt + clippy + test on each push. Linux runs on the owallzz self-hosted runner (`fedora:44` container); macOS (Apple Silicon) and Windows (x64) run clippy + test + release build on Blacksmith runners.
-- **Releases:** tagged GitHub Releases with Linux x86_64 (self-hosted runner), macOS aarch64 and Windows x86_64 (Blacksmith) binaries, uploaded uncompressed. Installers (AppImage/.dmg/.msi) and signing come in M11.
+- **Repo:** `owallzz/glance`, public.
+- **CI:** fmt + clippy + test on each push, on GitHub-hosted runners: Linux (Ubuntu), macOS (Apple Silicon) and Windows (x64); macOS and Windows also do a release build.
+- **Releases:** tagged GitHub Releases with Linux x86_64, macOS aarch64 and Windows x86_64 binaries built on GitHub-hosted runners, uploaded uncompressed. Installers (AppImage/.dmg/.msi) and signing come in M11.
 - **MVP feature set:** multi-person rooms, everyone can share at once, voice chat, shared system/app audio, text chat, webcam, **contacts**, **file sharing**.
 - **Resolution:** streams go above 1080p: 1440p, 4K (3840×2160), ultrawide (e.g. 5120×1440) and Source, at up to 60 fps (144 fps stretch). Above 1080p60 needs a hardware encoder (software H.264 can't keep up). The UI scales frames to each tile's on-screen size (see M1 results).
 - **File sharing:** drop, paste or attach files in room chat, or send to a contact. Transfers are peer-to-peer via `iroh-blobs` (BLAKE3-verified, resumable, no size limit), and anyone who downloaded a file can serve it to others in the room.
@@ -41,7 +41,7 @@ glance is a small native app for sharing screens with friends. You start a room,
 | Reaching contacts | iroh can dial a peer by public key alone: it looks up current addresses via n0's DNS/pkarr discovery, plus mDNS on the LAN. The peer must be running. | Contacts store only the EndpointId. glance runs in the tray, starts on login, and keeps no capture, audio, or encode running there. |
 | Tray icons | `tray-icon` works on macOS and Windows. Linux uses StatusNotifierItem, which stock GNOME only shows with the AppIndicator extension (most distros ship it). | If no tray host exists, closing the window minimises instead of hiding, and we say so in settings. |
 | Notifications / autostart | `notify-rust` (Linux/macOS), Windows toasts, and `auto-launch` (XDG autostart, LaunchAgent, Run key). Flatpak/portal autostart is a later concern. | Incoming rings use an OS notification plus our own popup window and ringtone. |
-| CI runners | Self-hosted: Linux x86_64, Fedora container. Blacksmith: macOS 26 Apple Silicon, Windows Server 2025 x64. | Linux CI installs `-devel` packages in the container; macOS/Windows build natively on Blacksmith. |
+| CI runners | GitHub-hosted: `ubuntu-latest` x86_64, `macos-latest` Apple Silicon, `windows-latest` x64. | Linux CI installs the `-dev` packages with apt; macOS/Windows build natively. |
 
 Consequences:
 - Capture, audio I/O, and hardware codecs go behind traits (`Capturer`, `AudioSource`, `VideoEncoder`/`Decoder`) with a per-OS backend.
@@ -201,7 +201,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - Multiple local identities: `GLANCE_DATA_DIR=/tmp/... cargo run -p glance-app` runs a second "person" on one machine.
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`
 - Manual end-to-end: run two app instances plus one or two `glance bot` peers locally, then a real test across two networks.
-- CI: fmt, clippy, and test on each push. Release on `v*` tags builds the Linux tarball and AppImage.
+- CI: fmt, clippy, and test on each push. Release on `v*` tags builds plain binaries for Linux, macOS (plus a .dmg) and Windows.
 - A project skill `run-glance` (launch N local peers and screenshot) gets added once M3 lands.
 
 ## 6. Risks and open questions
@@ -216,5 +216,5 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - **Linux tray** needs a StatusNotifierItem host (GNOME needs the AppIndicator extension). There's a fallback, but it's less seamless.
 - **Open: multi-device identity.** Each install is a separate contact for now. Linking devices (shared contact list, ring all your devices) is a later feature.
 - **Windows is untested here.** Only cross-compile checks are possible without a machine or runner.
-- **macOS/Windows CI** runs on Blacksmith (decided). Windows runners are Blacksmith public beta; macOS is Apple Silicon only, so Intel Mac builds would need cross-compiling.
+- **macOS/Windows CI** runs on GitHub-hosted runners. macOS is Apple Silicon only, so Intel Mac builds would need cross-compiling.
 - **Open: code signing.** macOS notarization needs an Apple Developer account, and Windows SmartScreen prefers a signing cert. Unsigned builds work with warnings.
