@@ -72,6 +72,7 @@ Run the tests and the linter before every commit; CI runs the same checks.
 - Project skills live in `.claude/skills/`. Use them, and add one when a multi-step task keeps coming up.
 
 ## Releasing
+Use the `release` skill (`.claude/skills/release/SKILL.md`): it covers picking the version, tagging, verifying the signed assets and writing the notes. In short:
 1. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and add a `<release>` entry to `packaging/linux/io.github.owallzz.glance.metainfo.xml`, run `cargo build` to refresh `Cargo.lock`, commit, push, and wait for CI to pass on all three platforms.
 2. Optional: run `release.yml` with `workflow_dispatch` to test-build every package (nothing is published or signed without a tag).
 3. `git tag -a vX.Y.Z -m "glance vX.Y.Z" && git push origin vX.Y.Z`. `release.yml` checks the tag against the version; each platform job only builds artifacts, then the `sign` job signs every asset with minisign (secret `MINISIGN_SECRET_KEY`; tagged releases fail without it) and publishes all assets plus their `.minisig` files in one go. Assets: `glance-vX.Y.Z-linux-x86_64`, `.AppImage`, `.flatpak`, `glance-vX.Y.Z-windows-x86_64.exe`, `-windows-x86_64-setup.exe`, `-windows-x86_64-portable.zip`, `glance-vX.Y.Z-macos-aarch64`, `.dmg`, `.app.tar.gz`.
