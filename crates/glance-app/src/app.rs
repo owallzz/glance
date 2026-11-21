@@ -317,6 +317,8 @@ pub struct Room {
     pub chat: Vec<ChatMessage>,
     pub chat_open: bool,
     pub focused: Option<PeerId>,
+    /// Focus mode: the strip of other participants is collapsed.
+    pub filmstrip_hidden: bool,
     pub watching: HashMap<PeerId, Entity<VideoView>>,
     pub started: Instant,
     /// The live network room; `None` for the `--demo` room.
@@ -669,6 +671,7 @@ impl GlanceApp {
             chat: demo::chat(),
             chat_open: true,
             focused: None,
+            filmstrip_hidden: false,
             watching: HashMap::new(),
             started: Instant::now(),
         });

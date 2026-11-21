@@ -170,6 +170,7 @@ impl GlanceApp {
             chat: Vec::new(),
             chat_open: true,
             focused: None,
+            filmstrip_hidden: false,
             watching: HashMap::new(),
             started: Instant::now(),
             handle: Some(handle),

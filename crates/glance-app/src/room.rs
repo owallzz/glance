@@ -460,6 +460,7 @@ impl GlanceApp {
         let p = &Palette::dark();
         let room = self.room.as_ref().expect("in a room");
         let chat_open = room.chat_open;
+        let filmstrip_hidden = room.filmstrip_hidden;
         let name = room.name.clone();
         let mut tiles: Vec<TileKind> = Vec::new();
         for person in &room.participants {
@@ -476,54 +477,96 @@ impl GlanceApp {
                 .position(|t| matches!(t, TileKind::Stream(_)) && t.peer() == id)
         });
 
-        let body =
-            match focused {
-                Some(ix) => {
-                    let main = tiles.remove(ix);
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .p_2()
-                        .child(div().flex_1().min_h_0().child(self.tile(p, main, true, cx)))
-                        .child(div().h(px(120.)).flex().justify_center().gap_2().children(
+        let body = match focused {
+            Some(ix) => {
+                let main = tiles.remove(ix);
+                // Like Discord's focused stream: a toggle under the stream
+                // collapses the strip of everyone else.
+                let hidden = filmstrip_hidden;
+                let toggle_hover = p.bg_hover;
+                let toggle = div()
+                    .id("toggle-filmstrip")
+                    .h(px(20.))
+                    .px_3()
+                    .rounded_full()
+                    .bg(p.bg_selected)
+                    .hover(move |s| s.bg(toggle_hover))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(p.text_muted)
+                    .child(icon(
+                        if hidden {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        },
+                        14.,
+                        p.text_muted,
+                    ))
+                    .child(if hidden {
+                        format!("Show participants ({})", tiles.len())
+                    } else {
+                        "Hide participants".to_string()
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(room) = this.room.as_mut() {
+                            room.filmstrip_hidden = !room.filmstrip_hidden;
+                        }
+                        cx.notify();
+                    }));
+                let has_others = !tiles.is_empty();
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_2()
+                    .child(div().flex_1().min_h_0().child(self.tile(p, main, true, cx)))
+                    .when(has_others, |d| {
+                        d.child(div().flex().justify_center().child(toggle))
+                    })
+                    .when(has_others && !hidden, |d| {
+                        d.child(div().h(px(120.)).flex().justify_center().gap_2().children(
                             tiles.into_iter().map(|t| {
                                 div().w(px(213.)).h_full().child(self.tile(p, t, false, cx))
                             }),
                         ))
-                }
-                None => {
-                    let n = tiles.len().max(1);
-                    let cols = (n as f32).sqrt().ceil() as usize;
-                    let rows: Vec<Vec<TileKind>> = tiles.chunks(cols).map(|c| c.to_vec()).collect();
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .p_2()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .children(rows.into_iter().map(|row| {
-                            div()
-                                .flex_1()
-                                .min_h_0()
-                                .min_w_0()
-                                .flex()
-                                .justify_center()
-                                .gap_2()
-                                .children(row.into_iter().map(|t| {
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .max_w(px(900.))
-                                        .h_full()
-                                        .child(self.tile(p, t, false, cx))
-                                }))
-                        }))
-                }
-            };
+                    })
+            }
+            None => {
+                let n = tiles.len().max(1);
+                let cols = (n as f32).sqrt().ceil() as usize;
+                let rows: Vec<Vec<TileKind>> = tiles.chunks(cols).map(|c| c.to_vec()).collect();
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .children(rows.into_iter().map(|row| {
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .flex()
+                            .justify_center()
+                            .gap_2()
+                            .children(row.into_iter().map(|t| {
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .max_w(px(900.))
+                                    .h_full()
+                                    .child(self.tile(p, t, false, cx))
+                            }))
+                    }))
+            }
+        };
 
         div()
             .flex_1()
