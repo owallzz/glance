@@ -4,6 +4,7 @@ mod app;
 mod bot;
 mod camera;
 mod code_highlight;
+mod composer;
 mod contacts;
 mod direct;
 mod dms;
