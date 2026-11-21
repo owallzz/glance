@@ -2,7 +2,7 @@
 //! processes and encodes it, pulls a frame from each peer's jitter buffer,
 //! mixes, and hands the mix to the speakers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -52,7 +52,14 @@ struct Shared {
     my_level: AtomicU8,
     sent: AtomicU32,
     volumes: Mutex<HashMap<PeerKey, f32>>,
+    /// Peers silenced for us only (kept apart from `volumes` so unmuting
+    /// brings back their volume).
+    muted_peers: Mutex<HashSet<PeerKey>>,
+    /// Level of each peer's packets as sent (they're talking).
     levels: Mutex<HashMap<PeerKey, (u8, Instant)>>,
+    /// Level of each peer in what we actually play (after volume, local
+    /// mute and deafen).
+    heard: Mutex<HashMap<PeerKey, (u8, Instant)>>,
     removed: Mutex<Vec<PeerKey>>,
     /// New (echo cancel, noise suppression, auto gain) settings to apply.
     dsp: Mutex<Option<(bool, bool, bool)>>,
@@ -133,6 +140,21 @@ impl AudioEngine {
             .insert(peer, volume.clamp(0.0, 2.0));
     }
 
+    /// Silence a peer for us only. Their volume is kept for when they're
+    /// unmuted, and they still show as speaking.
+    pub fn set_peer_muted(&self, peer: PeerKey, muted: bool) {
+        let mut set = self.shared.muted_peers.lock().unwrap();
+        if muted {
+            set.insert(peer);
+        } else {
+            set.remove(&peer);
+        }
+    }
+
+    pub fn peer_muted(&self, peer: &PeerKey) -> bool {
+        self.shared.muted_peers.lock().unwrap().contains(peer)
+    }
+
     pub fn peer_volume(&self, peer: &PeerKey) -> f32 {
         self.shared
             .volumes
@@ -165,6 +187,7 @@ impl AudioEngine {
     pub fn remove_peer(&self, peer: PeerKey) {
         self.shared.removed.lock().unwrap().push(peer);
         self.shared.levels.lock().unwrap().remove(&peer);
+        self.shared.heard.lock().unwrap().remove(&peer);
     }
 
     /// Whether we're currently speaking (unmuted and loud enough).
@@ -173,24 +196,32 @@ impl AudioEngine {
             && self.shared.my_level.load(Ordering::Relaxed) > SPEAKING_LEVEL
     }
 
-    /// Peers heard speaking in the last 300 ms.
+    /// Peers speaking in the last 300 ms (whether or not we play them).
     pub fn speaking_peers(&self) -> Vec<PeerKey> {
-        let now = Instant::now();
-        self.shared
-            .levels
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, (lvl, at))| {
-                *lvl > SPEAKING_LEVEL && now - *at < Duration::from_millis(300)
-            })
-            .map(|(k, _)| *k)
-            .collect()
+        recent_loud(&self.shared.levels.lock().unwrap())
+    }
+
+    /// Peers loud enough in what reaches the speakers in the last 300 ms:
+    /// like [`Self::speaking_peers`] minus locally muted (or zero volume)
+    /// peers, and nobody while deafened.
+    pub fn audible_peers(&self) -> Vec<PeerKey> {
+        recent_loud(&self.shared.heard.lock().unwrap())
     }
 
     pub fn frames_sent(&self) -> u32 {
         self.shared.sent.load(Ordering::Relaxed)
     }
+}
+
+fn recent_loud(levels: &HashMap<PeerKey, (u8, Instant)>) -> Vec<PeerKey> {
+    let now = Instant::now();
+    let mut out: Vec<PeerKey> = levels
+        .iter()
+        .filter(|(_, (lvl, at))| *lvl > SPEAKING_LEVEL && now - *at < Duration::from_millis(300))
+        .map(|(k, _)| *k)
+        .collect();
+    out.sort_unstable();
+    out
 }
 
 impl Drop for AudioEngine {
@@ -345,7 +376,10 @@ fn run(
         // ---- mix ----
         mix.fill(0.0);
         let volumes = shared.volumes.lock().unwrap().clone();
+        let muted_peers = shared.muted_peers.lock().unwrap().clone();
+        let deafened = shared.deafened.load(Ordering::Relaxed);
         let master = f32::from_bits(shared.output_gain.load(Ordering::Relaxed));
+        let mut heard = Vec::new();
         for (key, peer) in peers.iter_mut() {
             let ok = match peer.jitter.pop() {
                 Pop::Packet(data) => peer.decoder.decode(&data, &mut decoded).is_ok(),
@@ -353,11 +387,26 @@ fn run(
                 Pop::Lost { next: None } => peer.decoder.conceal(&mut decoded).is_ok(),
                 Pop::Empty => false,
             };
-            if ok {
+            // Muted peers are still decoded so their decoder and jitter
+            // buffer stay in step for when they're unmuted.
+            if ok && !deafened && !muted_peers.contains(key) {
                 let vol = volumes.get(key).copied().unwrap_or(1.0) * master;
-                for (m, d) in mix.iter_mut().zip(&decoded) {
-                    *m += d * vol;
+                if vol > 0.0 {
+                    for (m, d) in mix.iter_mut().zip(&decoded) {
+                        *m += d * vol;
+                    }
+                    for d in decoded.iter_mut() {
+                        *d *= vol;
+                    }
+                    heard.push((*key, level_of(&decoded)));
                 }
+            }
+        }
+        if !heard.is_empty() {
+            let now = Instant::now();
+            let mut h = shared.heard.lock().unwrap();
+            for (key, level) in heard {
+                h.insert(key, (level, now));
             }
         }
         for m in mix.iter_mut() {
@@ -366,9 +415,7 @@ fn run(
         }
 
         // ---- play ----
-        if shared.deafened.load(Ordering::Relaxed) {
-            mix.fill(0.0);
-        }
+        // (Deafened: no peer was mixed in above; sounds still play.)
         {
             let mut fx = shared.effects.lock().unwrap();
             if !fx.is_empty() {
@@ -464,5 +511,77 @@ mod tests {
         assert!(b.speaking_peers().is_empty(), "muted peer still speaking");
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         pump.join().unwrap();
+    }
+
+    fn synthetic(input: InputKind) -> EngineConfig {
+        EngineConfig {
+            input,
+            output: OutputKind::Null,
+            echo_cancel: false,
+            noise_suppression: false,
+            auto_gain: false,
+        }
+    }
+
+    fn wait_until(cond: &dyn Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cond() {
+            if Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    /// Two tone engines talk into a listener; muting one locally silences
+    /// it in the mix while the other is still played, and unmuting brings
+    /// back the volume it had.
+    #[test]
+    fn locally_muted_peer_is_silent_and_unmuting_restores_volume() {
+        let listener = AudioEngine::start(synthetic(InputKind::Silence), |_| {}).unwrap();
+        let (alice, bob) = ([1u8; 32], [2u8; 32]);
+        let mut talkers = Vec::new();
+        for (key, hz) in [(alice, 440.0), (bob, 660.0)] {
+            let into = listener.incoming();
+            talkers.push(
+                AudioEngine::start(synthetic(InputKind::Tone(hz)), move |pkt| {
+                    let _ = into.send((key, pkt));
+                })
+                .unwrap(),
+            );
+        }
+        assert!(
+            wait_until(&|| listener.audible_peers() == vec![alice, bob]),
+            "both should be heard, got {:?}",
+            listener.audible_peers()
+        );
+
+        listener.set_peer_volume(alice, 0.5);
+        listener.set_peer_muted(alice, true);
+        assert!(listener.peer_muted(&alice));
+        assert!(
+            wait_until(&|| listener.audible_peers() == vec![bob]),
+            "muted peer still heard: {:?}",
+            listener.audible_peers()
+        );
+        // Still shown as talking, just not played.
+        assert_eq!(listener.speaking_peers(), vec![alice, bob]);
+
+        listener.set_peer_muted(alice, false);
+        assert_eq!(listener.peer_volume(&alice), 0.5);
+        assert!(
+            wait_until(&|| listener.audible_peers() == vec![alice, bob]),
+            "unmuted peer not heard: {:?}",
+            listener.audible_peers()
+        );
+
+        // Deafened: nobody is played (voice and stream audio alike).
+        listener.set_deafened(true);
+        assert!(wait_until(&|| listener.audible_peers().is_empty()));
+        assert_eq!(listener.speaking_peers(), vec![alice, bob]);
+        listener.set_deafened(false);
+        assert!(wait_until(&|| listener.audible_peers() == vec![alice, bob]));
+        drop(talkers);
     }
 }
