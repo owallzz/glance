@@ -8,8 +8,8 @@
 //!
 //! - Enter (and Ctrl/Cmd+Enter, `secondary: true`) emits
 //!   `InputEvent::PressEnter { shift: false, .. }` and inserts nothing;
-//!   Shift+Enter inserts a newline (`submit_on_enter`). Subscribers send on
-//!   `shift: false`.
+//!   Shift+Enter inserts a newline (`submit_on_enter`), without the code
+//!   editor's copied indentation. Subscribers send on `shift: false`.
 //! - Text over the send cap stays in the box ([`too_long`]); the views show
 //!   [`too_long_note`] until it is short enough.
 //! - Tab and Shift+Tab move focus instead of indenting.
@@ -18,20 +18,27 @@
 //!   from the wrapped row count of the last layout.
 //! - The composer can't change font size or family per span: headings are
 //!   bold, inline code gets the code background, and quotes are unstyled.
+//! - Code blocks with a language tag are syntax highlighted, from the same
+//!   worker as sent messages. A ``` still being typed counts as a block
+//!   running to the end. While a new highlight is on the worker, the block's
+//!   last one stays up, so typing doesn't flicker; `GlanceApp` re-renders
+//!   when it lands (`markdown_view::watch_highlights`).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use glance_core::markdown::{ComposerSpan, ComposerStyle, composer_spans};
+use glance_core::markdown::{ComposerCodeBlock, ComposerSpan, ComposerStyle, composer};
 use gpui_kit::component::input::{
-    Editor, EditorState, FoldRange, HighlightStyleResolver, IndentInline, InputEdit,
+    Editor, EditorState, Enter, FoldRange, HighlightStyleResolver, IndentInline, InputEdit,
     InputHighlighter, OutdentInline, Rope,
 };
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, Size};
 use gpui_kit::*;
 
+use crate::code_highlight::{self, Highlight, Highlights};
 use crate::theme::Palette;
 
 /// Row height relative to the font size (Discord: 22px rows for 16px text).
@@ -42,12 +49,14 @@ const PAD_Y: f32 = 11.;
 const DEFAULT_MAX_ROWS: usize = 8;
 
 /// The palette colours the highlighter paints with.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct ComposerColors {
     muted: Hsla,
     link: Hsla,
     code_bg: Hsla,
     spoiler_bg: Hsla,
+    /// For code block syntax colours.
+    palette: Palette,
 }
 
 impl ComposerColors {
@@ -57,6 +66,7 @@ impl ComposerColors {
             link: p.link,
             code_bg: p.code_bg,
             spoiler_bg: p.spoiler_hidden,
+            palette: *p,
         }
     }
 }
@@ -226,6 +236,18 @@ fn build(state: &Entity<EditorState>, on_paste: Option<PasteHandler>, cx: &App) 
         .min_w_0()
         .py(px(PAD_Y))
         .relative()
+        // Shift+Enter adds a bare newline: the code editor would copy the
+        // line's leading whitespace onto the new line, which a chat box
+        // shouldn't.
+        .capture_action({
+            let state = state.clone();
+            move |action: &Enter, window, cx| {
+                if action.shift && !action.secondary {
+                    state.update(cx, |state, cx| state.replace("\n", window, cx));
+                    cx.stop_propagation();
+                }
+            }
+        })
         // Tab moves focus, as in Discord, instead of indenting.
         .capture_action(|_: &IndentInline, window, cx| {
             window.focus_next(cx);
@@ -245,10 +267,18 @@ fn visual_rows(wrapped: usize, max_rows: usize) -> usize {
     wrapped.clamp(1, max_rows.max(1))
 }
 
+/// A block's last finished highlight, and the language it was for.
+type LastHighlight = (String, Arc<Highlights>);
+
 /// Styles the raw source with `composer_spans`, recomputed on every edit
-/// (over at most the first [`HIGHLIGHT_CAP`] bytes).
+/// (over at most the first [`HIGHLIGHT_CAP`] bytes), plus syntax colours in
+/// code blocks.
 struct MarkdownHighlighter {
     spans: Vec<ComposerSpan>,
+    blocks: Vec<ComposerCodeBlock>,
+    /// The last finished highlight of each block (by index), with its
+    /// language: shown while a newer one is on the worker.
+    last: RefCell<Vec<Option<LastHighlight>>>,
     colors: Rc<Cell<ComposerColors>>,
 }
 
@@ -256,9 +286,127 @@ impl MarkdownHighlighter {
     fn new(colors: Rc<Cell<ComposerColors>>) -> Self {
         Self {
             spans: Vec::new(),
+            blocks: Vec::new(),
+            last: RefCell::new(Vec::new()),
             colors,
         }
     }
+
+    /// Syntax colours over the source, clipped to `range`: ordered and
+    /// non-overlapping (blocks never overlap, nor do a block's ranges).
+    fn syntax_overlays(&self, range: &Range<usize>, p: &Palette) -> Vec<(Range<usize>, Hsla)> {
+        let mut out = Vec::new();
+        let mut last = self.last.borrow_mut();
+        last.resize(self.blocks.len(), None);
+        for (block, last) in self.blocks.iter().zip(last.iter_mut()) {
+            let Some(lang) = &block.lang else { continue };
+            let (Some(first), Some(end)) = (block.pieces.first(), block.pieces.last()) else {
+                continue;
+            };
+            if end.end <= range.start || first.start >= range.end {
+                continue;
+            }
+            let highlights = match code_highlight::highlight(lang, &block.code) {
+                Highlight::Ready(h) => {
+                    *last = Some((lang.clone(), h.clone()));
+                    h
+                }
+                Highlight::Pending => match last {
+                    Some((l, h)) if l == lang => h.clone(),
+                    _ => continue,
+                },
+                Highlight::Plain => {
+                    *last = None;
+                    continue;
+                }
+            };
+            for (r, kind) in highlights.iter() {
+                // A stale highlight may not fit the code as it is now.
+                if r.end > block.code.len()
+                    || !block.code.is_char_boundary(r.start)
+                    || !block.code.is_char_boundary(r.end)
+                {
+                    continue;
+                }
+                let color = code_highlight::color(*kind, p);
+                for src in to_source(r.clone(), &block.pieces) {
+                    let start = src.start.max(range.start);
+                    let end = src.end.min(range.end);
+                    if start < end {
+                        out.push((start..end, color));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Where a byte range of a code block's text is in the source, given the
+/// block's pieces (source ranges whose texts, joined, are the code).
+fn to_source(r: Range<usize>, pieces: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for piece in pieces {
+        let len = piece.len();
+        let start = r.start.max(at);
+        let end = r.end.min(at + len);
+        if start < end {
+            out.push(piece.start + (start - at)..piece.start + (end - at));
+        }
+        at += len;
+        if at >= r.end {
+            break;
+        }
+    }
+    out
+}
+
+/// Gives the text in each overlay range its colour, splitting the runs at
+/// the overlay edges. `runs` covers a range in order; `overlays` is ordered
+/// and non-overlapping.
+fn apply_overlays(
+    runs: Vec<(Range<usize>, HighlightStyle)>,
+    overlays: &[(Range<usize>, Hsla)],
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    if overlays.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len() + overlays.len() * 2);
+    let mut ov = 0;
+    for (run, style) in runs {
+        let mut at = run.start;
+        while at < run.end {
+            while ov < overlays.len() && overlays[ov].0.end <= at {
+                ov += 1;
+            }
+            match overlays.get(ov) {
+                Some((o, color)) if o.start <= at => {
+                    let end = o.end.min(run.end);
+                    out.push((
+                        at..end,
+                        HighlightStyle {
+                            color: Some(*color),
+                            ..style
+                        },
+                    ));
+                    at = end;
+                }
+                Some((o, _)) if o.start < run.end => {
+                    out.push((at..o.start, style));
+                    at = o.start;
+                }
+                _ => {
+                    out.push((at..run.end, style));
+                    at = run.end;
+                }
+            }
+        }
+        if run.is_empty() {
+            out.push((run, style));
+        }
+    }
+    out
 }
 
 /// The composer highlights at most this much of its text; the rest shows
@@ -294,7 +442,9 @@ impl InputHighlighter for MarkdownHighlighter {
         cx: &mut Context<EditorState>,
     ) {
         self.colors.set(ComposerColors::new(&Palette::current(cx)));
-        self.spans = composer_spans(&highlight_source(text.chunks()));
+        let composer = composer(&highlight_source(text.chunks()));
+        self.spans = composer.spans;
+        self.blocks = composer.code_blocks;
     }
 
     fn update_batch(
@@ -315,7 +465,9 @@ impl InputHighlighter for MarkdownHighlighter {
         range: &Range<usize>,
         _resolver: &dyn HighlightStyleResolver,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
-        style_runs(&self.spans, range, &self.colors.get())
+        let colors = self.colors.get();
+        let runs = style_runs(&self.spans, range, &colors);
+        apply_overlays(runs, &self.syntax_overlays(range, &colors.palette))
     }
 
     fn fold_ranges(&self, _text: &Rope) -> Vec<FoldRange> {
@@ -397,7 +549,8 @@ fn style_runs(
 #[cfg(test)]
 mod tests {
     use super::{
-        ComposerColors, HIGHLIGHT_CAP, highlight_source, highlight_style, style_runs, visual_rows,
+        ComposerColors, HIGHLIGHT_CAP, MarkdownHighlighter, apply_overlays, highlight_source,
+        highlight_style, style_runs, to_source, visual_rows,
     };
 
     #[test]
@@ -419,7 +572,96 @@ mod tests {
             link: hsla(0.55, 1., 0.5, 1.),
             code_bg: hsla(0., 0., 0.2, 1.),
             spoiler_bg: hsla(0., 0., 0.1, 1.),
+            palette: crate::theme::Palette::dark(),
         }
+    }
+
+    #[test]
+    fn code_ranges_map_onto_the_source_pieces() {
+        // "> ```py\n> a\n> b": the code "a\nb" is at 10..12 and 14..15.
+        let pieces = [10..12, 14..15];
+        assert_eq!(to_source(0..3, &pieces), vec![10..12, 14..15]);
+        assert_eq!(to_source(1..3, &pieces), vec![11..12, 14..15]);
+        assert_eq!(to_source(2..3, &pieces), vec![14..15]);
+        assert_eq!(to_source(0..1, &pieces), vec![10..11]);
+        assert!(to_source(3..4, &pieces).is_empty());
+    }
+
+    #[test]
+    fn overlays_recolour_and_split_runs() {
+        let bold = HighlightStyle {
+            font_weight: Some(FontWeight::BOLD),
+            ..Default::default()
+        };
+        let red = hsla(0., 1., 0.5, 1.);
+        let blue = hsla(0.6, 1., 0.5, 1.);
+        let runs = vec![(0..4, HighlightStyle::default()), (4..10, bold)];
+        let out = apply_overlays(runs, &[(2..6, red), (8..9, blue)]);
+        assert_covers(&out, &(0..10));
+        let colored = |c| HighlightStyle {
+            color: Some(c),
+            ..Default::default()
+        };
+        assert_eq!(
+            out,
+            vec![
+                (0..2, HighlightStyle::default()),
+                (2..4, colored(red)),
+                (
+                    4..6,
+                    HighlightStyle {
+                        color: Some(red),
+                        ..bold
+                    }
+                ),
+                (6..8, bold),
+                (
+                    8..9,
+                    HighlightStyle {
+                        color: Some(blue),
+                        ..bold
+                    }
+                ),
+                (9..10, bold),
+            ]
+        );
+        assert_eq!(
+            apply_overlays(vec![(3..3, bold)], &[(0..9, red)]),
+            vec![(3..3, bold)]
+        );
+    }
+
+    #[test]
+    fn a_typed_json_block_gets_syntax_colours() {
+        let src = "```json\n{\"a\": 1}";
+        let colors = colors();
+        let mut h = MarkdownHighlighter::new(std::rc::Rc::new(std::cell::Cell::new(colors)));
+        let c = glance_core::markdown::composer(src);
+        h.spans = c.spans;
+        h.blocks = c.code_blocks;
+        let range = 0..src.len();
+        // The first ask queues it on the worker; wait for the result.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let overlays = loop {
+            let o = h.syntax_overlays(&range, &colors.palette);
+            if !o.is_empty() || std::time::Instant::now() > deadline {
+                break o;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let key = src.find("\"a\"").unwrap();
+        assert!(
+            overlays
+                .iter()
+                .any(|(r, c)| r.contains(&key) && *c == colors.palette.syn_attribute),
+            "{overlays:?}"
+        );
+        // Typing more: the stale highlight stays up while the new one runs.
+        let longer = "```json\n{\"a\": 1, \"bb\": 2}";
+        let c = glance_core::markdown::composer(longer);
+        h.blocks = c.code_blocks;
+        let o = h.syntax_overlays(&(0..longer.len()), &colors.palette);
+        assert!(o.iter().any(|(r, _)| r.contains(&key)), "{o:?}");
     }
 
     fn span(range: Range<usize>, style: ComposerStyle) -> ComposerSpan {
