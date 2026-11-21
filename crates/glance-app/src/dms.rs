@@ -400,7 +400,11 @@ impl GlanceApp {
                 .profile_of(from)
                 .map(|p| p.name)
                 .unwrap_or_else(|| "A contact".into());
-            let preview: String = text.chars().take(120).collect();
+            // Formatting stripped, spoilers masked.
+            let preview: String = glance_core::markdown::plain_text(&text)
+                .chars()
+                .take(120)
+                .collect();
             crate::contacts::notify(&name, &preview);
         }
     }
