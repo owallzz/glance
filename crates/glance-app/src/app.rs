@@ -908,6 +908,9 @@ impl GlanceApp {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
+                        if this.screen != Screen::Home {
+                            this.recent.home_shown();
+                        }
                         this.screen = Screen::Home;
                         cx.notify();
                     }),

@@ -27,8 +27,13 @@ use crate::app::{GlanceApp, Room, now_ms};
 use crate::theme::Palette;
 use crate::ui::{icon, icon_button, section_label};
 
-/// While the home screen is up, check the rooms again at most this often.
+/// Coming back to the home screen checks the rooms again if the last check
+/// is at least this old.
 const PROBE_EVERY: Duration = Duration::from_secs(30);
+/// Remembered members asked per room by the home screen's check (plus the
+/// link's host); members who were still there when we left come first.
+/// "Start again" asks everyone before it hosts.
+const PROBE_MEMBERS: usize = 4;
 /// Rooms shown (and checked) on the home screen.
 pub const SHOWN: usize = 6;
 
@@ -55,6 +60,10 @@ pub struct Recent {
     pub rooms: RecentRooms,
     pub status: HashMap<String, Liveness>,
     probed_at: Option<Instant>,
+    /// Check the rooms next time the list renders. Set when the list comes
+    /// on screen, after leaving a room, and by the refresh button; never
+    /// by plain re-renders, so the home screen doesn't keep dialing people.
+    wanted: bool,
     /// File writes go through one background task, in order (the latest
     /// content always lands last).
     writer: Option<flume::Sender<WriteOp>>,
@@ -63,7 +72,14 @@ pub struct Recent {
 impl Recent {
     /// Check the rooms again next time the home screen shows.
     pub fn stale(&mut self) {
-        self.probed_at = None;
+        self.wanted = true;
+    }
+
+    /// The home screen came back on screen: check again unless we just did.
+    pub fn home_shown(&mut self) {
+        if self.probed_at.is_none_or(|t| t.elapsed() >= PROBE_EVERY) {
+            self.wanted = true;
+        }
     }
 
     fn write(&self, op: WriteOp) {
@@ -201,6 +217,19 @@ fn chat_line(m: SavedMessage, me: PeerId, transfer: Transfer) -> ChatMessage {
         author,
         sent_at: m.sent_at,
         body,
+    }
+}
+
+/// A file from history can be fetched only if someone here has it.
+fn history_transfer(m: &SavedMessage, files: &crate::files::FileMap) -> Transfer {
+    match &m.body {
+        SavedBody::File { hash, .. }
+            if files.get(hash).is_some_and(|f| !f.providers.is_empty()) =>
+        {
+            Transfer::Available
+        }
+        SavedBody::File { .. } => Transfer::Unavailable,
+        SavedBody::Text(_) => Transfer::Available,
     }
 }
 
@@ -369,9 +398,21 @@ impl GlanceApp {
         let Some(room) = self.room.as_mut() else {
             return;
         };
+        // History only says someone offered a file once, not that they're
+        // still here to serve it. Whoever is in the room now can; anyone
+        // else's files wait for them to come back (`author_is_back`) or for
+        // someone to announce they have them.
+        let present: HashSet<EndpointId> = room
+            .participants
+            .iter()
+            .filter_map(|p| EndpointId::from_bytes(&p.profile.id.0).ok())
+            .collect();
         for item in &items {
             if let HistoryBody::File(f) = &item.body {
-                add_provider(room, f.hash, item.author);
+                room.files.entry(f.hash).or_default();
+                if present.contains(&item.author) {
+                    add_provider(room, f.hash, item.author);
+                }
             }
         }
         let fresh = rooms::new_messages(&known, items.iter().map(saved_from_history));
@@ -395,7 +436,8 @@ impl GlanceApp {
                     .entry(author)
                     .or_insert((m.author_name.clone(), m.author_color));
             }
-            lines.push(chat_line(m, me, Transfer::Available));
+            let transfer = history_transfer(&m, &room.files);
+            lines.push(chat_line(m, me, transfer));
         }
         room.chat.splice(at..at, lines);
         renumber(&mut room.chat);
@@ -471,17 +513,14 @@ impl GlanceApp {
         self.save_recent();
     }
 
-    /// Called while the home screen shows the list: check the rooms if we
-    /// haven't lately.
+    /// Called while the home screen shows the list: check the rooms the
+    /// first time, and again only when something asked for it (see
+    /// [`Recent::wanted`]).
     pub fn ensure_recent_checked(&mut self, cx: &mut Context<Self>) {
         if self.net.is_none() || self.recent.rooms.rooms.is_empty() {
             return;
         }
-        if self
-            .recent
-            .probed_at
-            .is_some_and(|t| t.elapsed() < PROBE_EVERY)
-        {
+        if self.recent.probed_at.is_some() && !self.recent.wanted {
             return;
         }
         self.check_recent(cx);
@@ -493,6 +532,7 @@ impl GlanceApp {
             return;
         };
         self.recent.probed_at = Some(Instant::now());
+        self.recent.wanted = false;
         let current = self.room.as_ref().map(|r| r.memory.room_id.clone());
         let targets: Vec<(String, Ticket, Vec<EndpointAddr>)> = self
             .recent
@@ -505,7 +545,7 @@ impl GlanceApp {
                 Some((
                     r.room_id.clone(),
                     Ticket::parse(&r.link).ok()?,
-                    candidates(r),
+                    candidates(r).into_iter().take(PROBE_MEMBERS).collect(),
                 ))
             })
             .collect();
@@ -564,7 +604,7 @@ impl GlanceApp {
     }
 
     /// Everyone left: start the room again with the same link, so the others
-    /// can rejoin it.
+    /// can rejoin it (or join them, if a fresh check finds someone in it).
     pub fn restart_recent(&mut self, room_id: &str, cx: &mut Context<Self>) {
         let Some(r) = self.recent.rooms.get(room_id).cloned() else {
             return;
@@ -590,7 +630,14 @@ impl GlanceApp {
             connection: None,
             is_contact: false,
         });
-        let fut = net.host_room(ticket, crate::net::wire_profile(&self.me), state);
+        // Check again first (with everyone we remember): someone may be in it
+        // after all, and a second copy of the room would split it.
+        let fut = net.restart_room(
+            ticket,
+            candidates(&r),
+            crate::net::wire_profile(&self.me),
+            state,
+        );
         let name = r.name.clone();
         cx.spawn(async move |this, cx| {
             let result = fut.await;
@@ -825,9 +872,33 @@ fn ago(ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ago, candidates};
-    use glance_core::rooms::{RecentMember, RecentRoom};
+    use super::{ago, candidates, history_transfer};
+    use glance_core::Transfer;
+    use glance_core::rooms::{RecentMember, RecentRoom, SavedBody, SavedMessage};
     use glance_proto::EndpointAddr;
+
+    #[test]
+    fn history_files_need_someone_here_who_has_them() {
+        let offer = SavedMessage {
+            author: [1; 32],
+            author_name: "Ana".into(),
+            author_color: 0,
+            sent_at: 1,
+            body: SavedBody::File {
+                hash: [7; 32],
+                name: "a.txt".into(),
+                size: 3,
+                mime: "text/plain".into(),
+            },
+        };
+        let mut files = crate::files::FileMap::new();
+        files.entry([7; 32]).or_default();
+        // Offered once, by someone who's gone: can't be fetched.
+        assert_eq!(history_transfer(&offer, &files), Transfer::Unavailable);
+        let who = iroh::SecretKey::from_bytes(&[2; 32]).public();
+        files.get_mut(&[7; 32]).unwrap().providers.push(who);
+        assert_eq!(history_transfer(&offer, &files), Transfer::Available);
+    }
 
     #[test]
     fn ago_reads_naturally() {

@@ -219,15 +219,26 @@ impl Net {
         }
     }
 
-    /// Start a remembered room again with us as its first member.
-    pub fn host_room(
+    /// "Start again": check the room once more and join whoever turned up,
+    /// or host it if everyone remembered has left.
+    pub fn restart_room(
         &self,
         ticket: Ticket,
+        candidates: Vec<glance_proto::EndpointAddr>,
         profile: WireProfile,
         state: MemberState,
     ) -> impl Future<Output = Result<RoomHandle>> + use<> {
         let node = self.node.clone();
-        let fut = self.run(async move { node.host_room(ticket, profile, state).await });
+        let fut = self.run(async move {
+            node.restart_room(
+                ticket,
+                candidates,
+                profile,
+                state,
+                std::time::Duration::from_secs(6),
+            )
+            .await
+        });
         async move {
             fut.await
                 .unwrap_or_else(|| Err(anyhow::anyhow!("network stopped")))
