@@ -94,8 +94,11 @@ jobs:
   # file, so a signature can't be reused for another version's asset.
   sign:
     name: Sign
-    # Every job that uploads a dist-* artifact belongs here.
+    # Every job that uploads a dist-* artifact belongs here. Runs even when a
+    # build leg failed, so the platforms that did build still get signatures
+    # (an unsigned asset is never installed by the updater).
     needs: [release, native]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -105,6 +108,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Sign assets
+        id: sign
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
@@ -114,6 +118,11 @@ jobs:
               exit 1
             fi
             echo "::warning::MINISIGN_SECRET_KEY is not set; skipping signatures (test run)"
+            exit 0
+          fi
+          mkdir -p dist
+          if [ -z "$(ls -A dist)" ]; then
+            echo "::warning::no build artifacts to sign"
             exit 0
           fi
           sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
@@ -130,12 +139,14 @@ jobs:
           done
           rm -f "$key"
           ls -l
+          echo "signed=true" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
+        if: steps.sign.outputs.signed == 'true'
         with:
           name: signatures
           path: dist/*.minisig
-          if-no-files-found: ignore
+      # Only with signatures: never create a release just for nothing.
       - uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.sign.outputs.signed == 'true'
         with:
           files: dist/*.minisig
