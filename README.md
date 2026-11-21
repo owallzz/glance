@@ -35,6 +35,10 @@ Start a room, send the link, and everyone in it can go live at the same time. Th
 - **Change a live stream:** while you're live, the sliders button (**Stream settings**) changes resolution, frame rate, sound, or the screen or window you share without stopping. Viewers keep watching.
 - **Better pop-out windows:** drag anywhere to move, double-click for fullscreen, and the controls hide when you're not using them. Keys: **F** or **F11** fullscreen, **Esc** leave fullscreen, **M** mute the stream, **Ctrl+W** (**Cmd+W** on macOS) close.
 - **Call sounds:** a new ringtone, and callers hear a soft ringback until the call is answered.
+- **Images in chat:** pictures show inline in room chat and direct messages; click one for a full-window preview.
+- **Hide non-video participants:** the people button in the call header shows only streams and cameras.
+- **Mic test:** **Settings → Voice & Video → Let's Check** plays your mic back with a level meter. In a call you're deafened while it runs, like Discord.
+- **Tidier layout:** a resizable chat panel, rounded window corners, and a floating profile panel.
 - **Installers and auto-updates:** AppImage, Flatpak, a Windows installer and portable zip, and a macOS .dmg. glance checks GitHub Releases for updates at startup and every 6 hours, verifies their minisign signature, downloads them in the background and asks before restarting. Turn it off in **Settings → Updates**.
 
 ## Installation
