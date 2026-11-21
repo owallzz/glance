@@ -107,11 +107,43 @@ impl PeerAudio {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Everyone with saved choices (entries with a malformed id are skipped).
+    pub fn iter(&self) -> impl Iterator<Item = (PeerId, PeerAudioPrefs)> + '_ {
+        self.0
+            .iter()
+            .filter_map(|(k, prefs)| Some((parse_hex(k)?, *prefs)))
+    }
+}
+
+fn parse_hex(s: &str) -> Option<PeerId> {
+    if s.len() != 64 || !s.is_ascii() {
+        return None;
+    }
+    let mut id = [0u8; 32];
+    for (i, b) in id.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(PeerId(id))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn iter_lists_saved_people_and_skips_bad_ids() {
+        let mut a = PeerAudio::default();
+        a.update(PeerId([7; 32]), |p| p.muted = true);
+        a.update(PeerId([9; 32]), |p| p.stream_volume = 0.5);
+        a.0.insert("not-hex".into(), PeerAudioPrefs::default());
+        let got: Vec<_> = a.iter().collect();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, PeerId([7; 32]));
+        assert!(got[0].1.muted);
+        assert_eq!(got[1].0, PeerId([9; 32]));
+        assert_eq!(got[1].1.stream_volume, 0.5);
+    }
 
     #[test]
     fn deafen_mutes_and_undeafen_restores_previous_mute() {

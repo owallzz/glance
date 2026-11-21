@@ -77,14 +77,13 @@ impl GlanceApp {
                 }
             })
             .ok();
-        handle.send(Command::SetAudioSink(Some(tx)));
-        for p in &room.participants {
-            apply_peer_audio(
-                &engine,
-                p.profile.id,
-                self.settings.peer_audio.get(p.profile.id),
-            );
+        // Everyone's saved volume/mute goes in before any audio can arrive,
+        // so someone you muted is never heard, even before the UI handles
+        // their join (the net layer feeds the engine directly).
+        for (peer, prefs) in self.settings.peer_audio.iter() {
+            apply_peer_audio(&engine, peer, prefs);
         }
+        handle.send(Command::SetAudioSink(Some(tx)));
         let problems = engine.problems.clone();
         room.audio = Some(engine);
 
