@@ -3,7 +3,8 @@
 //! list markers, code boxes and block spoilers.
 //!
 //! - Parsed messages are cached by text ([`MarkdownCache`]), so the parser
-//!   doesn't run every frame.
+//!   doesn't run every frame. Nothing used in the current or the previous
+//!   render is evicted, so a chat list longer than the cache never thrashes.
 //! - Every `RichText` gets the next number from a counter threaded through
 //!   the render of the whole visible chat list, so a drag selects in reading
 //!   order across messages.
@@ -14,7 +15,7 @@
 //! - Code blocks use `code_highlight`; a grammar's first parse runs on a
 //!   worker, and [`watch_highlights`] re-renders when it's done.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
@@ -30,7 +31,8 @@ use crate::code_highlight;
 use crate::rich_text::RichText;
 use crate::theme::Palette;
 
-/// Parsed messages kept (oldest dropped first).
+/// Parsed messages kept at least; the cache grows past this while a render
+/// uses more.
 const CACHE_CAPACITY: usize = 1024;
 /// Discord's body line height (22px rows for 16px text).
 const LINE_HEIGHT: f32 = 1.375;
@@ -56,31 +58,65 @@ impl ChatScope {
 pub type SpoilerKey = (ChatScope, u64, u32);
 
 /// Parsed messages by text.
-#[derive(Default)]
+///
+/// Eviction is by render, not by insertion: [`MarkdownCache::begin_frame`]
+/// starts a render, and only entries unused in this and the previous render
+/// can go. An in-order scan of a list longer than any fixed capacity would
+/// otherwise miss on every lookup (FIFO and LRU alike).
 pub struct MarkdownCache {
-    map: HashMap<u64, (Rc<str>, Rc<Message>)>,
-    order: VecDeque<u64>,
+    map: HashMap<u64, CacheEntry>,
+    frame: u64,
+    /// Size that triggers a trim: twice what survived the last one.
+    limit: usize,
+}
+
+struct CacheEntry {
+    src: Rc<str>,
+    msg: Rc<Message>,
+    used: u64,
+}
+
+impl Default for MarkdownCache {
+    fn default() -> Self {
+        Self {
+            map: HashMap::new(),
+            frame: 0,
+            limit: CACHE_CAPACITY,
+        }
+    }
 }
 
 impl MarkdownCache {
+    /// Call once at the start of every render of the window.
+    pub fn begin_frame(&mut self) {
+        self.frame += 1;
+    }
+
     /// The parsed form of `text`, parsing it on a miss.
     pub fn get(&mut self, text: &str) -> Rc<Message> {
         let mut h = DefaultHasher::new();
         text.hash(&mut h);
         let key = h.finish();
-        if let Some((src, msg)) = self.map.get(&key)
-            && &**src == text
+        let frame = self.frame;
+        if let Some(e) = self.map.get_mut(&key)
+            && &*e.src == text
         {
-            return msg.clone();
+            e.used = frame;
+            return e.msg.clone();
         }
         let msg = Rc::new(markdown::parse(text));
-        if self.map.insert(key, (text.into(), msg.clone())).is_none() {
-            self.order.push_back(key);
-        }
-        while self.order.len() > CACHE_CAPACITY {
-            if let Some(old) = self.order.pop_front() {
-                self.map.remove(&old);
-            }
+        self.map.insert(
+            key,
+            CacheEntry {
+                src: text.into(),
+                msg: msg.clone(),
+                used: frame,
+            },
+        );
+        if self.map.len() > self.limit {
+            let keep = frame.saturating_sub(1);
+            self.map.retain(|_, e| e.used >= keep);
+            self.limit = (self.map.len() * 2).max(CACHE_CAPACITY);
         }
         msg
     }
@@ -596,6 +632,10 @@ impl GlanceApp {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
+    use glance_core::markdown::Message;
+
     use super::{MarkdownCache, web_domain};
 
     #[test]
@@ -629,11 +669,32 @@ mod tests {
         let mut cache = MarkdownCache::default();
         let a = cache.get("**hi**");
         let b = cache.get("**hi**");
-        assert!(std::rc::Rc::ptr_eq(&a, &b));
-        for i in 0..(super::CACHE_CAPACITY + 10) {
+        assert!(Rc::ptr_eq(&a, &b));
+        // Renders that each use a few messages keep the cache bounded.
+        for i in 0..(super::CACHE_CAPACITY * 3) {
+            cache.begin_frame();
             cache.get(&format!("message {i}"));
         }
-        assert!(cache.map.len() <= super::CACHE_CAPACITY);
-        assert_eq!(cache.map.len(), cache.order.len());
+        assert!(cache.map.len() <= super::CACHE_CAPACITY + 1);
+    }
+
+    #[test]
+    fn cache_holds_a_list_longer_than_its_capacity() {
+        let mut cache = MarkdownCache::default();
+        let texts: Vec<String> = (0..super::CACHE_CAPACITY + 300)
+            .map(|i| format!("**message** {i}"))
+            .collect();
+        let render = |cache: &mut MarkdownCache| -> Vec<Rc<Message>> {
+            cache.begin_frame();
+            texts.iter().map(|t| cache.get(t)).collect()
+        };
+        let first = render(&mut cache);
+        for _ in 0..3 {
+            let again = render(&mut cache);
+            assert!(
+                first.iter().zip(&again).all(|(a, b)| Rc::ptr_eq(a, b)),
+                "every message stays parsed across renders"
+            );
+        }
     }
 }

@@ -1201,6 +1201,7 @@ impl GlanceApp {
 
 impl Render for GlanceApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.md_cache.begin_frame();
         let p = Palette::current(cx);
         let font = gpui_kit::component::ActiveTheme::theme(&**cx)
             .font_family
