@@ -457,6 +457,8 @@ impl Renderer<'_> {
             .text_size(self.size * 0.875)
             .line_height(relative(18. / 14.))
             .min_w_0()
+            // Discord: `pre { max-width: 90% }`; still fills up to that.
+            .max_w(relative(0.9))
             .child(rich)
             .into_any_element()
     }
