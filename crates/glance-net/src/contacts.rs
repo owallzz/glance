@@ -8,9 +8,12 @@
 //! Direct messages need a `glance/contacts/2` connection on both ends. The
 //! actor doesn't keep them: the app persists its outbox and resends whatever
 //! wasn't acked when the contact comes online (receivers dedupe by id).
+//! It does track what's in flight: a message that isn't acked within
+//! [`DM_ACK_TIMEOUT`] (or whose connection drops) is reported as failed, so
+//! the app queues it again instead of showing "Sending…" forever.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use glance_proto::{
@@ -23,6 +26,13 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::io::{read_frame, write_frame};
+
+/// How long a sent direct message may wait for its ack before we report it
+/// as failed (the receiver may have dropped it, e.g. because it didn't see
+/// us as a contact yet).
+pub const DM_ACK_TIMEOUT: Duration = Duration::from_secs(15);
+/// How often unacked messages are checked (only while there are any).
+const DM_CHECK_EVERY: Duration = Duration::from_secs(5);
 
 /// How we relate to a peer (the app's contact book decides).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,6 +215,8 @@ struct Actor {
     peers: HashMap<EndpointId, Peer>,
     /// Messages waiting for a dial to finish.
     pending: HashMap<EndpointId, Vec<ContactMsg>>,
+    /// Direct messages sent but not acked yet, by (contact, message id).
+    unacked: HashMap<(EndpointId, u64), Instant>,
     inbound: flume::Sender<Inbound>,
     events: flume::Sender<ContactEvent>,
 }
@@ -236,12 +248,16 @@ pub(crate) fn spawn(endpoint: Endpoint) -> (ContactsHandle, flume::Sender<Inboun
         relations: HashMap::new(),
         peers: HashMap::new(),
         pending: HashMap::new(),
+        unacked: HashMap::new(),
         inbound: in_tx.clone(),
         events: ev_tx,
     };
     tokio::spawn(async move {
         let mut retry = tokio::time::interval(Duration::from_secs(30));
         retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Only polled while messages wait for an ack.
+        let mut dm_check = tokio::time::interval(DM_CHECK_EVERY);
+        dm_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 msg = in_rx.recv_async() => {
@@ -249,6 +265,7 @@ pub(crate) fn spawn(endpoint: Endpoint) -> (ContactsHandle, flume::Sender<Inboun
                     actor.handle(msg);
                 }
                 _ = retry.tick() => actor.connect_all(),
+                _ = dm_check.tick(), if !actor.unacked.is_empty() => actor.expire_dms(),
             }
         }
     });
@@ -315,11 +332,7 @@ impl Actor {
                 for m in self.pending.remove(&id).unwrap_or_default() {
                     let what = match m {
                         ContactMsg::Dm(dm) => {
-                            let _ = self.events.send(ContactEvent::DmFailed {
-                                to: id,
-                                id: dm.id,
-                                reason: DmFailure::Offline,
-                            });
+                            self.dm_failed(id, dm.id, DmFailure::Offline);
                             continue;
                         }
                         ContactMsg::Request { .. } => "contact request",
@@ -350,6 +363,17 @@ impl Actor {
                     .is_some_and(|p| p.conn.stable_id() == conn_id)
                 {
                     self.peers.remove(&id);
+                    // Whatever we sent on that connection without an ack may
+                    // never have arrived.
+                    let lost: Vec<u64> = self
+                        .unacked
+                        .keys()
+                        .filter(|(to, _)| *to == id)
+                        .map(|(_, dm)| *dm)
+                        .collect();
+                    for dm in lost {
+                        self.dm_failed(id, dm, DmFailure::Offline);
+                    }
                     let _ = self.events.send(ContactEvent::Offline(id));
                 }
             }
@@ -398,11 +422,7 @@ impl Actor {
         for m in self.pending.remove(&id).unwrap_or_default() {
             match m {
                 ContactMsg::Dm(dm) if !dms => {
-                    let _ = self.events.send(ContactEvent::DmFailed {
-                        to: id,
-                        id: dm.id,
-                        reason: DmFailure::Unsupported,
-                    });
+                    self.dm_failed(id, dm.id, DmFailure::Unsupported);
                 }
                 m => {
                     let _ = tx.send(m);
@@ -548,9 +568,31 @@ impl Actor {
                 let _ = self.events.send(ContactEvent::DmReceived { from, dm });
             }
             ContactMsg::DmAck { id } if mutual => {
+                self.unacked.remove(&(from, id));
                 let _ = self.events.send(ContactEvent::DmAcked { from, id });
             }
             other => debug!("ignoring {other:?} from {from} (relation {rel:?})"),
+        }
+    }
+
+    /// Report a direct message as not sent (and stop waiting for its ack).
+    fn dm_failed(&mut self, to: EndpointId, id: u64, reason: DmFailure) {
+        self.unacked.remove(&(to, id));
+        let _ = self.events.send(ContactEvent::DmFailed { to, id, reason });
+    }
+
+    /// Give up on direct messages that weren't acked in time: the app queues
+    /// them again and resends when the contact next comes online.
+    fn expire_dms(&mut self) {
+        let now = Instant::now();
+        let late: Vec<(EndpointId, u64)> = self
+            .unacked
+            .iter()
+            .filter(|(_, sent)| now.duration_since(**sent) >= DM_ACK_TIMEOUT)
+            .map(|(key, _)| *key)
+            .collect();
+        for (to, id) in late {
+            self.dm_failed(to, id, DmFailure::Offline);
         }
     }
 
@@ -658,9 +700,13 @@ impl Actor {
                     .collect();
                 self.relations = r;
                 // Peers we're already connected to that just became contacts:
-                // report them online and share our status.
+                // report them online and share our status. The Hello reads
+                // as "online" on their side too, so they resend any message
+                // we dropped while they weren't a contact yet.
                 for id in newly_mutual {
+                    let hello = self.hello(&id);
                     if let Some(peer) = self.peers.get(&id) {
+                        let _ = peer.tx.send(hello);
                         if let Some(info) = self.presence.clone() {
                             let _ = peer.tx.send(ContactMsg::Presence(info));
                         }
@@ -714,6 +760,7 @@ impl Actor {
                     }
                     _ => {
                         truncate_utf8(&mut dm.text, MAX_DM_LEN);
+                        self.unacked.insert((to, dm.id), Instant::now());
                         self.deliver(to, ContactMsg::Dm(dm));
                     }
                 }
