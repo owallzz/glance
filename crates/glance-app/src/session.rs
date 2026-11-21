@@ -48,8 +48,8 @@ impl GlanceApp {
     fn self_participant(&self) -> Participant {
         Participant {
             profile: self.me.clone(),
-            muted: self.muted,
-            deafened: self.deafened,
+            muted: self.voice.muted,
+            deafened: self.voice.deafened,
             speaking: false,
             camera: false,
             stream: None,
@@ -254,6 +254,10 @@ impl GlanceApp {
                 p.is_contact = self.book.is_mutual(&id.0);
                 room.met.insert(id, p.profile.clone());
                 room.participants.push(p);
+                // Their saved volume/mute (the engine started without them).
+                if let Some(engine) = &room.audio {
+                    crate::voice::apply_peer_audio(engine, id, self.settings.peer_audio.get(id));
+                }
                 if room.name == "Room" && room.participants.len() == 2 {
                     room.name = format!("{}'s room", profile.name);
                 }

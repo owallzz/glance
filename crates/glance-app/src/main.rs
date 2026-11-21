@@ -61,7 +61,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
             eprintln!(
-                "usage: glance bot <link|new> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]"
+                "usage: glance bot <link|new> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera] [--mute NAME]"
             );
             std::process::exit(2);
         };
@@ -88,7 +88,12 @@ fn main() {
             .map(std::path::PathBuf::from);
         let ring_back = args.iter().any(|a| a == "--ring-back");
         let camera = args.iter().any(|a| a == "--camera");
-        if let Err(e) = bot::run(link, name, stream, tone, file, ring_back, camera) {
+        let mute = args
+            .iter()
+            .position(|a| a == "--mute")
+            .and_then(|i| args.get(i + 1))
+            .cloned();
+        if let Err(e) = bot::run(link, name, stream, tone, file, ring_back, camera, mute) {
             eprintln!("glance bot: {e:#}");
             std::process::exit(1);
         }

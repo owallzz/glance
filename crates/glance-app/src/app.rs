@@ -130,6 +130,8 @@ pub struct Settings {
     pub hardware_encoding: bool,
     /// Check GitHub Releases for updates and download them in the background.
     pub auto_update: bool,
+    /// Per-person volume and local mute, by peer id.
+    pub peer_audio: glance_core::voice::PeerAudio,
 }
 
 impl Default for Settings {
@@ -155,6 +157,7 @@ impl Default for Settings {
             stream_fps: 60,
             hardware_encoding: true,
             auto_update: true,
+            peer_audio: Default::default(),
         }
     }
 }
@@ -444,8 +447,8 @@ pub struct GlanceApp {
     pub busy: bool,
     pub me: Profile,
     pub presence: Presence,
-    pub muted: bool,
-    pub deafened: bool,
+    /// Your mute/deafen (kept across rooms for the session).
+    pub voice: glance_core::voice::SelfVoice,
     pub screen: Screen,
     pub contacts_tab: ContactsTab,
     pub contacts: Vec<Contact>,
@@ -456,10 +459,6 @@ pub struct GlanceApp {
     pub go_live: Option<GoLive>,
     pub settings_open: bool,
     pub settings: Settings,
-    /// Per-user volume (kept across rooms for this session).
-    pub volumes: HashMap<PeerId, f32>,
-    /// Per-person volume for the audio shared with their screen.
-    pub stream_volumes: HashMap<PeerId, f32>,
     pub book: glance_core::contacts::ContactBook,
     pub live: crate::contacts::Live,
     pub incoming_call: Option<crate::contacts::IncomingCall>,
@@ -604,8 +603,7 @@ impl GlanceApp {
             busy: false,
             me,
             presence: Presence::Online,
-            muted: false,
-            deafened: false,
+            voice: Default::default(),
             screen: Screen::Home,
             contacts_tab: ContactsTab::Online,
             contacts,
@@ -620,8 +618,6 @@ impl GlanceApp {
             link_copied_gen: 0,
             input_volume_slider,
             output_volume_slider,
-            volumes: HashMap::new(),
-            stream_volumes: HashMap::new(),
             audio_devices: None,
             camera_list: None,
             book: Default::default(),
@@ -806,11 +802,8 @@ impl GlanceApp {
 
     pub fn set_muted(&mut self, muted: bool) {
         use glance_media::audio::sounds::Sound;
-        let was_deafened = self.deafened;
-        self.muted = muted;
-        if !muted {
-            self.deafened = false;
-        }
+        let was_deafened = self.voice.deafened;
+        self.voice.set_muted(muted);
         self.chime(match (muted, was_deafened) {
             (false, true) => Sound::Undeafen,
             (false, false) => Sound::Unmute,
@@ -821,8 +814,7 @@ impl GlanceApp {
 
     pub fn set_deafened(&mut self, deafened: bool) {
         use glance_media::audio::sounds::Sound;
-        self.deafened = deafened;
-        self.muted = deafened || self.muted;
+        self.voice.set_deafened(deafened);
         self.chime(if deafened {
             Sound::Deafen
         } else {
@@ -842,7 +834,7 @@ impl GlanceApp {
 
     /// Mirror your own state into your participant row and tell the room.
     pub fn sync_self(&mut self) {
-        let (me, muted, deafened) = (self.me.id, self.muted, self.deafened);
+        let (me, muted, deafened) = (self.me.id, self.voice.muted, self.voice.deafened);
         if let Some(room) = self.room.as_mut()
             && let Some(p) = room.participants.iter_mut().find(|p| p.profile.id == me)
         {
@@ -991,18 +983,26 @@ impl GlanceApp {
 
     /// Bottom-left panel: your avatar, status, mute/deafen/settings.
     pub fn render_user_panel(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let mic_icon = if self.muted {
+        let mic_icon = if self.voice.muted {
             IconName::MicOff
         } else {
             IconName::Mic
         };
-        let deaf_icon = if self.deafened {
+        let deaf_icon = if self.voice.deafened {
             IconName::HeadphoneOff
         } else {
             IconName::Headphones
         };
-        let mic_fg = if self.muted { p.red } else { p.interactive };
-        let deaf_fg = if self.deafened { p.red } else { p.interactive };
+        let mic_fg = if self.voice.muted {
+            p.red
+        } else {
+            p.interactive
+        };
+        let deaf_fg = if self.voice.deafened {
+            p.red
+        } else {
+            p.interactive
+        };
         div()
             .h(px(52.))
             .px_2()
@@ -1048,12 +1048,12 @@ impl GlanceApp {
                 icon_button(
                     "mute",
                     mic_icon,
-                    if self.muted { "Unmute" } else { "Mute" },
+                    if self.voice.muted { "Unmute" } else { "Mute" },
                     mic_fg,
                     p,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.set_muted(!this.muted);
+                    this.set_muted(!this.voice.muted);
                     cx.notify();
                 })),
             )
@@ -1061,12 +1061,16 @@ impl GlanceApp {
                 icon_button(
                     "deafen",
                     deaf_icon,
-                    if self.deafened { "Undeafen" } else { "Deafen" },
+                    if self.voice.deafened {
+                        "Undeafen"
+                    } else {
+                        "Deafen"
+                    },
                     deaf_fg,
                     p,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.set_deafened(!this.deafened);
+                    this.set_deafened(!this.voice.deafened);
                     cx.notify();
                 })),
             )
@@ -1138,11 +1142,11 @@ impl Render for GlanceApp {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleMute, _, cx| {
-                this.set_muted(!this.muted);
+                this.set_muted(!this.voice.muted);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleDeafen, _, cx| {
-                this.set_deafened(!this.deafened);
+                this.set_deafened(!this.voice.deafened);
                 cx.notify();
             }))
             .relative()
@@ -1224,6 +1228,24 @@ pub fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod key_tests {
+    #[test]
+    fn muted_peers_survive_a_restart() {
+        use glance_core::PeerId;
+        let dir = std::env::temp_dir().join(format!("glance-settings-test-{}", std::process::id()));
+        let (a, b) = (PeerId([7; 32]), PeerId([8; 32]));
+        let mut s = super::Settings::default();
+        s.peer_audio.update(a, |p| {
+            p.volume = 0.4;
+            p.muted = true;
+        });
+        s.save(&dir).unwrap();
+        let back = super::Settings::load(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(back.peer_audio.get(a).muted);
+        assert_eq!(back.peer_audio.get(a).volume, 0.4);
+        assert!(!back.peer_audio.get(b).muted);
+    }
+
     #[test]
     fn shortcuts_parse() {
         for k in super::SHORTCUTS {

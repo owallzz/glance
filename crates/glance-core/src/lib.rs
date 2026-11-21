@@ -7,5 +7,6 @@ pub mod contacts;
 pub mod demo;
 pub mod format;
 pub mod model;
+pub mod voice;
 
 pub use model::*;

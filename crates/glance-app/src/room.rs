@@ -265,7 +265,13 @@ impl GlanceApp {
     ) -> AnyElement {
         let id = person.profile.id;
         let hover = p.bg_hover;
-        let ring = person.speaking.then_some(p.green);
+        let muted_by_you = id != self.me.id && self.user_muted(id);
+        // Someone you muted still shows as talking, dimmed.
+        let ring = person.speaking.then_some(if muted_by_you {
+            p.green.opacity(0.4)
+        } else {
+            p.green
+        });
         let route = person.connection.map(|c| match c.route {
             Route::Direct => format!("Direct · {} ms", c.rtt_ms),
             Route::Relayed => format!("Relayed · {} ms", c.rtt_ms),
@@ -311,6 +317,7 @@ impl GlanceApp {
             .when(person.camera, |d| {
                 d.child(icon(IconName::Video, 14., p.text_muted))
             })
+            .when(muted_by_you, |d| d.child(muted_by_you_icon(p, id, 14.)))
             .when(person.muted, |d| {
                 d.child(icon(IconName::MicOff, 14., p.red))
             })
@@ -376,6 +383,7 @@ impl GlanceApp {
         });
         let vol = self.user_volume(id);
         let stream_vol = self.stream_volume(id);
+        let stream_muted = self.stream_muted(id);
         let has_stream_audio = person.stream.as_ref().is_some_and(|s| s.has_audio);
         let step = |delta: f32, label: &'static str, key: &str, stream: bool| {
             div()
@@ -401,34 +409,63 @@ impl GlanceApp {
                     cx.notify();
                 }))
         };
+        // A "Mute"/"Unmute" line with a check box, like a context menu item.
+        let check_item = |key: &str, label: &'static str, checked: bool, stream: bool| {
+            div()
+                .id(SharedString::from(format!("{key}-{}", id.short())))
+                .ml(px(20.))
+                .mr_2()
+                .mb_1()
+                .px_2()
+                .py_1()
+                .rounded(px(4.))
+                .bg(p.bg_rail)
+                .hover(|s| s.bg(p.bg_hover))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .text_color(if checked {
+                            p.muted_by_you
+                        } else {
+                            p.text_normal
+                        })
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .size(px(16.))
+                        .rounded(px(3.))
+                        .border_1()
+                        .border_color(if checked { p.brand } else { p.interactive })
+                        .when(checked, |d| d.bg(p.brand))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(checked, |d| {
+                            d.child(icon(IconName::Check, 12., gpui_kit::white()))
+                        }),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if stream {
+                        this.set_stream_muted(id, !checked);
+                    } else {
+                        this.set_user_muted(id, !checked);
+                    }
+                    cx.notify();
+                }))
+        };
         div()
             .flex()
             .flex_col()
             .child(row)
             .when(volume_open, |d| {
-                d.child(
-                    div()
-                        .ml(px(20.))
-                        .mr_2()
-                        .mb_1()
-                        .p_2()
-                        .rounded(px(4.))
-                        .bg(p.bg_rail)
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_xs()
-                                .text_color(p.text_muted)
-                                .child(format!("User volume {:.0}%", vol * 100.0)),
-                        )
-                        .child(step(-0.1, "−", "vol-down", false))
-                        .child(step(0.1, "+", "vol-up", false)),
-                )
-                .when(has_stream_audio, |d| {
-                    d.child(
+                d.child(check_item("mute-user", "Mute", muted_by_you, false))
+                    .child(
                         div()
                             .ml(px(20.))
                             .mr_2()
@@ -444,13 +481,41 @@ impl GlanceApp {
                                     .flex_1()
                                     .text_xs()
                                     .text_color(p.text_muted)
-                                    .child(format!("Stream volume {:.0}%", stream_vol * 100.0)),
+                                    .child(format!("User volume {:.0}%", vol * 100.0)),
                             )
-                            .child(step(-0.1, "−", "svol-down", true))
-                            .child(step(0.1, "+", "svol-up", true)),
+                            .child(step(-0.1, "−", "vol-down", false))
+                            .child(step(0.1, "+", "vol-up", false)),
                     )
-                })
-                .child(contact_action)
+                    .when(has_stream_audio, |d| {
+                        d.child(check_item(
+                            "mute-stream",
+                            "Mute stream audio",
+                            stream_muted,
+                            true,
+                        ))
+                        .child(
+                            div()
+                                .ml(px(20.))
+                                .mr_2()
+                                .mb_1()
+                                .p_2()
+                                .rounded(px(4.))
+                                .bg(p.bg_rail)
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_xs()
+                                        .text_color(p.text_muted)
+                                        .child(format!("Stream volume {:.0}%", stream_vol * 100.0)),
+                                )
+                                .child(step(-0.1, "−", "svol-down", true))
+                                .child(step(0.1, "+", "svol-up", true)),
+                        )
+                    })
+                    .child(contact_action)
             })
             .into_any_element()
     }
@@ -636,22 +701,67 @@ impl GlanceApp {
         match kind {
             TileKind::Person(person) => {
                 let speaking = person.speaking;
+                let is_me = peer == self.me.id;
+                let muted_by_you = !is_me && self.user_muted(peer);
+                let ring = if muted_by_you {
+                    p.green.opacity(0.4)
+                } else {
+                    p.green
+                };
+                let tag = name_tag(
+                    p,
+                    &person.profile.name,
+                    person.muted,
+                    person.deafened,
+                    muted_by_you,
+                );
+                // Hover button: mute/unmute them for you.
+                let group = SharedString::from(format!("ptile-{}", peer.short()));
+                let hover_bar = (!is_me).then(|| {
+                    div()
+                        .absolute()
+                        .top_2()
+                        .right_2()
+                        .invisible()
+                        .group_hover(group.clone(), |s| s.visible())
+                        .child(
+                            tile_button(
+                                p,
+                                &format!("tmute-{}-{muted_by_you}", peer.short()),
+                                if muted_by_you {
+                                    IconName::Volume2
+                                } else {
+                                    IconName::VolumeX
+                                },
+                                if muted_by_you { "Unmute" } else { "Mute" },
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.set_user_muted(peer, !muted_by_you);
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                });
+                let tile = tile.group(group);
                 if let Some(cam) = room.cameras.get(&peer).cloned() {
                     return tile
                         .bg(gpui_kit::black())
-                        .when(speaking, |d| d.border_2().border_color(p.green))
+                        .when(speaking, |d| d.border_2().border_color(ring))
                         .child(cam)
-                        .child(name_tag(p, &person.profile.name, person.muted))
+                        .child(tag)
+                        .children(hover_bar)
                         .into_any_element();
                 }
                 tile.bg(crate::ui::color(person.profile.color).opacity(0.35))
                     .bg(p.bg_sidebar)
-                    .when(speaking, |d| d.border_2().border_color(p.green))
+                    .when(speaking, |d| d.border_2().border_color(ring))
                     .flex()
                     .items_center()
                     .justify_center()
                     .child(Avatar::new(&person.profile, if large { 96. } else { 64. }))
-                    .child(name_tag(p, &person.profile.name, person.muted))
+                    .child(tag)
+                    .children(hover_bar)
                     .into_any_element()
             }
             TileKind::Stream(person) => {
@@ -683,6 +793,7 @@ impl GlanceApp {
                         .into_any_element();
                 }
                 if let Some(view) = room.watching.get(&peer).cloned() {
+                    let stream_muted = self.stream_muted(peer);
                     // Controls show while the pointer is over the tile.
                     let group = SharedString::from(format!("tile-{}", peer.short()));
                     let hover_bar = div()
@@ -724,6 +835,30 @@ impl GlanceApp {
                                 move |this, _, window, cx| this.enter_fullscreen(peer, window, cx),
                             )),
                         )
+                        .when(!is_me && stream.has_audio, |d| {
+                            d.child(
+                                tile_button(
+                                    p,
+                                    &format!("smute-{}-{stream_muted}", peer.short()),
+                                    if stream_muted {
+                                        IconName::VolumeX
+                                    } else {
+                                        IconName::Volume2
+                                    },
+                                    if stream_muted {
+                                        "Unmute stream audio"
+                                    } else {
+                                        "Mute stream audio"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.set_stream_muted(peer, !stream_muted);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
                         .when(!is_me, |d| {
                             d.child(
                                 tile_button(
@@ -922,18 +1057,45 @@ impl GlanceApp {
             .child(
                 ctrl(
                     "ctrl-mute",
-                    if self.muted {
+                    if self.voice.muted {
                         IconName::MicOff
                     } else {
                         IconName::Mic
                     },
-                    if self.muted { "Unmute" } else { "Mute" },
+                    if self.voice.muted { "Unmute" } else { "Mute" },
                     false,
                     false,
                 )
-                .when(self.muted, |d| d.bg(p.red.opacity(0.3)))
+                .when(self.voice.muted, |d| d.bg(p.red.opacity(0.3)))
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.set_muted(!this.muted);
+                    this.set_muted(!this.voice.muted);
+                    cx.notify();
+                })),
+            )
+            .child(
+                ctrl(
+                    // The id changes with the action so the tooltip refreshes.
+                    if self.voice.deafened {
+                        "ctrl-undeafen"
+                    } else {
+                        "ctrl-deafen"
+                    },
+                    if self.voice.deafened {
+                        IconName::HeadphoneOff
+                    } else {
+                        IconName::Headphones
+                    },
+                    if self.voice.deafened {
+                        "Undeafen"
+                    } else {
+                        "Deafen"
+                    },
+                    false,
+                    false,
+                )
+                .when(self.voice.deafened, |d| d.bg(p.red.opacity(0.3)))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.set_deafened(!this.voice.deafened);
                     cx.notify();
                 })),
             )
@@ -1233,7 +1395,13 @@ impl GlanceApp {
     }
 }
 
-fn name_tag(p: &Palette, name: &str, muted: bool) -> impl IntoElement {
+fn name_tag(
+    p: &Palette,
+    name: &str,
+    muted: bool,
+    deafened: bool,
+    muted_by_you: bool,
+) -> impl IntoElement {
     div()
         .absolute()
         .bottom_2()
@@ -1247,7 +1415,13 @@ fn name_tag(p: &Palette, name: &str, muted: bool) -> impl IntoElement {
         .bg(gpui_kit::black().opacity(0.5))
         .text_sm()
         .text_color(gpui_kit::white())
+        .when(muted_by_you, |d| {
+            d.child(icon(IconName::VolumeX, 14., p.muted_by_you))
+        })
         .when(muted, |d| d.child(icon(IconName::MicOff, 14., p.red)))
+        .when(deafened, |d| {
+            d.child(icon(IconName::HeadphoneOff, 14., p.red))
+        })
         .child(name.to_string())
 }
 
@@ -1275,4 +1449,14 @@ fn tile_button(_p: &Palette, id: &str, glyph: IconName, tip: &'static str) -> St
         .justify_center()
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         .child(icon(glyph, 18., gpui_kit::white()))
+}
+
+/// "Muted by you": a volume-off icon in its own colour (their own mute is a
+/// red mic).
+fn muted_by_you_icon(p: &Palette, id: PeerId, size: f32) -> AnyElement {
+    div()
+        .id(SharedString::from(format!("mbu-{}", id.short())))
+        .tooltip(|window, cx| Tooltip::new("Muted by you").build(window, cx))
+        .child(icon(IconName::VolumeX, size, p.muted_by_you))
+        .into_any_element()
 }
