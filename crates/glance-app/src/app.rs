@@ -11,6 +11,7 @@ use glance_media::TargetSize;
 use glance_media::pattern::spawn_pattern;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::slider::{SliderEvent, SliderState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -100,6 +101,11 @@ pub struct Settings {
     /// Join/leave and mute/deafen sounds.
     pub sounds: bool,
     pub echo_cancel: bool,
+    /// Automatic gain control on the mic.
+    pub auto_gain: bool,
+    /// Mic and speaker volume, 0.0–2.0 (1.0 is 100%).
+    pub input_volume: f32,
+    pub output_volume: f32,
     pub tray: bool,
     pub autostart: bool,
     pub let_contacts_join: bool,
@@ -128,6 +134,9 @@ impl Default for Settings {
             noise_suppression: true,
             sounds: true,
             echo_cancel: true,
+            auto_gain: true,
+            input_volume: 1.0,
+            output_volume: 1.0,
             tray: true,
             autostart: true,
             let_contacts_join: false,
@@ -432,6 +441,9 @@ pub struct GlanceApp {
         Vec<glance_media::audio::device::DeviceInfo>,
     )>,
     pub link_copied: bool,
+    /// Mic and speaker volume sliders in the voice settings (0–200%).
+    pub input_volume_slider: Entity<SliderState>,
+    pub output_volume_slider: Entity<SliderState>,
 }
 
 impl GlanceApp {
@@ -506,6 +518,25 @@ impl GlanceApp {
             .as_ref()
             .map(|n| crate::direct::load(&n.data_dir))
             .unwrap_or_default();
+        let volume_slider = |value: f32, cx: &mut Context<Self>| {
+            cx.new(|_| {
+                SliderState::new()
+                    .min(0.)
+                    .max(200.)
+                    .step(1.)
+                    .default_value(value * 100.)
+            })
+        };
+        let input_volume_slider = volume_slider(settings.input_volume, cx);
+        let output_volume_slider = volume_slider(settings.output_volume, cx);
+        cx.subscribe(&input_volume_slider, |this, _, ev: &SliderEvent, cx| {
+            this.on_volume_slider(true, ev, cx)
+        })
+        .detach();
+        cx.subscribe(&output_volume_slider, |this, _, ev: &SliderEvent, cx| {
+            this.on_volume_slider(false, ev, cx)
+        })
+        .detach();
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let mut app = Self {
@@ -534,6 +565,8 @@ impl GlanceApp {
             settings_open: false,
             settings,
             link_copied: false,
+            input_volume_slider,
+            output_volume_slider,
             volumes: HashMap::new(),
             stream_volumes: HashMap::new(),
             audio_devices: None,

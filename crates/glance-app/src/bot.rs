@@ -127,6 +127,7 @@ pub fn run(
             output: glance_media::audio::OutputKind::Null,
             echo_cancel: false,
             noise_suppression: false,
+            auto_gain: false,
         },
         move |pkt| {
             let wire = glance_proto::AudioDatagram {
@@ -150,6 +151,7 @@ pub fn run(
                 output: glance_media::audio::OutputKind::Null,
                 echo_cancel: false,
                 noise_suppression: false,
+                auto_gain: false,
             },
             move |pkt| {
                 let wire = glance_proto::AudioDatagram {

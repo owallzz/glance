@@ -39,6 +39,8 @@ pub struct EngineConfig {
     pub output: OutputKind,
     pub echo_cancel: bool,
     pub noise_suppression: bool,
+    /// Automatic gain control on the mic.
+    pub auto_gain: bool,
 }
 
 /// Settings the UI can change while the engine runs.
@@ -52,7 +54,11 @@ struct Shared {
     volumes: Mutex<HashMap<PeerKey, f32>>,
     levels: Mutex<HashMap<PeerKey, (u8, Instant)>>,
     removed: Mutex<Vec<PeerKey>>,
-    dsp: Mutex<Option<(bool, bool)>>,
+    /// New (echo cancel, noise suppression, auto gain) settings to apply.
+    dsp: Mutex<Option<(bool, bool, bool)>>,
+    /// Mic and speaker volume as f32 bits (1.0 is normal).
+    input_gain: AtomicU32,
+    output_gain: AtomicU32,
     /// UI sounds waiting to be mixed in (played even when deafened).
     effects: Mutex<std::collections::VecDeque<f32>>,
 }
@@ -70,7 +76,11 @@ impl AudioEngine {
         config: EngineConfig,
         outgoing: impl FnMut(EncodedAudio) + Send + 'static,
     ) -> Result<Self> {
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared {
+            input_gain: AtomicU32::new(1.0f32.to_bits()),
+            output_gain: AtomicU32::new(1.0f32.to_bits()),
+            ..Default::default()
+        });
         let (in_tx, in_rx) = flume::unbounded();
         let (prob_tx, prob_rx) = flume::bounded(4);
         let (ready_tx, ready_rx) = flume::bounded::<Result<()>>(1);
@@ -133,8 +143,23 @@ impl AudioEngine {
             .unwrap_or(1.0)
     }
 
-    pub fn set_processing(&self, echo_cancel: bool, noise_suppression: bool) {
-        *self.shared.dsp.lock().unwrap() = Some((echo_cancel, noise_suppression));
+    /// Mic volume, 0.0–2.0 (applied after processing, so it also scales
+    /// what auto gain produces).
+    pub fn set_input_volume(&self, volume: f32) {
+        self.shared
+            .input_gain
+            .store(volume.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Speaker volume for everyone you hear, 0.0–2.0.
+    pub fn set_output_volume(&self, volume: f32) {
+        self.shared
+            .output_gain
+            .store(volume.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_processing(&self, echo_cancel: bool, noise_suppression: bool, auto_gain: bool) {
+        *self.shared.dsp.lock().unwrap() = Some((echo_cancel, noise_suppression, auto_gain));
     }
 
     pub fn remove_peer(&self, peer: PeerKey) {
@@ -223,6 +248,7 @@ fn run(
     };
     let _ = ready.send(Ok(()));
     let mut dsp = MicProcessor::new(config.echo_cancel, config.noise_suppression);
+    dsp.set_auto_gain(config.auto_gain);
     let mut peers: HashMap<PeerKey, Peer> = HashMap::new();
     let mut mic = vec![0.0f32; FRAME];
     let mut far_end = vec![0.0f32; FRAME];
@@ -264,7 +290,8 @@ fn run(
             }
         }
 
-        if let Some((aec, ns)) = shared.dsp.lock().unwrap().take() {
+        if let Some((aec, ns, agc)) = shared.dsp.lock().unwrap().take() {
+            dsp.set_auto_gain(agc);
             dsp.set_echo_cancel(aec);
             dsp.set_noise_suppression(ns);
         }
@@ -275,6 +302,12 @@ fn run(
         // ---- send ----
         if !matches!(config.input, InputKind::Tone(_)) {
             dsp.process(&mut mic, &far_end);
+            let gain = f32::from_bits(shared.input_gain.load(Ordering::Relaxed));
+            if gain != 1.0 {
+                for s in mic.iter_mut() {
+                    *s = (*s * gain).clamp(-1.0, 1.0);
+                }
+            }
         }
         let level = level_of(&mic);
         shared.my_level.store(level, Ordering::Relaxed);
@@ -312,6 +345,7 @@ fn run(
         // ---- mix ----
         mix.fill(0.0);
         let volumes = shared.volumes.lock().unwrap().clone();
+        let master = f32::from_bits(shared.output_gain.load(Ordering::Relaxed));
         for (key, peer) in peers.iter_mut() {
             let ok = match peer.jitter.pop() {
                 Pop::Packet(data) => peer.decoder.decode(&data, &mut decoded).is_ok(),
@@ -320,7 +354,7 @@ fn run(
                 Pop::Empty => false,
             };
             if ok {
-                let vol = volumes.get(key).copied().unwrap_or(1.0);
+                let vol = volumes.get(key).copied().unwrap_or(1.0) * master;
                 for (m, d) in mix.iter_mut().zip(&decoded) {
                     *m += d * vol;
                 }
@@ -385,6 +419,7 @@ mod tests {
                 output: OutputKind::Null,
                 echo_cancel: false,
                 noise_suppression: false,
+                auto_gain: false,
             },
             move |pkt| {
                 let _ = b_in_tx.send(([1; 32], pkt));
@@ -397,6 +432,7 @@ mod tests {
                 output: OutputKind::Null,
                 echo_cancel: true,
                 noise_suppression: true,
+                auto_gain: true,
             },
             |_| {},
         )

@@ -4,6 +4,7 @@ use glance_core::{FRAME_RATES, Resolution, StreamInfo};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::slider::{Slider, SliderState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -622,17 +623,19 @@ impl GlanceApp {
                                   label: &'static str,
                                   desc: &'static str,
                                   on: bool,
-                                  aec: bool| {
+                                  which: Processing| {
                     setting_row(
                         p,
                         label,
                         desc,
                         Switch::new(id).checked(on).on_click(cx.listener(
                             move |this, v: &bool, _, cx| {
-                                if aec {
-                                    this.settings.echo_cancel = *v;
-                                } else {
-                                    this.settings.noise_suppression = *v;
+                                match which {
+                                    Processing::EchoCancel => this.settings.echo_cancel = *v,
+                                    Processing::NoiseSuppression => {
+                                        this.settings.noise_suppression = *v
+                                    }
+                                    Processing::AutoGain => this.settings.auto_gain = *v,
                                 }
                                 this.apply_audio_processing();
                                 this.save_settings();
@@ -664,6 +667,26 @@ impl GlanceApp {
                             .border_b_1()
                             .border_color(p.bg_selected)
                             .flex()
+                            .gap_6()
+                            .child(volume_slider(
+                                p,
+                                "INPUT VOLUME",
+                                &self.input_volume_slider,
+                                self.settings.input_volume,
+                            ))
+                            .child(volume_slider(
+                                p,
+                                "OUTPUT VOLUME",
+                                &self.output_volume_slider,
+                                self.settings.output_volume,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .py_4()
+                            .border_b_1()
+                            .border_color(p.bg_selected)
+                            .flex()
                             .flex_col()
                             .gap_1()
                             .child(section_label(p, "CAMERA"))
@@ -683,14 +706,21 @@ impl GlanceApp {
                         "Noise suppression",
                         "Filters background noise from your mic.",
                         self.settings.noise_suppression,
-                        false,
+                        Processing::NoiseSuppression,
                     ))
                     .child(processing(
                         "aec",
                         "Echo cancellation",
                         "Stops others hearing themselves through your speakers.",
                         self.settings.echo_cancel,
-                        true,
+                        Processing::EchoCancel,
+                    ))
+                    .child(processing(
+                        "agc",
+                        "Automatic gain control",
+                        "Keeps your voice at a steady, clear volume however loud your mic is.",
+                        self.settings.auto_gain,
+                        Processing::AutoGain,
                     ))
                     .child(toggle!(
                         "sounds",
@@ -1153,6 +1183,41 @@ fn close_button(id: &'static str, p: &Palette) -> Stateful<Div> {
         .items_center()
         .justify_center()
         .child(icon(IconName::X, 18., p.interactive))
+}
+
+/// Which voice processing switch was flipped.
+#[derive(Clone, Copy)]
+enum Processing {
+    NoiseSuppression,
+    EchoCancel,
+    AutoGain,
+}
+
+/// A labelled 0–200% volume slider.
+fn volume_slider(
+    p: &Palette,
+    label: &'static str,
+    state: &Entity<SliderState>,
+    volume: f32,
+) -> impl IntoElement {
+    div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .child(section_label(p, label))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.text_muted)
+                        .child(format!("{:.0}%", volume * 100.0)),
+                ),
+        )
+        .child(Slider::new(state).accessibility_label(label))
 }
 
 fn setting_row(

@@ -20,6 +20,7 @@ impl GlanceApp {
             output: OutputKind::Device(self.settings.output_device.clone()),
             echo_cancel: self.settings.echo_cancel,
             noise_suppression: self.settings.noise_suppression,
+            auto_gain: self.settings.auto_gain,
         };
         let Some(room) = self.room.as_mut() else {
             return;
@@ -50,6 +51,8 @@ impl GlanceApp {
         };
         engine.set_muted(self.muted);
         engine.set_deafened(self.deafened);
+        engine.set_input_volume(self.settings.input_volume);
+        engine.set_output_volume(self.settings.output_volume);
         // Network -> engine.
         let (tx, rx) = flume::bounded::<(EndpointId, AudioDatagram)>(512);
         let into_engine = engine.incoming();
@@ -150,6 +153,32 @@ impl GlanceApp {
         }
     }
 
+    /// A mic (`input`) or speaker volume slider moved: apply it live, save
+    /// when let go.
+    pub fn on_volume_slider(
+        &mut self,
+        input: bool,
+        ev: &gpui_kit::component::slider::SliderEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::slider::SliderEvent;
+        let (SliderEvent::Change(v) | SliderEvent::Release(v)) = ev;
+        let volume = (v.start() / 100.0).clamp(0.0, 2.0);
+        if input {
+            self.settings.input_volume = volume;
+        } else {
+            self.settings.output_volume = volume;
+        }
+        if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
+            engine.set_input_volume(self.settings.input_volume);
+            engine.set_output_volume(self.settings.output_volume);
+        }
+        if matches!(ev, SliderEvent::Release(_)) {
+            self.save_settings();
+        }
+        cx.notify();
+    }
+
     /// Per-user volume, 0–200%.
     pub fn set_user_volume(&mut self, peer: PeerId, volume: f32) {
         let v = volume.clamp(0.0, 2.0);
@@ -178,7 +207,11 @@ impl GlanceApp {
 
     pub fn apply_audio_processing(&mut self) {
         if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
-            engine.set_processing(self.settings.echo_cancel, self.settings.noise_suppression);
+            engine.set_processing(
+                self.settings.echo_cancel,
+                self.settings.noise_suppression,
+                self.settings.auto_gain,
+            );
         }
     }
 
