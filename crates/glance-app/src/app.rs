@@ -479,6 +479,10 @@ pub struct GlanceApp {
     pub chat_input: Entity<InputState>,
     pub go_live: Option<GoLive>,
     pub settings_open: bool,
+    /// The window's rounded corners this frame (zero when maximized,
+    /// tiled, fullscreen or drawn by the OS). Whatever paints a background
+    /// into a window corner rounds it to match.
+    pub corners: Corners<Pixels>,
     pub settings: Settings,
     pub book: glance_core::contacts::ContactBook,
     pub live: crate::contacts::Live,
@@ -657,6 +661,7 @@ impl GlanceApp {
             chat_input,
             go_live: None,
             settings_open: false,
+            corners: Corners::default(),
             settings,
             link_copied: false,
             link_copied_gen: 0,
@@ -977,6 +982,7 @@ impl GlanceApp {
             .pt_3()
             .gap_2()
             .bg(p.bg_rail)
+            .rounded_bl(self.corners.bottom_left)
             .child(
                 rail_item(
                     "rail-home",
@@ -1178,9 +1184,19 @@ impl GlanceApp {
     }
 }
 
+/// Height of a one-line message box (room chat and DMs), and of the floating
+/// user panel's own row.
+pub const COMPOSER_HEIGHT: f32 = 56.;
+/// Gap between the window's bottom edge and the message box or the floating
+/// panel (and the panel's left inset).
+pub const PANEL_MARGIN: f32 = 8.;
+/// The "Voice Connected" part of the floating panel, above your own row.
+const VOICE_PANEL_HEIGHT: f32 = 52.;
+
 impl Render for GlanceApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Palette::current(cx);
+        self.corners = gpui_kit::component::window_corner_radii(window, cx);
         let font = gpui_kit::component::ActiveTheme::theme(&**cx)
             .font_family
             .clone();
@@ -1244,6 +1260,8 @@ impl Render for GlanceApp {
             .font_family(font)
             .text_color(p.text_normal)
             .bg(p.bg_rail)
+            .rounded_bl(self.corners.bottom_left)
+            .rounded_br(self.corners.bottom_right)
             .child(render_title_bar(&p, self.render_update_pill(&p, cx)));
         // Overlays live below the title bar so the window can always be
         // dragged, minimized and closed.

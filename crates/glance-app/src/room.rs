@@ -617,6 +617,7 @@ impl GlanceApp {
             .flex()
             .flex_col()
             .bg(p.bg_stage)
+            .when(!chat_open, |d| d.rounded_br(self.corners.bottom_right))
             .child(
                 div()
                     .h(px(48.))
@@ -1170,6 +1171,7 @@ impl GlanceApp {
             .flex()
             .flex_col()
             .bg(p.bg_content)
+            .rounded_br(self.corners.bottom_right)
             .border_l_1()
             .border_color(p.bg_rail)
             .child(

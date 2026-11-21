@@ -174,3 +174,14 @@ pub fn pill(
         })
         .child(label.into())
 }
+
+/// Linux client decorations draw rounded corners and a soft shadow outside
+/// the visible frame, so the window surface must be transparent there.
+/// Elsewhere the OS draws the frame and the window stays opaque.
+pub fn window_background() -> WindowBackgroundAppearance {
+    if cfg!(target_os = "linux") {
+        WindowBackgroundAppearance::Transparent
+    } else {
+        WindowBackgroundAppearance::Opaque
+    }
+}

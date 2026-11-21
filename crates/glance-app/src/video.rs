@@ -30,6 +30,9 @@ pub struct VideoView {
     pub cover: bool,
     /// Hide the stats label (cameras).
     pub show_stats: bool,
+    /// The tile fills its own window (a pop-out): round the corners with
+    /// the window's.
+    pub fills_window: bool,
     current: Option<Arc<RenderImage>>,
     current_size: (u32, u32),
     stale: Vec<Arc<RenderImage>>,
@@ -59,6 +62,7 @@ impl VideoView {
             label: None,
             cover: false,
             show_stats: true,
+            fills_window: false,
             current: None,
             current_size: (0, 0),
             stale: Vec::new(),
@@ -116,7 +120,12 @@ impl VideoView {
 }
 
 impl Render for VideoView {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let corners = if self.fills_window {
+            gpui_kit::component::window_corner_radii(window, cx)
+        } else {
+            Corners::default()
+        };
         for old in self.stale.drain(..) {
             window.drop_image(old).ok();
         }
@@ -135,6 +144,10 @@ impl Render for VideoView {
             .relative()
             .size_full()
             .bg(gpui_kit::black())
+            .rounded_tl(corners.top_left)
+            .rounded_tr(corners.top_right)
+            .rounded_bl(corners.bottom_left)
+            .rounded_br(corners.bottom_right)
             .child(
                 // Measures the tile during layout and publishes its size.
                 canvas(
@@ -160,6 +173,10 @@ impl Render for VideoView {
             .children(self.current.clone().map(|image| {
                 img(ImageSource::Render(image))
                     .size_full()
+                    .rounded_tl(corners.top_left)
+                    .rounded_tr(corners.top_right)
+                    .rounded_bl(corners.bottom_left)
+                    .rounded_br(corners.bottom_right)
                     .object_fit(if self.cover {
                         ObjectFit::Cover
                     } else {

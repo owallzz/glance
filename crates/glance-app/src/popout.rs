@@ -313,6 +313,7 @@ impl PopoutView {
         let video = cx.new(|_| {
             let mut v = VideoView::empty(glance_media::TargetSize::default());
             v.show_stats = false;
+            v.fills_window = true;
             v
         });
         let volume_slider = cx.new(|_| {
@@ -833,6 +834,13 @@ impl Render for PopoutView {
             .size_full()
             .overflow_hidden()
             .bg(gpui_kit::black())
+            .map(|d| {
+                let r = gpui_kit::component::window_corner_radii(window, cx);
+                d.rounded_tl(r.top_left)
+                    .rounded_tr(r.top_right)
+                    .rounded_bl(r.bottom_left)
+                    .rounded_br(r.bottom_right)
+            })
             .on_mouse_move(
                 cx.listener(|this, _: &MouseMoveEvent, window, cx| this.activity(window, cx)),
             )
@@ -909,6 +917,7 @@ impl GlanceApp {
             ))),
             window_min_size: Some(size(px(320.), px(180.))),
             window_decorations: Some(WindowDecorations::Client),
+            window_background: crate::ui::window_background(),
             app_id: Some("glance".into()),
             ..TitleBar::window_options()
         };

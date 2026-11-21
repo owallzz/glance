@@ -399,6 +399,8 @@ impl GlanceApp {
                 .occlude()
                 .absolute()
                 .inset_0()
+                .rounded_bl(self.corners.bottom_left)
+                .rounded_br(self.corners.bottom_right)
                 .bg(p.lightbox_backdrop)
                 .flex()
                 .items_center()
