@@ -3016,7 +3016,7 @@ dependencies = [
 
 [[package]]
 name = "glance-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "auto-launch",
@@ -3056,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "glance-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3064,7 +3064,7 @@ dependencies = [
 
 [[package]]
 name = "glance-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aec-rs",
  "anyhow",
@@ -3092,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "glance-net"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "glance-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "data-encoding",

@@ -58,6 +58,11 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.2.0" date="2026-11-21">
+      <description>
+        <p>Direct messages, recent rooms with saved chat, mute people for yourself, change a live stream's quality without stopping, better pop-out windows, new call sounds, installers and signed automatic updates.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-20">
       <description>
         <p>First public release.</p>
