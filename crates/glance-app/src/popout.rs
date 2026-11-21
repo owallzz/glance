@@ -479,8 +479,11 @@ impl PopoutView {
                     {
                         TimerOutcome::Hide => {
                             // Never hide the pointer over another window.
+                            // Deferred: the fake keystroke redraws the
+                            // window, which renders this view, and it's
+                            // still leased here (double-lease panic).
                             if window.is_window_hovered() {
-                                hide_cursor(window, cx);
+                                window.defer(cx, hide_cursor);
                             }
                             cx.notify();
                             None
