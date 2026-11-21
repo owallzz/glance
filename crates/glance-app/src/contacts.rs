@@ -450,11 +450,16 @@ impl GlanceApp {
                 }
                 self.book
                     .update_profile(&pid.0, &profile.name, profile.color);
+                if self.book.is_mutual(&pid.0) {
+                    self.flush_dms(pid);
+                }
             }
             ContactEvent::Offline(id) => {
                 let pid = peer_id(id);
                 self.live.online.remove(&pid);
                 self.live.presence.remove(&pid);
+                // They may come back with a newer glance.
+                self.dms.unsupported.remove(&pid);
             }
             ContactEvent::Presence { id, info } => {
                 self.live.presence.insert(peer_id(id), info);
@@ -539,6 +544,9 @@ impl GlanceApp {
                 }
             },
             ContactEvent::FileReceived { from, file } => self.on_contact_file(from, file),
+            ContactEvent::DmReceived { from, dm } => self.on_dm_received(peer_id(from), dm),
+            ContactEvent::DmAcked { from, id } => self.on_dm_acked(peer_id(from), id),
+            ContactEvent::DmFailed { to, id, reason } => self.on_dm_failed(peer_id(to), id, reason),
             ContactEvent::Undeliverable { to, what } => {
                 let name = self
                     .profile_of(peer_id(to))

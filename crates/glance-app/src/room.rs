@@ -362,11 +362,15 @@ impl GlanceApp {
                         .on_click(cx.listener(move |this, _, _, cx| this.accept_contact(id, cx)))
                         .into_any_element()
                 }
-                Some(glance_core::contacts::StoredState::Mutual) => div()
-                    .text_xs()
-                    .text_color(p.text_muted)
-                    .child("In your contacts")
-                    .into_any_element(),
+                Some(glance_core::contacts::StoredState::Mutual) => {
+                    Button::new(SharedString::from(format!("msgc-{}", id.short())))
+                        .small()
+                        .label("Message")
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.open_dm(id, window, cx)),
+                        )
+                        .into_any_element()
+                }
                 Some(glance_core::contacts::StoredState::Blocked) => div()
                     .text_xs()
                     .text_color(p.red)

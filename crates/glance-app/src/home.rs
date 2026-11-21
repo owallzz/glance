@@ -10,6 +10,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{ContactsTab, GlanceApp};
+use crate::dms::unread_badge;
 use crate::theme::Palette;
 use crate::ui::{Avatar, icon, icon_button, presence_color, section_label};
 
@@ -20,14 +21,26 @@ impl GlanceApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let page = match self.dm_open {
+            Some(peer) if self.contacts.iter().any(|c| c.profile.id == peer) => {
+                self.render_dm(p, peer, cx)
+            }
+            _ => div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .child(self.render_contacts_page(p, cx))
+                .child(self.render_active_now(p, cx))
+                .into_any_element(),
+        };
         div()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .child(self.render_home_sidebar(p, cx))
-            .child(self.render_contacts_page(p, cx))
-            .child(self.render_active_now(p, cx))
+            .child(page)
     }
 
     fn render_home_sidebar(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -38,6 +51,8 @@ impl GlanceApp {
             .cloned()
             .collect();
         favorites.sort_by_key(|c| (!c.favorite, !c.presence.is_online()));
+        let conversations = self.dm_list();
+        let open = self.dm_open;
         div()
             .w(px(240.))
             .h_full()
@@ -75,7 +90,72 @@ impl GlanceApp {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(sidebar_row(p, IconName::Users, "Contacts", true))
+                    .child(
+                        div()
+                            .id("side-contacts")
+                            .cursor_pointer()
+                            .child(sidebar_row(p, IconName::Users, "Contacts", open.is_none()))
+                            .on_click(cx.listener(|this, _, _, cx| this.close_dm(cx))),
+                    )
+                    .when(!conversations.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .pt_4()
+                                .pb_1()
+                                .px_2()
+                                .child(section_label(p, "DIRECT MESSAGES")),
+                        )
+                    })
+                    .children(conversations.into_iter().map(|(profile, preview, unread)| {
+                        let hover = p.bg_hover;
+                        let pid = profile.id;
+                        let selected = open == Some(pid);
+                        div()
+                            .id(SharedString::from(format!("dm-side-{}", pid.short())))
+                            .h(px(42.))
+                            .px_2()
+                            .rounded(px(4.))
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .cursor_pointer()
+                            .when(selected, |d| d.bg(p.bg_selected))
+                            .hover(move |s| s.bg(hover))
+                            .on_click(
+                                cx.listener(move |this, _, window, cx| {
+                                    this.open_dm(pid, window, cx)
+                                }),
+                            )
+                            .child(Avatar::new(&profile, 32.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_color(if unread > 0 || selected {
+                                                p.text_header
+                                            } else {
+                                                p.text_normal
+                                            })
+                                            .when(unread > 0, |d| {
+                                                d.font_weight(FontWeight::SEMIBOLD)
+                                            })
+                                            .truncate()
+                                            .child(profile.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(p.text_muted)
+                                            .truncate()
+                                            .child(preview),
+                                    ),
+                            )
+                            .when(unread > 0, |d| d.child(unread_badge(p, unread)))
+                    }))
                     .child(
                         div()
                             .pt_4()
@@ -89,6 +169,8 @@ impl GlanceApp {
                             Some(n) => format!("In a call ({n})"),
                             None => c.presence.label().to_string(),
                         };
+                        let pid = c.profile.id;
+                        let unread = self.dms.unread(pid);
                         div()
                             .id(SharedString::from(format!("side-{}", c.profile.id.short())))
                             .h(px(42.))
@@ -98,7 +180,13 @@ impl GlanceApp {
                             .items_center()
                             .gap_3()
                             .cursor_pointer()
+                            .when(open == Some(pid), |d| d.bg(p.bg_selected))
                             .hover(move |s| s.bg(hover))
+                            .on_click(
+                                cx.listener(move |this, _, window, cx| {
+                                    this.open_dm(pid, window, cx)
+                                }),
+                            )
                             .when(!c.presence.is_online(), |d| d.opacity(0.5))
                             .child(
                                 Avatar::new(&c.profile, 32.)
@@ -117,6 +205,8 @@ impl GlanceApp {
                                     )
                                     .child(div().text_xs().text_color(p.text_muted).child(sub)),
                             )
+                            .child(div().flex_1())
+                            .when(unread > 0, |d| d.child(unread_badge(p, unread)))
                     })),
             )
             .child(self.render_user_panel(p, cx))
@@ -371,6 +461,11 @@ impl GlanceApp {
                             })),
                     )
                 })
+                .child(
+                    action(IconName::MessageSquare, "Message", "message").on_click(
+                        cx.listener(move |this, _, window, cx| this.open_dm(pid, window, cx)),
+                    ),
+                )
                 .when(can_ring, |d| {
                     d.child(action(IconName::Phone, "Call", "call").on_click(
                         cx.listener(move |this, _, _, cx| this.call_contacts(vec![pid], cx)),
@@ -397,6 +492,8 @@ impl GlanceApp {
                 ),
         };
         let menu_open = self.contact_menu == Some(pid);
+        let mutual = c.state == ContactState::Mutual;
+        let unread = self.dms.unread(pid);
         let favorite = c.favorite;
         let menu_item = |key: &str, label: &'static str, danger: bool| {
             let hover = p.bg_hover;
@@ -419,6 +516,12 @@ impl GlanceApp {
             .bg(p.bg_rail)
             .flex()
             .gap_1()
+            .child(menu_item("msg", "Message", false).on_click(cx.listener(
+                move |this, _, window, cx| {
+                    this.contact_menu = None;
+                    this.open_dm(pid, window, cx);
+                },
+            )))
             .child(
                 menu_item(
                     "fav",
@@ -464,10 +567,18 @@ impl GlanceApp {
             .child(Avatar::new(&c.profile, 32.).status(presence_color(p, c.presence), p.bg_content))
             .child(
                 div()
+                    .id(SharedString::from(format!("contact-open-{id}")))
                     .flex_1()
                     .min_w_0()
+                    .h_full()
+                    .justify_center()
                     .flex()
                     .flex_col()
+                    .when(mutual, |d| {
+                        d.cursor_pointer().on_click(
+                            cx.listener(move |this, _, window, cx| this.open_dm(pid, window, cx)),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -479,7 +590,8 @@ impl GlanceApp {
                                     .text_color(p.text_header)
                                     .child(c.display_name().to_string()),
                             )
-                            .when(c.favorite, |d| d.child(icon(IconName::Star, 12., p.yellow))),
+                            .when(c.favorite, |d| d.child(icon(IconName::Star, 12., p.yellow)))
+                            .when(unread > 0, |d| d.child(unread_badge(p, unread))),
                     )
                     .child(div().text_sm().text_color(p.text_muted).child(status)),
             )

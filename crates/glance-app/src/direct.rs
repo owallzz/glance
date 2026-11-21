@@ -164,6 +164,7 @@ impl GlanceApp {
                                 file: file.clone(),
                             });
                         }
+                        app.dm_file(to, &file, true);
                         app.push_direct(DirectFile {
                             peer: to,
                             incoming: false,
@@ -187,10 +188,13 @@ impl GlanceApp {
             .profile_of(peer_id(from))
             .map(|p| p.name)
             .unwrap_or_else(|| "A contact".into());
-        crate::contacts::notify(
-            &format!("{who} sent you a file"),
-            &format!("{} ({})", file.name, format::human_bytes(file.size)),
-        );
+        if self.presence != glance_core::Presence::DoNotDisturb {
+            crate::contacts::notify(
+                &format!("{who} sent you a file"),
+                &format!("{} ({})", file.name, format::human_bytes(file.size)),
+            );
+        }
+        self.dm_file(peer_id(from), &file, false);
         // A resend of the same file replaces the old card.
         self.direct_files
             .retain(|d| !(d.incoming && d.offer.hash == file.hash));
