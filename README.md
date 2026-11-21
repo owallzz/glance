@@ -24,7 +24,18 @@ Start a room, send the link, and everyone in it can go live at the same time. Th
 - **Voice and webcams:** echo cancellation, noise suppression, automatic gain, per-person volume, speaking rings, mute/deafen.
 - **Chat and files:** room chat; drop, attach or paste files and screenshots. Files go peer to peer, and anyone who downloaded one helps serve it.
 - **Contacts:** add people you've called, see when they're online or in a call, ring them, send them files outside calls. glance waits in the tray and can start on login.
+- **Updates itself:** glance checks for new releases, downloads them in the background and asks before restarting.
 - **Light on resources:** nothing is encoded while nobody watches. Video is encoded and decoded on the GPU when there is one (NVENC/NVDEC on NVIDIA, VA-API on Linux AMD/Intel, Media Foundation on Windows, VideoToolbox on Macs), with OpenH264 as the fallback.
+
+### What's new in 0.2
+
+- **Direct messages:** click a contact on the home screen to message them. Messages go straight to them (no server), so they're delivered when you're both online; unsent ones wait and send automatically. History is saved only on your computer. Contacts on glance 0.1.0 can't receive messages until they update.
+- **Recent rooms:** the home screen lists rooms you've been in, with **Rejoin**, **Start again** (if everyone left) and **Forget**. Room chat is kept on your computer (the last 1000 messages per room, for up to 50 rooms and 90 days), and the invite link stays hidden until you click it.
+- **Mute someone for yourself:** right-click someone and choose **Mute**, or use the mute button on their tile. Only you stop hearing them, and it's remembered between sessions. Deafen also mutes you, and undeafening puts your mic back the way it was.
+- **Change a live stream:** while you're live, the sliders button (**Stream settings**) changes resolution, frame rate, sound, or the screen or window you share without stopping. Viewers keep watching.
+- **Better pop-out windows:** drag anywhere to move, double-click for fullscreen, and the controls hide when you're not using them. Keys: **F** or **F11** fullscreen, **Esc** leave fullscreen, **M** mute the stream, **Ctrl+W** (**Cmd+W** on macOS) close.
+- **Call sounds:** a new ringtone, and callers hear a soft ringback until the call is answered.
+- **Installers and auto-updates:** AppImage, Flatpak, a Windows installer and portable zip, and a macOS .dmg. glance checks GitHub Releases for updates at startup and every 6 hours, verifies their minisign signature, downloads them in the background and asks before restarting. Turn it off in **Settings → Updates**.
 
 ## Installation
 
@@ -40,6 +51,8 @@ Download the file for your system from the [latest release](https://github.com/o
 
 Every release also has plain binaries (`glance-vX.Y.Z-linux-x86_64`, `-windows-x86_64.exe`, `-macos-aarch64`): download, make executable, run.
 
+After that, glance keeps itself up to date (all but the Flatpak, see below). Every file is signed with [minisign](https://jedisct1.github.io/minisign/); the `.minisig` next to it and the public key in [`packaging/minisign.pub`](packaging/minisign.pub) let you check a download by hand: `minisign -Vm <file> -p minisign.pub`.
+
 ### First launch
 
 The builds aren't signed with a paid certificate yet, so your system warns the first time:
@@ -53,7 +66,7 @@ The builds aren't signed with a paid certificate yet, so your system warns the f
 - The AppImage and the plain binary use your system's PipeWire, Vulkan and graphics drivers. They need a distro from 2024 or newer (glibc 2.39, e.g. Ubuntu 24.04, Fedora 40). If the AppImage complains about FUSE, run it with `--appimage-extract-and-run`.
 - The Flatpak needs the Flathub remote for its runtime: `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. It doesn't update itself; install the new `.flatpak` to upgrade.
 - glance waits in the system tray so contacts can ring you. KDE, Cinnamon, XFCE and most desktops show it; stock GNOME needs the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Without a tray, closing the window quits glance.
-- The AppImage and plain binary register `glance://` links on first launch; the Flatpak does so when it's installed.
+- The AppImage and plain binary register `glance://` links on first launch; the Flatpak does so when it's installed. If you ran the AppImage or plain binary before, it may still own the links; make the Flatpak the handler with `xdg-mime default io.github.owallzz.glance.desktop x-scheme-handler/glance`.
 
 ## Usage
 
@@ -69,6 +82,8 @@ Other commands:
 glance --demo              # open a fake, populated room (UI preview)
 glance bot <link> [name]   # headless test peer: joins, chats, toggles mute
 glance bot <link> --stream 1920x1080@60 --tone   # ...and shares a test pattern with audio
+glance update [--apply]    # check for an update (and install it) from a terminal
+glance --version
 ```
 
 | Environment variable | Effect |
@@ -77,6 +92,7 @@ glance bot <link> --stream 1920x1080@60 --tone   # ...and shares a test pattern 
 | `GLANCE_RELAY` | `off` for direct connections only, or a URL for your own [iroh relay](https://github.com/n0-computer/iroh). Also in Settings. |
 | `GLANCE_DOWNLOAD_DIR` | Where received files go (default: your Downloads folder). |
 | `GLANCE_ENCODER` | Force `software`, `hardware`, or a specific encoder (`nvenc`, `vaapi`, `videotoolbox`, `mediafoundation`). |
+| `GLANCE_UPDATE` | `off` turns off update checks. |
 
 ## Building from source
 

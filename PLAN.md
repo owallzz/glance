@@ -11,7 +11,7 @@
 - **License:** none (all rights reserved). No LICENSE file.
 - **Repo:** `owallzz/glance`, public.
 - **CI:** fmt + clippy + test on each push, on GitHub-hosted runners: Linux (Ubuntu), macOS (Apple Silicon) and Windows (x64); macOS and Windows also do a release build.
-- **Releases:** tagged GitHub Releases with Linux x86_64, macOS aarch64 and Windows x86_64 binaries built on GitHub-hosted runners, uploaded uncompressed. Installers (AppImage/.dmg/.msi) and signing come in M11.
+- **Releases:** tagged GitHub Releases built on GitHub-hosted runners: plain Linux x86_64, macOS aarch64 and Windows x86_64 binaries plus installers (AppImage and a Flatpak bundle on Linux, a per-user setup.exe and a portable zip on Windows, a .dmg and .app.tar.gz on macOS). Every asset is signed with minisign (`packaging/minisign.pub`), and glance updates itself from these signed releases (except Flatpak). OS code signing (Apple notarization, a Windows certificate) is still not done.
 - **MVP feature set:** multi-person rooms, everyone can share at once, voice chat, shared system/app audio, text chat, webcam, **contacts**, **file sharing**.
 - **Resolution:** streams go above 1080p: 1440p, 4K (3840×2160), ultrawide (e.g. 5120×1440) and Source, at up to 60 fps (144 fps stretch). Above 1080p60 needs a hardware encoder (software H.264 can't keep up). The UI scales frames to each tile's on-screen size (see M1 results).
 - **File sharing:** drop, paste or attach files in room chat, or send to a contact. Transfers are peer-to-peer via `iroh-blobs` (BLAKE3-verified, resumable, no size limit), and anyone who downloaded a file can serve it to others in the room.
@@ -40,7 +40,7 @@ glance is a small native app for sharing screens with friends. You start a room,
 | Rendering video in gpui | gpui renders `RenderImage` (BGRA) and has a `surface` element (macOS CVPixelBuffer). | Spike in M1: swap a BGRA `RenderImage` per frame and measure 1080p60 CPU and GPU cost. Use `surface` on macOS. If needed, fall back to a custom wgpu texture element. |
 | Reaching contacts | iroh can dial a peer by public key alone: it looks up current addresses via n0's DNS/pkarr discovery, plus mDNS on the LAN. The peer must be running. | Contacts store only the EndpointId. glance runs in the tray, starts on login, and keeps no capture, audio, or encode running there. |
 | Tray icons | `tray-icon` works on macOS and Windows. Linux uses StatusNotifierItem, which stock GNOME only shows with the AppIndicator extension (most distros ship it). | If no tray host exists, closing the window minimises instead of hiding, and we say so in settings. |
-| Notifications / autostart | `notify-rust` (Linux/macOS), Windows toasts, and `auto-launch` (XDG autostart, LaunchAgent, Run key). Flatpak/portal autostart is a later concern. | Incoming rings use an OS notification plus our own popup window and ringtone. |
+| Notifications / autostart | `notify-rust` (Linux/macOS), Windows toasts, and `auto-launch` (XDG autostart, LaunchAgent, Run key). Inside Flatpak, autostart goes through the Background portal. | Incoming rings use an OS notification plus our own popup window and ringtone. |
 | CI runners | GitHub-hosted: `ubuntu-latest` x86_64, `macos-latest` Apple Silicon, `windows-latest` x64. | Linux CI installs the `-dev` packages with apt; macOS/Windows build natively. |
 
 Consequences:
@@ -91,7 +91,8 @@ Consequences:
 - Light and snappy: target <150 ms cold start, 0% CPU and <100 MB proportional memory (PSS) idle, and no work done when nobody watches. M1 measured 0% CPU and about 49 MB private memory idle. Most of the 179 MB RSS is shared GPU driver libraries.
 
 **Out of scope for now:**
-- Accounts, servers/guilds, persistent chat history, DMs/messaging contacts outside a call (sending a file to a contact is the one exception).
+- Accounts, servers/guilds, chat history synced across devices or kept on a server. (Room chat and DMs are saved locally since v0.2.0.)
+- Offline message delivery: DMs only arrive while both apps are online (unsent ones wait in an outbox).
 - Offline file delivery: the sender must be online, or someone else who has the file. There's no cloud storage.
 - Codecs beyond H.264 (so 8K and HDR are out for now).
 - Syncing contacts across your own devices (each install is its own identity for now). Contact discovery by username or search, since adding needs a shared call or link.
@@ -189,7 +190,18 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - **VideoToolbox decode** (macOS, `hw/vtdecode.rs`): Annex-B is rewrapped as AVCC sample buffers for a VTDecompressionSession, which scales to the tile (remade at the next keyframe when the tile changes) and returns NV12. Tested in CI; not yet run on a real Mac.
   - **Media Foundation decode** (Windows without NVIDIA, `hw/mfdecode.rs`): Microsoft's H.264 decoder MFT given a D3D11 device, so it decodes with DXVA on AMD/Intel GPUs. Used only when it gets the GPU; CI tests its software mode against OpenH264. Not yet run on a real AMD/Intel Windows PC.
   - Remaining: hardware decode on Linux AMD/Intel (VA-API decode needs our own slice-header and reference-list handling).
-- [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.
+- [x] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, v0.1.0 tag; installers followed in v0.2.0.
+- [x] **v0.2.0: Messaging, rooms you can return to, packaging and updates.**
+  - [x] **Direct messages:** text DMs between mutual contacts, peer to peer (`glance/contacts/2`, `/1` still accepted for 0.1.0 peers), delivered only while both apps are online; the outbox is queued and kept on disk; history in `dms/`, capped at 2000 messages per contact; unread badges and notifications.
+  - [x] **Recent rooms:** the home screen lists recent rooms with Rejoin / Start again / Forget, checking whether anyone is still in them (`glance/room-probe/1`, only while the list is shown).
+  - [x] **Saved room chat:** kept on your machine in `chats/` (last 1000 messages per room, 50 rooms, 90 days) and merged with the room's history on rejoin.
+  - [x] **Invite link hidden** in the room until clicked.
+  - [x] **Mute others locally** (persisted per person with their volume); deafen restores your previous mute, deafen in the control bar, deafened icon on tiles.
+  - [x] **Change stream settings while live:** resolution, frame rate, sound and the shared screen or window, without stopping the stream.
+  - [x] **Pop-out window polish:** no title bar, drag anywhere to move, double-click for fullscreen, auto-hiding controls, keys (F/F11, Esc, M, Ctrl/Cmd+W).
+  - [x] **Call sounds:** synthesized kalimba ringtone with a first-ring fade-in, outgoing ringback while a call is unanswered, matching chimes. No audio files shipped.
+  - [x] **Packaging:** AppImage, Flatpak bundle, Windows per-user installer and portable zip, macOS .dmg and .app.tar.gz, `glance --version`.
+  - [x] **Signed auto-updates:** every release asset signed with minisign in CI; glance checks GitHub Releases at startup and every 6 hours, downloads in the background and asks before restarting (Settings → Updates, `glance update`). Flatpak updates through Flatpak.
 
 ## 5. Running and testing
 - Run: `cargo run -p glance-app` (or `cargo run -p glance-app -- join <link>`, `-- bot <link>`)
@@ -201,7 +213,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - Multiple local identities: `GLANCE_DATA_DIR=/tmp/... cargo run -p glance-app` runs a second "person" on one machine.
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all --check`
 - Manual end-to-end: run two app instances plus one or two `glance bot` peers locally, then a real test across two networks.
-- CI: fmt, clippy, and test on each push. Release on `v*` tags builds plain binaries for Linux, macOS (plus a .dmg) and Windows.
+- CI: fmt, clippy, and test on each push. Release on `v*` tags builds plain binaries and installers for Linux, macOS and Windows, signs every asset with minisign and publishes them together.
 - A project skill `run-glance` (launch N local peers and screenshot) gets added once M3 lands.
 
 ## 6. Risks and open questions
@@ -217,4 +229,4 @@ Each milestone ends with something that runs. Commit and push in small steps.
 - **Open: multi-device identity.** Each install is a separate contact for now. Linking devices (shared contact list, ring all your devices) is a later feature.
 - **Windows is untested here.** Only cross-compile checks are possible without a machine or runner.
 - **macOS/Windows CI** runs on GitHub-hosted runners. macOS is Apple Silicon only, so Intel Mac builds would need cross-compiling.
-- **Open: code signing.** macOS notarization needs an Apple Developer account, and Windows SmartScreen prefers a signing cert. Unsigned builds work with warnings.
+- **Open: code signing.** macOS notarization needs an Apple Developer account, and Windows SmartScreen prefers a signing cert. Unsigned builds work with warnings. (Release assets are minisign-signed for the updater, which is separate from OS code signing.)
