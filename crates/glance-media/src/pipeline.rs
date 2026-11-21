@@ -2,12 +2,14 @@
 //!
 //! - [`start_broadcast`]: capture -> scale to the chosen quality -> encode
 //!   (only while someone is watching) -> hand packets to the network, plus a
-//!   small local preview.
+//!   small local preview. Quality and the captured source can change while
+//!   it runs ([`BroadcastControl::reconfigure`],
+//!   [`BroadcastControl::replace_capture`]).
 //! - [`spawn_decoder`]: packets -> decode -> scale to the tile -> frames.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::capture::Capture;
 use crate::codec::{EncodedPacket, EncoderChoice, VideoDecoder, VideoEncoder, bitrate_for};
@@ -80,10 +82,50 @@ impl RateController {
         self.last_change = now;
         Some(self.current)
     }
+
+    /// The same controller for a new base rate (new size or frame rate):
+    /// keeps how far it has backed off, so a congested viewer isn't
+    /// flooded right after a quality change.
+    pub fn rebased(&self, base: u32) -> Self {
+        let ratio = self.current as f64 / self.base.max(1) as f64;
+        Self {
+            base,
+            current: ((base as f64 * ratio) as u32).clamp(base / 4, base),
+            last_decrease: self.last_decrease,
+            last_change: self.last_change,
+        }
+    }
+}
+
+/// Encoders are remade (each starting with a keyframe) at most this often,
+/// so repeated quality changes or a window being resized can't flood
+/// viewers with keyframes. In between, frames are scaled to the current
+/// encoder's size.
+const MIN_REBUILD_GAP: Duration = Duration::from_secs(1);
+
+/// A change to a running broadcast, applied at a frame boundary.
+pub enum BroadcastCommand {
+    /// New quality. A different output size or frame rate remakes the
+    /// encoder, so viewers get a keyframe with the new SPS/PPS.
+    Reconfigure { max_height: Option<u32>, fps: u32 },
+    /// Switch to another capture. The current one keeps streaming until the
+    /// new one delivers its first frame (a picker may be open meanwhile).
+    /// `label` comes back in the [`BroadcastNotice`].
+    ReplaceCapture { capture: Capture, label: String },
+}
+
+/// What happened to a [`BroadcastCommand::ReplaceCapture`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BroadcastNotice {
+    /// The new source is live.
+    SourceChanged(String),
+    /// The new source never started (picker cancelled...); the old one
+    /// carries on.
+    SourceFailed { label: String, reason: String },
 }
 
 /// Live controls for a running broadcast, shared with the UI/network.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct BroadcastControl {
     /// Number of viewers; encoding is skipped while it's zero.
     pub watchers: Arc<AtomicUsize>,
@@ -97,7 +139,14 @@ pub struct BroadcastControl {
     pub bitrate: Arc<AtomicU64>,
     /// Whether the current encoder is a hardware one.
     pub hardware: Arc<AtomicBool>,
+    /// Size the stream goes out at, packed like `source_size` (0 until the
+    /// first frame). Follows quality changes and source switches.
+    pub output_size: Arc<AtomicU64>,
+    /// Frame rate in effect.
+    pub fps: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
+    commands: flume::Sender<BroadcastCommand>,
+    notices: flume::Receiver<BroadcastNotice>,
 }
 
 impl BroadcastControl {
@@ -106,11 +155,43 @@ impl BroadcastControl {
     }
 
     pub fn source_size(&self) -> (u32, u32) {
-        let v = self.source_size.load(Ordering::Relaxed);
-        ((v >> 32) as u32, v as u32)
+        unpack(self.source_size.load(Ordering::Relaxed))
+    }
+
+    pub fn output_size(&self) -> (u32, u32) {
+        unpack(self.output_size.load(Ordering::Relaxed))
+    }
+
+    /// Change the quality without stopping (see [`BroadcastCommand`]).
+    pub fn reconfigure(&self, max_height: Option<u32>, fps: u32) {
+        let _ = self
+            .commands
+            .send(BroadcastCommand::Reconfigure { max_height, fps });
+    }
+
+    /// Swap the captured source without stopping (see [`BroadcastCommand`]).
+    pub fn replace_capture(&self, capture: Capture, label: impl Into<String>) {
+        let _ = self.commands.send(BroadcastCommand::ReplaceCapture {
+            capture,
+            label: label.into(),
+        });
+    }
+
+    /// The next notice about a source switch, if any.
+    pub fn try_notice(&self) -> Option<BroadcastNotice> {
+        self.notices.try_recv().ok()
     }
 }
 
+fn pack((w, h): (u32, u32)) -> u64 {
+    ((w as u64) << 32) | h as u64
+}
+
+fn unpack(v: u64) -> (u32, u32) {
+    ((v >> 32) as u32, v as u32)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BroadcastConfig {
     pub max_height: Option<u32>,
     pub fps: u32,
@@ -126,77 +207,181 @@ pub fn start_broadcast(
     preview: Option<(flume::Sender<VideoFrame>, TargetSize)>,
     mut sink: impl FnMut(EncodedPacket) + Send + 'static,
 ) -> (BroadcastControl, flume::Receiver<String>) {
-    let control = BroadcastControl::default();
+    let (commands_tx, commands) = flume::unbounded();
+    let (notices_tx, notices) = flume::bounded(8);
+    let control = BroadcastControl {
+        watchers: Default::default(),
+        keyframe: Default::default(),
+        source_size: Default::default(),
+        congestion: Default::default(),
+        bitrate: Default::default(),
+        hardware: Default::default(),
+        output_size: Default::default(),
+        fps: Arc::new(AtomicU32::new(config.fps)),
+        stop: Default::default(),
+        commands: commands_tx,
+        notices,
+    };
     let ctl = control.clone();
     let (ended_tx, ended_rx) = flume::bounded(1);
     std::thread::Builder::new()
         .name("broadcast".into())
         .spawn(move || {
+            let mut capture = capture;
+            let mut config = config;
+            // A capture waiting for its first frame to take over.
+            let mut pending: Option<(Capture, String)> = None;
+            // The current capture ended while a replacement is pending.
+            let mut capture_dead = false;
             let mut scaler = FrameScaler::default();
             let mut preview_scaler = FrameScaler::default();
             let mut encoder: Option<VideoEncoder> = None;
+            let mut encoder_fps = 0;
+            let mut last_rebuild: Option<Instant> = None;
             let mut rate: Option<RateController> = None;
             let mut seen_congestion = 0usize;
             // The last captured frame: GNOME only sends frames when the screen
             // changes, so a viewer joining a still screen needs it re-encoded.
             let mut last: Option<VideoFrame> = None;
-            let mut last_sent = std::time::Instant::now();
+            let mut last_sent = Instant::now();
+            // Re-encode the last frame now (the quality changed).
+            let mut refresh_now = false;
             let mut stats = Stats::default();
             let mut choice = config.encoder;
             let reason = loop {
                 if ctl.stop.load(Ordering::Relaxed) {
                     break "stopped".to_string();
                 }
-                if let Ok(reason) = capture.ended.try_recv() {
-                    break reason;
+                for cmd in commands.try_iter() {
+                    match cmd {
+                        BroadcastCommand::Reconfigure { max_height, fps } => {
+                            tracing::info!(?max_height, fps, "broadcast reconfigured");
+                            config.max_height = max_height;
+                            config.fps = fps.max(1);
+                            capture.set_fps(config.fps);
+                            if let Some((p, _)) = &pending {
+                                p.set_fps(config.fps);
+                            }
+                            ctl.fps.store(config.fps, Ordering::Relaxed);
+                            refresh_now = true;
+                        }
+                        BroadcastCommand::ReplaceCapture { capture: c, label } => {
+                            c.set_fps(config.fps);
+                            // A replacement still pending is dropped (and so
+                            // stopped).
+                            pending = Some((c, label));
+                        }
+                    }
                 }
-                let fresh = match capture.frames.recv_timeout(Duration::from_millis(100)) {
-                    Ok(f) => Some(f),
-                    Err(flume::RecvTimeoutError::Timeout) => None,
-                    Err(flume::RecvTimeoutError::Disconnected) => break "capture ended".into(),
-                };
+
+                let mut fresh = None;
+                if let Some((p, _)) = &pending {
+                    let failed = match p.ended.try_recv() {
+                        Ok(reason) => Some(reason),
+                        Err(_) if p.frames.is_disconnected() => Some("capture ended".into()),
+                        Err(_) => None,
+                    };
+                    if let Some(reason) = failed {
+                        let (_, label) = pending.take().expect("checked");
+                        tracing::info!("new source {label:?} didn't start: {reason}");
+                        let _ = notices_tx.try_send(BroadcastNotice::SourceFailed {
+                            label,
+                            reason: reason.clone(),
+                        });
+                        if capture_dead {
+                            break reason;
+                        }
+                    } else if let Ok(f) = p.frames.try_recv() {
+                        let (p, label) = pending.take().expect("checked");
+                        tracing::info!("switched source to {label:?}");
+                        std::mem::replace(&mut capture, p).stop();
+                        capture_dead = false;
+                        let _ = notices_tx.try_send(BroadcastNotice::SourceChanged(label));
+                        fresh = Some(f);
+                    }
+                }
+                if fresh.is_none() && !capture_dead {
+                    if let Ok(reason) = capture.ended.try_recv() {
+                        if pending.is_none() {
+                            break reason;
+                        }
+                        capture_dead = true;
+                    } else {
+                        match capture.frames.recv_timeout(Duration::from_millis(100)) {
+                            Ok(f) => fresh = Some(f),
+                            Err(flume::RecvTimeoutError::Timeout) => {}
+                            Err(flume::RecvTimeoutError::Disconnected) => {
+                                if pending.is_none() {
+                                    break "capture ended".into();
+                                }
+                                capture_dead = true;
+                            }
+                        }
+                    }
+                }
+                if fresh.is_none() && capture_dead {
+                    // Hold the last picture until the new source starts.
+                    std::thread::sleep(Duration::from_millis(20));
+                }
                 let frame = match fresh {
                     Some(f) => {
                         stats.captured += 1;
-                        ctl.source_size.store(
-                            ((f.width as u64) << 32) | f.height as u64,
-                            Ordering::Relaxed,
-                        );
+                        ctl.source_size
+                            .store(pack((f.width, f.height)), Ordering::Relaxed);
                         if let Some((tx, target)) = &preview {
                             send_preview(&mut preview_scaler, &f, tx, target);
                         }
                         last.insert(f)
                     }
                     // Nothing new: re-send the last frame only if a keyframe is
-                    // wanted, or once a second so viewers see it's alive.
+                    // wanted, the quality changed, or once a second so viewers
+                    // see it's alive.
                     None => {
                         let refresh = ctl.keyframe.load(Ordering::Relaxed)
+                            || refresh_now
                             || last_sent.elapsed() > Duration::from_secs(1);
-                        match (&last, refresh) {
-                            (Some(_), true) => last.as_mut().expect("checked"),
+                        match (&mut last, refresh) {
+                            (Some(f), true) => f,
                             _ => continue,
                         }
                     }
                 };
+                refresh_now = false;
 
+                let out = output_size((frame.width, frame.height), config.max_height);
+                ctl.output_size.store(pack(out), Ordering::Relaxed);
                 if ctl.watchers.load(Ordering::Relaxed) == 0 {
                     continue;
                 }
-                let out = output_size((frame.width, frame.height), config.max_height);
-                if encoder.as_ref().is_none_or(|e| e.size() != out) {
+                let stale = encoder
+                    .as_ref()
+                    .is_none_or(|e| e.size() != out || encoder_fps != config.fps);
+                let may_rebuild = encoder.is_none()
+                    || last_rebuild.is_none_or(|t| t.elapsed() >= MIN_REBUILD_GAP);
+                if stale && may_rebuild {
                     let base = bitrate_for(out.0, out.1, config.fps);
                     match VideoEncoder::with_choice(out.0, out.1, config.fps, base, choice) {
                         Ok(e) => {
                             tracing::info!(
-                                "encoding {}x{} with {}",
+                                "encoding {}x{}@{} with {}",
                                 out.0,
                                 out.1,
+                                config.fps,
                                 e.backend_name()
                             );
                             ctl.hardware.store(e.is_hardware(), Ordering::Relaxed);
                             encoder = Some(e);
-                            rate = Some(RateController::new(base));
-                            ctl.bitrate.store(base as u64, Ordering::Relaxed);
+                            encoder_fps = config.fps;
+                            last_rebuild = Some(Instant::now());
+                            let rc = match &rate {
+                                Some(old) => old.rebased(base),
+                                None => RateController::new(base),
+                            };
+                            ctl.bitrate.store(rc.current() as u64, Ordering::Relaxed);
+                            rate = Some(rc);
+                            // A new encoder starts with a keyframe (with
+                            // SPS/PPS), which answers any pending request.
+                            ctl.keyframe.store(false, Ordering::Relaxed);
                         }
                         Err(e) => break format!("couldn't start the video encoder: {e:#}"),
                     }
@@ -206,7 +391,7 @@ pub fn start_broadcast(
                 };
                 // Follow the slowest viewer's capacity.
                 if let Some(rc) = rate.as_mut() {
-                    let now = std::time::Instant::now();
+                    let now = Instant::now();
                     let c = ctl.congestion.load(Ordering::Relaxed);
                     let change = if c != seen_congestion {
                         seen_congestion = c;
@@ -223,11 +408,13 @@ pub fn start_broadcast(
                 if ctl.keyframe.swap(false, Ordering::Relaxed) {
                     enc.force_keyframe();
                 }
+                // Normally `out`; the previous size until a rebuild is due.
+                let size = enc.size();
                 let scaled;
-                let input = if out == (frame.width, frame.height) {
+                let input = if size == (frame.width, frame.height) {
                     &*frame
                 } else {
-                    match scaler.resize_ref(frame, out) {
+                    match scaler.resize_ref(frame, size) {
                         Some(f) => {
                             scaled = f;
                             &scaled
@@ -235,7 +422,7 @@ pub fn start_broadcast(
                         None => continue,
                     }
                 };
-                let t = std::time::Instant::now();
+                let t = Instant::now();
                 let result = enc.encode(input);
                 stats.encode_time += t.elapsed();
                 stats.report();
@@ -243,7 +430,7 @@ pub fn start_broadcast(
                     Ok(Some(pkt)) => {
                         stats.encoded += 1;
                         stats.bytes += pkt.data.len();
-                        last_sent = std::time::Instant::now();
+                        last_sent = Instant::now();
                         sink(pkt)
                     }
                     Ok(None) => {}
@@ -259,6 +446,7 @@ pub fn start_broadcast(
                 }
             };
             capture.stop();
+            drop(pending);
             let _ = ended_tx.send(reason);
         })
         .expect("spawn broadcast thread");
@@ -376,6 +564,184 @@ mod tests {
             t += 4.0;
             assert!(t < 200.0, "never recovered");
         }
+    }
+
+    #[test]
+    fn rebased_rate_keeps_the_back_off() {
+        let mut rc = RateController::new(1_000_000);
+        rc.on_congestion(Instant::now());
+        let r = rc.rebased(4_000_000);
+        assert_eq!(r.current(), 2_800_000);
+        assert_eq!(RateController::new(1_000).rebased(8_000).current(), 8_000);
+    }
+
+    /// Runs a software-encoded broadcast and decodes what it sends with
+    /// OpenH264, as a viewer would.
+    struct Viewer {
+        /// Packets with when the broadcaster sent them.
+        packets: flume::Receiver<(Instant, EncodedPacket)>,
+        decoder: VideoDecoder,
+    }
+
+    impl Viewer {
+        fn start(capture: Capture, config: BroadcastConfig) -> (BroadcastControl, Self) {
+            let (tx, packets) = flume::unbounded();
+            let (control, _ended) = start_broadcast(capture, config, None, move |p| {
+                let _ = tx.send((Instant::now(), p));
+            });
+            control.watchers.store(1, Ordering::Relaxed);
+            let viewer = Viewer {
+                packets,
+                decoder: VideoDecoder::new().unwrap(),
+            };
+            (control, viewer)
+        }
+
+        /// Decode until a frame of `size` comes out; returns how many
+        /// keyframes were seen on the way.
+        fn until(&mut self, size: (u32, u32)) -> usize {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut keyframes = 0;
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let (_, pkt) = self
+                    .packets
+                    .recv_timeout(left)
+                    .unwrap_or_else(|_| panic!("no {size:?} frame in time"));
+                keyframes += pkt.keyframe as usize;
+                assert_eq!(
+                    pkt.keyframe,
+                    has_sps(&pkt.data),
+                    "every keyframe carries SPS/PPS, nothing else does"
+                );
+                let frame = self
+                    .decoder
+                    .decode(&pkt.data, (0, 0))
+                    .expect("decodes across the change");
+                if let Some(f) = frame
+                    && (f.width, f.height) == size
+                {
+                    assert_eq!((pkt.width, pkt.height), size);
+                    return keyframes;
+                }
+            }
+        }
+    }
+
+    /// Whether an Annex-B packet contains an SPS NAL unit.
+    fn has_sps(data: &[u8]) -> bool {
+        data.windows(4)
+            .any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 7)
+    }
+
+    fn software(max_height: Option<u32>, fps: u32) -> BroadcastConfig {
+        BroadcastConfig {
+            max_height,
+            fps,
+            encoder: EncoderChoice::Software,
+        }
+    }
+
+    #[test]
+    fn quality_changes_mid_stream_and_viewers_keep_decoding() {
+        let capture = crate::capture::test_pattern(1920, 1080, 30);
+        let (control, mut viewer) = Viewer::start(capture, software(Some(720), 30));
+        viewer.until((1280, 720));
+        assert_eq!(control.output_size(), (1280, 720));
+        // Up to the source's full size, and a new frame rate.
+        control.reconfigure(None, 24);
+        assert!(
+            viewer.until((1920, 1080)) >= 1,
+            "the change starts with a keyframe"
+        );
+        assert_eq!(control.output_size(), (1920, 1080));
+        assert_eq!(control.fps.load(Ordering::Relaxed), 24);
+        // And back down.
+        control.reconfigure(Some(720), 30);
+        viewer.until((1280, 720));
+        // The stream carries on at the new size after the change.
+        let mut more = 0;
+        while more < 10 {
+            let (_, pkt) = viewer.packets.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!((pkt.width, pkt.height), (1280, 720));
+            if viewer.decoder.decode(&pkt.data, (0, 0)).unwrap().is_some() {
+                more += 1;
+            }
+        }
+        control.stop();
+    }
+
+    #[test]
+    fn quality_changes_are_rate_limited() {
+        let capture = crate::capture::test_pattern(1280, 720, 30);
+        let (control, mut viewer) = Viewer::start(capture, software(None, 30));
+        viewer.until((1280, 720));
+        // A burst of changes: at most one new encoder (keyframe) a second.
+        let t0 = Instant::now();
+        for i in 0..20 {
+            let h = if i % 2 == 0 { Some(360) } else { Some(540) };
+            control.reconfigure(h, 30);
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut keyframes = vec![];
+        while t0.elapsed() < Duration::from_millis(2500) {
+            if let Ok((sent, p)) = viewer.packets.recv_timeout(Duration::from_millis(100)) {
+                // Every packet decodes, whatever size it's at.
+                viewer.decoder.decode(&p.data, (0, 0)).unwrap();
+                if p.keyframe {
+                    keyframes.push(sent - t0);
+                }
+            }
+        }
+        assert!(
+            (1..=3).contains(&keyframes.len()),
+            "keyframes at {keyframes:?}"
+        );
+        for pair in keyframes.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= Duration::from_millis(900),
+                "{keyframes:?}"
+            );
+        }
+        // It settles on the last request.
+        viewer.until((960, 540));
+        control.stop();
+    }
+
+    #[test]
+    fn capture_is_swapped_without_stopping() {
+        let capture = crate::capture::test_pattern(640, 360, 30);
+        let (control, mut viewer) = Viewer::start(capture, software(None, 30));
+        viewer.until((640, 360));
+        // A source that never starts (a cancelled picker): the stream goes on.
+        let (sink, broken) = crate::capture::channel(30);
+        sink.end("screen sharing was cancelled");
+        control.replace_capture(broken, "Nothing");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let notice = loop {
+            if let Some(n) = control.try_notice() {
+                break n;
+            }
+            assert!(Instant::now() < deadline, "no notice");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(
+            notice,
+            BroadcastNotice::SourceFailed {
+                label: "Nothing".into(),
+                reason: "screen sharing was cancelled".into()
+            }
+        );
+        viewer.until((640, 360));
+        // A real one takes over at its own size.
+        control.replace_capture(crate::capture::test_pattern(960, 540, 30), "Other");
+        viewer.until((960, 540));
+        assert_eq!(
+            control.try_notice(),
+            Some(BroadcastNotice::SourceChanged("Other".into()))
+        );
+        assert_eq!(control.source_size(), (960, 540));
+        control.stop();
     }
 
     #[test]
