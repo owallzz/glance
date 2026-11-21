@@ -141,7 +141,10 @@ impl Node {
                 glance_proto::CONTACTS_ALPN,
                 ContactsProtocol(contacts_tx.clone()),
             )
-            .accept(glance_proto::CONTACTS_ALPN_V1, ContactsProtocol(contacts_tx))
+            .accept(
+                glance_proto::CONTACTS_ALPN_V1,
+                ContactsProtocol(contacts_tx),
+            )
             .accept(ROOM_ALPN, RoomProtocol(room_slot.clone()))
             .accept(
                 iroh_blobs::ALPN,

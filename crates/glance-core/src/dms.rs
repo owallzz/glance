@@ -427,7 +427,10 @@ mod tests {
         assert_eq!(back.messages[1].state, DmState::Delivered);
         assert_eq!(back.unread, 1);
         assert_eq!(back.messages[2].preview(), "Sent a file: a.png");
-        assert_eq!(Conversation::load(&dir.join("missing.json")), Conversation::default());
+        assert_eq!(
+            Conversation::load(&dir.join("missing.json")),
+            Conversation::default()
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

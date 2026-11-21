@@ -105,16 +105,24 @@ async fn messages_are_acked_queued_offline_and_delivered_on_reconnect() {
         }
     );
     let ev = expect(&ca, "ack", |e| matches!(e, ContactEvent::DmAcked { .. })).await;
-    assert_eq!(ev, ContactEvent::DmAcked { from: b.id(), id: 1 });
+    assert_eq!(
+        ev,
+        ContactEvent::DmAcked {
+            from: b.id(),
+            id: 1
+        }
+    );
 
     // And back.
     cb.send(ContactCommand::SendDm {
         to: a.id(),
         dm: dm(2, "hey Ana"),
     });
-    expect(&ca, "reply", |e| {
-        matches!(e, ContactEvent::DmReceived { dm, .. } if dm.id == 2)
-    })
+    expect(
+        &ca,
+        "reply",
+        |e| matches!(e, ContactEvent::DmReceived { dm, .. } if dm.id == 2),
+    )
     .await;
     expect(&cb, "reply ack", |e| {
         matches!(e, ContactEvent::DmAcked { id: 2, .. })
@@ -125,12 +133,18 @@ async fn messages_are_acked_queued_offline_and_delivered_on_reconnect() {
     let ben_addr = b.endpoint().addr();
     b.shutdown().await;
     drop(b);
-    expect(&ca, "ben offline", |e| matches!(e, ContactEvent::Offline(_))).await;
+    expect(&ca, "ben offline", |e| {
+        matches!(e, ContactEvent::Offline(_))
+    })
+    .await;
     ca.send(ContactCommand::SendDm {
         to: ben_addr.id,
         dm: dm(3, "are you there?"),
     });
-    let ev = expect(&ca, "failed", |e| matches!(e, ContactEvent::DmFailed { .. })).await;
+    let ev = expect(&ca, "failed", |e| {
+        matches!(e, ContactEvent::DmFailed { .. })
+    })
+    .await;
     assert_eq!(
         ev,
         ContactEvent::DmFailed {
@@ -152,14 +166,19 @@ async fn messages_are_acked_queued_offline_and_delivered_on_reconnect() {
     a.endpoint().address_lookup().unwrap().add(lookup.clone());
     b.endpoint().address_lookup().unwrap().add(lookup);
     cb.send(ContactCommand::ConnectAll);
-    expect(&ca, "ben back", |e| matches!(e, ContactEvent::Online { .. })).await;
+    expect(&ca, "ben back", |e| {
+        matches!(e, ContactEvent::Online { .. })
+    })
+    .await;
     ca.send(ContactCommand::SendDm {
         to: b.id(),
         dm: dm(3, "are you there?"),
     });
-    expect(&cb, "queued dm", |e| {
-        matches!(e, ContactEvent::DmReceived { dm, .. } if dm.id == 3)
-    })
+    expect(
+        &cb,
+        "queued dm",
+        |e| matches!(e, ContactEvent::DmReceived { dm, .. } if dm.id == 3),
+    )
     .await;
     expect(&ca, "queued ack", |e| {
         matches!(e, ContactEvent::DmAcked { id: 3, .. })
@@ -179,7 +198,10 @@ async fn strangers_cant_message_and_blocked_peers_are_dropped() {
         to: b.id(),
         dm: dm(1, "hello?"),
     });
-    let ev = expect(&ca, "refused", |e| matches!(e, ContactEvent::DmFailed { .. })).await;
+    let ev = expect(&ca, "refused", |e| {
+        matches!(e, ContactEvent::DmFailed { .. })
+    })
+    .await;
     assert_eq!(
         ev,
         ContactEvent::DmFailed {
@@ -204,7 +226,8 @@ async fn strangers_cant_message_and_blocked_peers_are_dropped() {
     );
     let got = collect(&ca, Duration::from_millis(100)).await;
     assert!(
-        got.iter().all(|e| !matches!(e, ContactEvent::DmAcked { .. })),
+        got.iter()
+            .all(|e| !matches!(e, ContactEvent::DmAcked { .. })),
         "{got:?}"
     );
 
@@ -235,7 +258,10 @@ async fn old_peers_still_connect_but_get_no_messages() {
         .bind()
         .await
         .unwrap();
-    cb.send(ContactCommand::SetRelations(rel(old.id(), Relation::Mutual)));
+    cb.send(ContactCommand::SetRelations(rel(
+        old.id(),
+        Relation::Mutual,
+    )));
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let conn = old
