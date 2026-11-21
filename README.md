@@ -27,6 +27,15 @@ Start a room, send the link, and everyone in it can go live at the same time. Th
 - **Updates itself:** glance checks for new releases, downloads them in the background and asks before restarting.
 - **Light on resources:** nothing is encoded while nobody watches. Video is encoded and decoded on the GPU when there is one (NVENC/NVDEC on NVIDIA, VA-API on Linux AMD/Intel, Media Foundation on Windows, VideoToolbox on Macs), with OpenH264 as the fallback.
 
+### What's new in 0.3
+
+- **Formatting in chat:** room chat and direct messages understand Discord-style markdown: **bold**, *italic*, __underline__, ~~strikethrough~~, ||spoilers|| (click to reveal), `inline code`, code blocks with syntax highlighting, quotes, headings, small subtext, bulleted and numbered lists, and links (including `[text](https://…)`). See [Formatting messages](#formatting-messages).
+- **A message box that formats as you type:** formatting shows while you write, code blocks get their language's colours, **Enter** sends, **Shift+Enter** starts a new line (room chat now takes several lines too), and **Ctrl+Enter** (**Cmd+Enter** on macOS) also sends.
+- **Safer links:** web links from chat ask before opening (tick **Trust** to skip that for a site from then on), and `glance://` invites in chat join the room, asking first if you're in another call.
+- **Room messages up to 4000 bytes:** a longer message stays in the box with a note instead of being cut.
+- **Inter everywhere:** glance now ships its own font, so bold text and headings look right on every system.
+- **Light theme fix:** Cancel and Go Back buttons in dialogs are readable again.
+
 ### What's new in 0.2
 
 - **Direct messages:** click a contact on the home screen to message them. Messages go straight to them (no server), so they're delivered when you're both online; unsent ones wait and send automatically. History is saved only on your computer. Contacts on glance 0.1.0 can't receive messages until they update.
@@ -107,7 +116,7 @@ Room chat and direct messages use Discord-style formatting, shown live as you ty
 | `[label](https://example.com)` | a masked link (hover shows where it goes) |
 | `\*` | a literal `*` (any symbol can be escaped) |
 
-Web addresses become links. Clicking one asks before opening your browser, unless you chose to trust that site; `glance://` invite links join the room right away.
+Web addresses become links. Clicking one asks before opening your browser, unless you chose to trust that site; `glance://` invite links join the room (asking first if you're in another one).
 
 | Environment variable | Effect |
 |---|---|
