@@ -22,9 +22,9 @@ use anyhow::{Context, Result, bail};
 use std::sync::Arc;
 
 use glance_proto::{
-    Control, EndpointAddr, EndpointId, HISTORY_LIMIT, Hello, HistoryBody, HistoryItem, MemberInfo,
-    MemberState, ROOM_ALPN, Ticket, Track, UNI_VIDEO, VideoPacket, WireProfile, join_proof,
-    verify_proof,
+    Control, EndpointAddr, EndpointId, HISTORY_LIMIT, Hello, HistoryBody, HistoryItem,
+    MAX_CHAT_LEN, MemberInfo, MemberState, ROOM_ALPN, Ticket, Track, UNI_VIDEO, VideoPacket,
+    WireProfile, join_proof, truncate_utf8, verify_proof,
 };
 use iroh::Endpoint;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -402,9 +402,12 @@ impl Actor {
                 profile,
                 state,
                 members,
-                history,
+                mut history,
             } => {
                 let id = conn.remote_id();
+                for h in &mut history {
+                    cap_body(&mut h.body);
+                }
                 if !self.got_history {
                     self.got_history = true;
                     self.present_at_join.insert(id);
@@ -632,7 +635,11 @@ impl Actor {
                     .events
                     .send(RoomEvent::MemberProfile { id: from, profile });
             }
-            Control::Chat { sent_at, text, .. } => {
+            Control::Chat {
+                sent_at, mut text, ..
+            } => {
+                // Older peers have no cap: show their long messages cut.
+                truncate_utf8(&mut text, MAX_CHAT_LEN);
                 let (name, color) = (peer.profile.name.clone(), peer.profile.color);
                 self.remember(from, name, color, sent_at, HistoryBody::Text(text.clone()));
                 let _ = self.events.send(RoomEvent::Chat {
@@ -737,7 +744,10 @@ impl Actor {
     }
 
     /// Send our own chat message or file offer and keep it in the history.
-    fn post(&mut self, sent_at: u64, body: HistoryBody) {
+    fn post(&mut self, sent_at: u64, mut body: HistoryBody) {
+        if let HistoryBody::Text(text) = &mut body {
+            truncate_utf8(text, MAX_CHAT_LEN);
+        }
         let (me, name, color) = (self.me, self.profile.name.clone(), self.profile.color);
         self.remember(me, name, color, sent_at, body.clone());
         match body {
@@ -1137,4 +1147,31 @@ fn spawn_datagram_reader(conn: Connection, from: EndpointId, sink: AudioSink) {
             }
         }
     });
+}
+
+/// Cuts a history chat message longer than peers accept (older peers have no
+/// cap), so it shows cut instead of not at all.
+fn cap_body(body: &mut HistoryBody) {
+    if let HistoryBody::Text(t) = body {
+        truncate_utf8(t, MAX_CHAT_LEN);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HistoryBody, MAX_CHAT_LEN, cap_body};
+
+    #[test]
+    fn long_history_text_is_cut_on_a_char_boundary() {
+        let mut body = HistoryBody::Text("é".repeat(MAX_CHAT_LEN));
+        cap_body(&mut body);
+        let HistoryBody::Text(t) = body else {
+            unreachable!()
+        };
+        assert_eq!(t.len(), MAX_CHAT_LEN);
+        assert!(t.chars().all(|c| c == 'é'));
+        let mut short = HistoryBody::Text("hi".into());
+        cap_body(&mut short);
+        assert!(matches!(short, HistoryBody::Text(ref t) if t == "hi"));
+    }
 }

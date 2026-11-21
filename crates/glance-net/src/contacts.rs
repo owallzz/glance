@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use glance_proto::{
     CONTACTS_ALPN, CONTACTS_ALPN_V1, ContactMsg, EndpointAddr, EndpointId, MAX_DM_LEN,
-    PresenceInfo, WireDm, WireProfile,
+    PresenceInfo, WireDm, WireProfile, truncate_utf8,
 };
 use iroh::Endpoint;
 use iroh::endpoint::{ConnectOptions, Connection, RecvStream, SendStream};
@@ -793,31 +793,5 @@ impl Actor {
                 self.deliver(to, ContactMsg::JoinTicket { link })
             }
         }
-    }
-}
-
-/// Cut `s` to at most `max` bytes on a character boundary.
-fn truncate_utf8(s: &mut String, max: usize) {
-    if s.len() > max {
-        let mut end = max;
-        while !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        s.truncate(end);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::truncate_utf8;
-
-    #[test]
-    fn truncates_on_char_boundaries() {
-        let mut s = "aé".repeat(3);
-        truncate_utf8(&mut s, 4);
-        assert_eq!(s, "aéa");
-        let mut s = "short".to_string();
-        truncate_utf8(&mut s, 10);
-        assert_eq!(s, "short");
     }
 }

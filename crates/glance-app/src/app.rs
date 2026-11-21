@@ -150,6 +150,9 @@ pub struct Settings {
     pub chat_width: f32,
     /// Leave people without a stream or camera off the room stage.
     pub hide_non_video: bool,
+    /// Web sites whose chat links open without the "Leaving glance" check
+    /// (lowercase host names).
+    pub trusted_domains: Vec<String>,
 }
 
 impl Default for Settings {
@@ -178,6 +181,7 @@ impl Default for Settings {
             peer_audio: Default::default(),
             chat_width: crate::room::CHAT_DEFAULT_WIDTH,
             hide_non_video: false,
+            trusted_domains: Vec::new(),
         }
     }
 }
@@ -376,6 +380,16 @@ impl Room {
     }
 }
 
+/// A web link from chat waiting for "Visit Site" in the "Leaving glance"
+/// dialog.
+pub struct LeavingLink {
+    pub url: String,
+    /// The host the link goes to (what "Trust" would trust).
+    pub domain: String,
+    /// The "Trust <domain> links from now on" box.
+    pub trust: bool,
+}
+
 /// Everything about the room you're in.
 pub struct Room {
     pub name: String,
@@ -479,7 +493,7 @@ pub struct GlanceApp {
     pub calls: Vec<CallRecord>,
     pub room: Option<Room>,
     pub join_input: Entity<InputState>,
-    pub chat_input: Entity<gpui_kit::component::input::TextareaState>,
+    pub chat_input: Entity<gpui_kit::component::input::EditorState>,
     pub go_live: Option<GoLive>,
     pub settings_open: bool,
     /// The window's rounded corners this frame (zero when maximized,
@@ -511,7 +525,7 @@ pub struct GlanceApp {
     pub dms: crate::dms::Dms,
     /// The conversation open on the home screen.
     pub dm_open: Option<PeerId>,
-    pub dm_input: Entity<gpui_kit::component::input::TextareaState>,
+    pub dm_input: Entity<gpui_kit::component::input::EditorState>,
     /// The window has focus (unread counts and notifications depend on it).
     pub window_active: bool,
     /// We switched to Idle automatically (and switch back on activity).
@@ -545,6 +559,15 @@ pub struct GlanceApp {
     pub output_volume_slider: Entity<SliderState>,
     /// Updates from GitHub Releases (`update_ui.rs`).
     pub update: crate::update_ui::UpdateState,
+    /// Parsed chat messages, so markdown isn't parsed every frame.
+    pub md_cache: crate::markdown_view::MarkdownCache,
+    /// The "Leaving glance" dialog for a clicked web link.
+    pub leaving: Option<LeavingLink>,
+    /// An invite link from chat for another room, waiting for "Join" in the
+    /// "Join another room?" dialog (joining leaves the current room).
+    pub join_confirm: Option<String>,
+    /// Spoilers clicked open this session.
+    pub revealed_spoilers: std::collections::HashSet<crate::markdown_view::SpoilerKey>,
 }
 
 impl GlanceApp {
@@ -559,13 +582,7 @@ impl GlanceApp {
             .detach();
         let join_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Paste a glance link or code"));
-        // Enter sends, Shift+Enter starts a new line; grows up to 8 lines.
-        let chat_input = cx.new(|cx| {
-            gpui_kit::component::input::TextareaState::new(window, cx)
-                .placeholder("Message the room")
-                .submit_on_enter(true)
-                .auto_grow(1, 8)
-        });
+        let chat_input = crate::composer::new_composer("Message the room", 8, window, cx);
         let nickname_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Nickname (blank to use their name)")
         });
@@ -709,6 +726,10 @@ impl GlanceApp {
             autostart_synced: None,
             immersive: None,
             update: Default::default(),
+            md_cache: Default::default(),
+            leaving: None,
+            join_confirm: None,
+            revealed_spoilers: Default::default(),
         };
         // While the tray icon is up, closing the window minimizes it so calls
         // keep going and contacts can still ring you.
@@ -723,6 +744,7 @@ impl GlanceApp {
         });
         app.apply_theme(window, cx);
         app.watch_window_activation(window, cx);
+        crate::markdown_view::watch_highlights(cx);
         if let Some(url) = app.settings.relay_url.clone() {
             app.relay_input
                 .update(cx, |s, cx| s.set_value(url, window, cx));
@@ -741,14 +763,21 @@ impl GlanceApp {
         app
     }
 
+    /// Enter sends (Shift+Enter is a newline in the composer).
     fn on_chat_input(
         &mut self,
-        input: &Entity<gpui_kit::component::input::TextareaState>,
+        input: &Entity<gpui_kit::component::input::EditorState>,
         event: &gpui_kit::component::input::InputEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Enter and Ctrl/Cmd+Enter send; Shift+Enter is a newline.
         if let gpui_kit::component::input::InputEvent::PressEnter { shift: false, .. } = event {
+            if crate::composer::too_long(input.read(cx), glance_proto::MAX_CHAT_LEN).is_some() {
+                // Keep it in the box; the note above it says why.
+                cx.notify();
+                return;
+            }
             let text = input.read(cx).value().trim().to_string();
             if text.is_empty() {
                 return;
@@ -816,6 +845,8 @@ impl GlanceApp {
         if self.mic_test.as_ref().is_some_and(|t| t.in_call()) {
             self.stop_mic_test();
         }
+        // An invite asking to leave this room has nothing left to ask.
+        self.join_confirm = None;
         self.record_call_end();
         self.cancel_rings();
         self.remember_room(true);
@@ -1322,6 +1353,7 @@ const VOICE_PANEL_HEIGHT: f32 = 52.;
 
 impl Render for GlanceApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.md_cache.begin_frame();
         let p = Palette::current(cx);
         self.corners = gpui_kit::component::window_corner_radii(window, cx);
         let font = gpui_kit::component::ActiveTheme::theme(&**cx)
@@ -1363,6 +1395,10 @@ impl Render for GlanceApp {
             .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {
                 if this.close_person_menu() || this.close_lightbox() {
                     // Just the menu or the image.
+                } else if this.leaving.is_some() {
+                    this.leaving = None;
+                } else if this.join_confirm.is_some() {
+                    this.join_confirm = None;
                 } else if this.immersive.is_some() {
                     this.exit_fullscreen(window, cx);
                 } else if this.settings_open {
@@ -1421,6 +1457,12 @@ impl Render for GlanceApp {
         }
         if self.settings_open {
             content = content.child(self.render_settings(&p, cx));
+        }
+        if self.leaving.is_some() {
+            content = content.child(self.render_leaving(&p, cx));
+        }
+        if self.join_confirm.is_some() && self.room.is_some() {
+            content = content.child(self.render_join_confirm(&p, cx));
         }
         if self.incoming_call.is_some() {
             content = content.child(self.render_incoming_call(&p, cx));
@@ -1526,6 +1568,19 @@ mod key_tests {
         assert!(back.peer_audio.get(a).muted);
         assert_eq!(back.peer_audio.get(a).volume, 0.4);
         assert!(!back.peer_audio.get(b).muted);
+    }
+
+    #[test]
+    fn trusted_domains_survive_a_restart() {
+        let dir = std::env::temp_dir().join(format!("glance-trust-test-{}", std::process::id()));
+        let s = super::Settings {
+            trusted_domains: vec!["example.com".into()],
+            ..Default::default()
+        };
+        s.save(&dir).unwrap();
+        let back = super::Settings::load(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(back.trusted_domains, ["example.com"]);
     }
 
     #[test]

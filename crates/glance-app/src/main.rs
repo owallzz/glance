@@ -3,19 +3,24 @@
 mod app;
 mod bot;
 mod camera;
+mod code_highlight;
+mod composer;
 mod contacts;
 mod direct;
 mod dms;
 mod files;
+mod fonts;
 mod home;
 mod idle;
 mod images;
 mod instance;
+mod markdown_view;
 mod net;
 mod overlays;
 mod person_menu;
 mod popout;
 mod recent;
+mod rich_text;
 mod room;
 mod scheme;
 mod session;
@@ -158,6 +163,8 @@ fn main() {
         }
     });
     app.run(move |cx: &mut App| {
+        // Before the theme names the family and before any window lays out.
+        fonts::register(cx);
         gpui_kit::init(cx);
         theme::init(ThemeMode::Dark, cx);
 

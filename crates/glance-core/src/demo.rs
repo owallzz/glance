@@ -170,7 +170,54 @@ pub fn chat() -> Vec<ChatMessage> {
                 },
             }),
         ),
-        m(6, 1, ChatBody::Text("looks good, ship it".into())),
+        m(
+            6,
+            3,
+            ChatBody::Text(
+                "found it: the decoder panics when a stream starts **mid-GOP**\n\
+                 ```rs\n\
+                 fn decode(&mut self, pkt: &Packet) -> Result<Frame> {\n    \
+                 // wait for a keyframe first\n    \
+                 if !self.synced && !pkt.keyframe {\n        \
+                 return Err(Error::NeedKeyframe);\n    \
+                 }\n    \
+                 self.synced = true;\n    \
+                 self.inner.decode(&pkt.data)\n\
+                 }\n\
+                 ```"
+                .into(),
+            ),
+        ),
+        m(
+            7,
+            4,
+            ChatBody::Text(
+                "> wait for a keyframe first\n\
+                 doesn't `BroadcastControl` already send one on join? *genuinely asking*"
+                    .into(),
+            ),
+        ),
+        m(
+            8,
+            2,
+            ChatBody::Text(
+                "### release checklist\n\
+                 - bump the version\n\
+                 - tag and push\n  \
+                 - wait for CI on __all three__ platforms\n\
+                 - write the notes\n\
+                 -# steps are in the [release guide](https://example.com/releasing)"
+                    .into(),
+            ),
+        ),
+        m(
+            9,
+            1,
+            ChatBody::Text(
+                "looks good, ship it ~~tomorrow~~ today. ||the fix was a one-liner all along||"
+                    .into(),
+            ),
+        ),
     ]
 }
 

@@ -3,10 +3,8 @@
 
 use glance_core::{ChatBody, ChatMessage, FileOffer, Participant, PeerId, Route, Transfer, format};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::SelectableText;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::Textarea;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -1355,73 +1353,96 @@ impl GlanceApp {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .children(
+                    .children({
+                        // Selection order across the whole list.
+                        let mut order = 0;
+                        let scope = crate::markdown_view::ChatScope::room(
+                            self.room.as_ref().map_or("", |r| r.link.as_str()),
+                        );
                         groups
                             .into_iter()
-                            .map(|(author, msgs)| self.chat_group(p, author, msgs, body_w, cx)),
-                    ),
+                            .map(|(author, msgs)| {
+                                self.chat_group(p, scope, author, msgs, body_w, &mut order, cx)
+                            })
+                            .collect::<Vec<_>>()
+                    }),
             )
             .child(
-                div().px_4().pt_2().pb(px(PANEL_MARGIN)).child(
-                    div()
-                        .id("chat-composer")
-                        .rounded(px(8.))
-                        .bg(p.bg_hover)
-                        .cursor_text()
-                        // The whole box is the message box: a click anywhere
-                        // in it puts the caret in the input.
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.chat_input.update(cx, |s, cx| s.focus(window, cx));
-                                // Or the window root, also focusable, takes focus back.
-                                window.prevent_default();
-                            }),
-                        )
-                        .flex()
-                        // Like the DM box: the + stays level with the last
-                        // line, and a long message grows the box upwards.
-                        .items_end()
-                        .gap_2()
-                        .px_2()
-                        .child(
-                            div().h(px(COMPOSER_HEIGHT)).flex().items_center().child(
-                                icon_button(
-                                    "attach",
-                                    IconName::CirclePlus,
-                                    "Send a file",
-                                    p.interactive,
-                                    p,
-                                )
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.pick_files_to_send(cx)),
+                div()
+                    .px_4()
+                    .pt_2()
+                    .pb(px(PANEL_MARGIN))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(crate::composer::too_long_note(
+                        &self.chat_input,
+                        glance_proto::MAX_CHAT_LEN,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .id("chat-composer")
+                            .rounded(px(8.))
+                            .bg(p.bg_hover)
+                            .cursor_text()
+                            // The whole box is the message box: a click anywhere
+                            // in it puts the caret in the input.
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.chat_input.update(cx, |s, cx| s.focus(window, cx));
+                                    // Or the window root, also focusable, takes focus back.
+                                    window.prevent_default();
+                                }),
+                            )
+                            .flex()
+                            // Like the DM box: the + stays level with the last
+                            // line, and a long message grows the box upwards.
+                            .items_end()
+                            .gap_2()
+                            .px_2()
+                            .child(
+                                div().h(px(COMPOSER_HEIGHT)).flex().items_center().child(
+                                    icon_button(
+                                        "attach",
+                                        IconName::CirclePlus,
+                                        "Send a file",
+                                        p.interactive,
+                                        p,
+                                    )
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.pick_files_to_send(cx)),
+                                    ),
                                 ),
-                            ),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                // A one-line textarea is 40 px tall.
-                                .py(px((COMPOSER_HEIGHT - 40.) / 2.))
-                                .child(Textarea::new(&self.chat_input).appearance(false).on_paste(
-                                    {
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    // The composer is 44 px tall for one line.
+                                    .py(px((COMPOSER_HEIGHT - 44.) / 2.))
+                                    .child({
                                         // Pasted files or images are sent; text
                                         // pastes as usual.
                                         let app = cx.entity().downgrade();
-                                        move |item, _, cx| {
-                                            let paths = crate::files::pasted_files(item);
-                                            if paths.is_empty() {
-                                                return false;
-                                            }
-                                            let _ =
-                                                app.update(cx, |app, cx| app.send_files(paths, cx));
-                                            true
-                                        }
-                                    },
-                                )),
-                        ),
-                ),
+                                        crate::composer::composer_element_with_paste(
+                                            &self.chat_input,
+                                            move |item, _, cx| {
+                                                let paths = crate::files::pasted_files(item);
+                                                if paths.is_empty() {
+                                                    return false;
+                                                }
+                                                let _ = app.update(cx, |app, cx| {
+                                                    app.send_files(paths, cx)
+                                                });
+                                                true
+                                            },
+                                            cx,
+                                        )
+                                    }),
+                            ),
+                    ),
             )
             // Last, so it's on top of the panel's left edge.
             .child(handle)
@@ -1430,9 +1451,11 @@ impl GlanceApp {
     fn chat_group(
         &mut self,
         p: &Palette,
+        scope: crate::markdown_view::ChatScope,
         author: PeerId,
         msgs: Vec<ChatMessage>,
         body_w: f32,
+        order: &mut u64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let Some(ChatBody::System(text)) = msgs.first().map(|m| m.body.clone()) {
@@ -1464,6 +1487,28 @@ impl GlanceApp {
             .as_ref()
             .map(|p| crate::ui::color(p.color))
             .unwrap_or(p.text_header);
+        let mut bodies = Vec::with_capacity(msgs.len());
+        for m in msgs {
+            bodies.push(match m.body {
+                // Drag to select, then copy with the usual shortcut.
+                ChatBody::Text(t) => {
+                    let msg = self.md_cache.get(&t);
+                    let view = crate::markdown_view::MessageView {
+                        scope,
+                        // Spoiler reveals must survive renumbering.
+                        msg_id: crate::markdown_view::room_message_key(m.author, m.sent_at, &t),
+                        order: &mut *order,
+                        revealed: &self.revealed_spoilers,
+                    };
+                    div()
+                        .text_color(p.text_normal)
+                        .child(crate::markdown_view::render_message(&msg, view, cx))
+                        .into_any_element()
+                }
+                ChatBody::File(f) => self.file_card(p, m.id, f, body_w, cx).into_any_element(),
+                ChatBody::System(_) => div().into_any_element(),
+            });
+        }
         div()
             .px_4()
             .flex()
@@ -1482,17 +1527,7 @@ impl GlanceApp {
                             .text_color(color)
                             .child(name),
                     )
-                    .children(msgs.into_iter().map(|m| {
-                        match m.body {
-                            // Drag to select, then copy with the usual shortcut.
-                            ChatBody::Text(t) => div()
-                                .text_color(p.text_normal)
-                                .child(SelectableText::new(("chat-text", m.id), t))
-                                .into_any_element(),
-                            ChatBody::File(f) => self.file_card(p, m.id, f, body_w, cx),
-                            ChatBody::System(_) => div().into_any_element(),
-                        }
-                    })),
+                    .children(bodies),
             )
             .into_any_element()
     }

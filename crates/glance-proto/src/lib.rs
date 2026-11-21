@@ -23,3 +23,29 @@ pub const ROOM_ALPN: &[u8] = b"glance/room/1";
 /// separate protocol so peers that predate it simply refuse the connection,
 /// which reads as "unknown".
 pub const ROOM_PROBE_ALPN: &[u8] = b"glance/room-probe/1";
+
+/// Cut `s` to at most `max` bytes on a character boundary.
+pub fn truncate_utf8(s: &mut String, max: usize) {
+    if s.len() > max {
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_utf8;
+
+    #[test]
+    fn truncates_on_char_boundaries() {
+        let mut s = "aé".repeat(3);
+        truncate_utf8(&mut s, 4);
+        assert_eq!(s, "aéa");
+        let mut s = "short".to_string();
+        truncate_utf8(&mut s, 10);
+        assert_eq!(s, "short");
+    }
+}

@@ -40,9 +40,16 @@ If a job fails: fix on main, delete the tag locally and remotely (`git tag -d vX
 - Check the updater sees it: a build from source is a "Development build" and never updates, so test with `GLANCE_UPDATE_URL=https://api.github.com GLANCE_UPDATE_CURRENT_VERSION=0.0.1 ./target/debug/glance update` (needs a debug build of the current tree; it reports the new version and that it would download the right asset).
 
 ## 6. Release notes
-Write them to a file in the scratchpad and `gh release edit vX.Y.Z --notes-file <file>`. Structure:
-- One-line summary, then **What's new** (user-facing features and fixes since the last release, from the git log; plain words, no internal names).
-- **Install**: which file to pick per platform (table or list), linking to the README's Installation section; mention that existing installs (except the Flatpak bundle) update themselves, and that versions before 0.2.0 have no updater and need a manual download once.
+Write them to a file in the scratchpad and `gh release edit vX.Y.Z --title "glance vX.Y.Z" --notes-file <file>`. Structure:
+- One-line summary.
+- **Downloads**, right after the summary: direct links to the release files grouped by platform, so people don't have to dig through the Assets list. Links are `https://github.com/owallzz/glance/releases/download/vX.Y.Z/<asset name>`. Per platform, recommended first:
+  - **Windows** (x86_64): Installer (`-windows-x86_64-setup.exe`, recommended, no admin rights), Portable (`-windows-x86_64-portable.zip`, keeps its data next to it), Plain executable (`-windows-x86_64.exe`).
+  - **macOS** (Apple Silicon): Disk image (`-macos-aarch64.dmg`, recommended), App bundle (`-macos-aarch64.app.tar.gz`), Plain binary (`-macos-aarch64`).
+  - **Linux** (x86_64): AppImage (`-linux-x86_64.AppImage`, recommended, `chmod +x` and run), Flatpak bundle (`-linux-x86_64.flatpak`, `flatpak install --user <file>`, needs the Flathub remote), Plain binary (`-linux-x86_64`).
+  - End with a line saying each file's `.minisig` is under **Assets**.
+  - After publishing, check every link returns 200: `for u in $(grep -o 'https://github.com/owallzz/glance/releases/download/[^)]*' <notes>); do curl -sIL -o /dev/null -w '%{http_code} ' "$u"; echo "${u##*/}"; done`.
+- **What's new** (user-facing features and fixes since the last release, from the git log; plain words, no internal names).
+- **Installing and updating**: link the README's Installation section; mention that existing installs (except the Flatpak bundle) update themselves, and that versions before 0.2.0 have no updater and need a manual download once.
 - **First launch** on unsigned builds: Windows SmartScreen "More info → Run anyway"; macOS Gatekeeper (right-click → Open, or System Settings → Privacy & Security → Open Anyway, or `xattr -dr com.apple.quarantine glance.app`).
 - **Known issues / not yet tested**: anything not verified on real hardware (e.g. macOS/Windows paths only CI has run).
 - **Verify downloads**: `minisign -Vm <file> -p minisign.pub` with the key from `packaging/minisign.pub`.
