@@ -1,49 +1,81 @@
-# glance
+<p align="center">
+  <img src="docs/images/banner.svg" alt="glance" width="640">
+</p>
 
-Peer-to-peer screen sharing rooms with a familiar, Discord-style interface. Start a room, send the link, and everyone in it can go live at the same time. There are no accounts and no media server: peers connect directly over [iroh](https://iroh.computer) (QUIC, end-to-end encrypted, relay fallback).
+<p align="center">
+  Peer-to-peer screen sharing rooms with voice, chat and webcams, in a familiar Discord-style interface.
+</p>
 
-## What it does
+<p align="center">
+  <a href="https://github.com/owallzz/glance/actions/workflows/ci.yml"><img src="https://github.com/owallzz/glance/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
+</p>
+
+<p align="center">
+  <img src="docs/images/room.png" alt="A glance room: two people live, participant tiles, and chat with a file transfer" width="860">
+</p>
+
+Start a room, send the link, and everyone in it can go live at the same time. There are no accounts and no media server: peers connect directly over [iroh](https://iroh.computer) (QUIC, end-to-end encrypted, with relay fallback).
+
+## Features
 
 - **Rooms:** start one and the invite link is on your clipboard. Clicking a `glance://` link opens glance (or hands the link to the copy already running) and joins.
-- **Screen sharing:** anyone can go live at once, at up to 1440p60 in software (4K at about 40 fps), with an optional app or system audio track. Viewers watch in a grid, focus, fullscreen or a pop-out window, with per-stream volume and stats.
-- **Voice and webcams:** echo cancellation, noise suppression, per-person volume, speaking rings, mute/deafen with sounds.
-- **Chat and files:** room chat; drop, attach or paste files and screenshots. Files go peer to peer and anyone who downloaded one helps serve it.
-- **Contacts:** add people you've called, see when they're online or in a call, ring them, send them files outside calls. glance waits in the tray and starts on login.
-- **Settings:** devices, light/dark theme, a custom relay server, start on login.
+- **Screen sharing:** anyone can go live at once, up to 4K60 with a hardware encoder (1440p60 in software), with an optional app or system audio track. Watch in a grid, focus, fullscreen or a pop-out window, with per-stream volume and stats.
+- **Voice and webcams:** echo cancellation, noise suppression, automatic gain, per-person volume, speaking rings, mute/deafen.
+- **Chat and files:** room chat; drop, attach or paste files and screenshots. Files go peer to peer, and anyone who downloaded one helps serve it.
+- **Contacts:** add people you've called, see when they're online or in a call, ring them, send them files outside calls. glance waits in the tray and can start on login.
+- **Light on resources:** nothing is encoded while nobody watches. Video is encoded and decoded on the GPU when there is one (NVENC/NVDEC on NVIDIA, VA-API on Linux AMD/Intel, Media Foundation on Windows, VideoToolbox on Macs), with OpenH264 as the fallback.
 
-See [PLAN.md](PLAN.md) for the roadmap. Video is encoded on the GPU when there is one (NVENC on NVIDIA, VA-API on Linux AMD/Intel, Media Foundation on Windows AMD/Intel, VideoToolbox on Macs) and decoded on the GPU with NVDEC (NVIDIA), Media Foundation/DXVA (Windows AMD/Intel) or VideoToolbox (Macs); everything else uses OpenH264. Not done yet: GPU decoding on Linux AMD/Intel, and signed installers.
+## Installation
 
-## Install
+Download the file for your system from the [latest release](https://github.com/owallzz/glance/releases/latest). They are plain binaries, not archives.
 
-Download the file for your system from the [latest release](../../releases/latest):
+- **Linux x86_64:** `chmod +x glance-*-linux-x86_64` and run it. Needs Wayland or X11, Vulkan, and PipeWire for screen capture on Wayland. The first launch registers `glance://` links and a desktop entry.
+- **macOS (Apple Silicon):** open the `.dmg` and drag glance to Applications. It isn't notarized yet, so right-click > Open the first time.
+- **Windows x86_64:** run the `.exe`. It isn't signed yet, so SmartScreen may warn: choose "More info > Run anyway".
 
-- **Linux:** the `linux-x86_64` binary. `chmod +x` it and run it. The first launch of a release build registers `glance://` links and a desktop entry with an icon.
-- **macOS (Apple Silicon):** `glance-…-macos-aarch64.dmg`, drag glance to Applications. It isn't notarized yet, so right-click > Open the first time.
-- **Windows:** the `.exe`. SmartScreen may warn because it isn't signed yet.
+## Usage
 
-## Build and run
-
-Requirements: a recent stable Rust toolchain, plus the gpui system libraries on Linux (`fontconfig`, `freetype`, `libxkbcommon`, `libxcb`, `wayland` development packages).
+Click **Start a room** and the invite link is copied. Send it to someone; they click it, paste it into the Join box, or run:
 
 ```sh
-cargo run -p glance-app               # launches the `glance` binary
-cargo run -p glance-app -- --demo     # start in a fake room (UI preview)
-cargo run -p glance-app -- join <link> # open and join a room
-cargo run -p glance-app -- bot <link>  # headless test peer
+glance join <link>
 ```
 
-On an immutable Fedora host (Silverblue, Bazzite, ...) without `-devel` packages, source the helper first. It needs Homebrew's `fontconfig` for the pkg-config files:
+Other commands:
 
 ```sh
-source scripts/env.sh
-cargo run -p glance-app
+glance --demo              # open a fake, populated room (UI preview)
+glance bot <link> [name]   # headless test peer: joins, chats, toggles mute
+glance bot <link> --stream 1920x1080@60 --tone   # ...and shares a test pattern with audio
 ```
 
-Start a room and the invite link is copied to your clipboard. Send it to someone; they paste it into the Join box (or run `glance join <link>`).
+| Environment variable | Effect |
+|---|---|
+| `GLANCE_DATA_DIR` | Use another data dir (identity, contacts, settings). Lets you run a second "person" on one machine. |
+| `GLANCE_RELAY` | `off` for direct connections only, or a URL for your own [iroh relay](https://github.com/n0-computer/iroh). Also in Settings. |
+| `GLANCE_DOWNLOAD_DIR` | Where received files go (default: your Downloads folder). |
+| `GLANCE_ENCODER` | Force `software`, `hardware`, or a specific encoder (`nvenc`, `vaapi`, `videotoolbox`, `mediafoundation`). |
 
-To try it alone, run a second identity with `GLANCE_DATA_DIR=/tmp/glance-b cargo run -p glance-app`, or add test peers with `glance bot <link>`.
+## Building from source
 
-## Test
+Requirements: a stable Rust toolchain (pinned in `rust-toolchain.toml`). On Linux you also need clang and the development packages for fontconfig, freetype, libxkbcommon, libxcb, X11, Wayland, Vulkan, PipeWire, ALSA, D-Bus and OpenSSL, plus `nasm`. On Ubuntu:
+
+```sh
+sudo apt-get install libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+  libx11-dev libx11-xcb-dev libxrandr-dev libwayland-dev libvulkan-dev libssl-dev libpipewire-0.3-dev \
+  libclang-dev libdbus-1-dev libasound2-dev nasm
+```
+
+```sh
+cargo run -p glance-app                 # launches the `glance` binary
+cargo run -p glance-app -- --demo       # fake room
+cargo build --release -p glance-app     # measure video performance with release builds
+```
+
+On an immutable Fedora host (Silverblue, Bazzite, ...) without `-devel` packages, run `source scripts/env.sh` first. It uses Homebrew's pkg-config files for the headers.
+
+## Development
 
 ```sh
 cargo test --workspace
@@ -51,12 +83,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-## Layout
-
 | Crate | What it holds |
 |---|---|
 | `glance-app` | gpui-kit UI and the `glance` binary |
-| `glance-core` | room and contacts state machines |
-| `glance-net` | iroh networking |
-| `glance-media` | capture, codecs and audio |
-| `glance-proto` | wire types shared by peers |
+| `glance-core` | room and contacts state machines (no I/O) |
+| `glance-net` | iroh networking: room mesh, contacts, file blobs |
+| `glance-media` | capture, H.264 codecs (software and hardware) and audio |
+| `glance-proto` | tickets and wire types shared by peers |
+
+[PLAN.md](PLAN.md) has the roadmap and design decisions, and [AGENTS.md](AGENTS.md) the working notes for contributors and coding agents. Report security issues as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option.
