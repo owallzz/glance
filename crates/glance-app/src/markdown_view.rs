@@ -12,13 +12,17 @@
 //!   fill, copy as a mask, and turn every click inside them into a reveal (a
 //!   link inside a hidden spoiler isn't clickable). Reveals live in
 //!   `GlanceApp::revealed_spoilers` for the session.
-//! - Code blocks use `code_highlight`; a grammar's first parse runs on a
-//!   worker, and [`watch_highlights`] re-renders when it's done.
+//! - Code blocks use `code_highlight`, which parses on a worker;
+//!   [`watch_highlights`] re-renders when a block is done. The result is kept
+//!   with the cached message ([`Parsed`]), so later renders don't even look
+//!   it up again.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use glance_core::PeerId;
 use glance_core::markdown::{self, Block, Link, Message, RichLine, Style};
@@ -27,7 +31,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::*;
 
 use crate::app::GlanceApp;
-use crate::code_highlight;
+use crate::code_highlight::{self, Highlight, Highlights};
 use crate::rich_text::RichText;
 use crate::theme::Palette;
 
@@ -72,8 +76,25 @@ pub struct MarkdownCache {
 
 struct CacheEntry {
     src: Rc<str>,
-    msg: Rc<Message>,
+    msg: Rc<Parsed>,
     used: u64,
+}
+
+/// A parsed message, plus what renders have learnt about it since.
+pub struct Parsed {
+    pub msg: Message,
+    /// Highlights of its code blocks by position in the message, once known:
+    /// `None` for a block that stays plain.
+    highlights: RefCell<HashMap<usize, Option<Arc<Highlights>>>>,
+}
+
+impl Parsed {
+    fn new(msg: Message) -> Self {
+        Self {
+            msg,
+            highlights: RefCell::default(),
+        }
+    }
 }
 
 impl Default for MarkdownCache {
@@ -93,7 +114,7 @@ impl MarkdownCache {
     }
 
     /// The parsed form of `text`, parsing it on a miss.
-    pub fn get(&mut self, text: &str) -> Rc<Message> {
+    pub fn get(&mut self, text: &str) -> Rc<Parsed> {
         let mut h = DefaultHasher::new();
         text.hash(&mut h);
         let key = h.finish();
@@ -104,7 +125,7 @@ impl MarkdownCache {
             e.used = frame;
             return e.msg.clone();
         }
-        let msg = Rc::new(markdown::parse(text));
+        let msg = Rc::new(Parsed::new(markdown::parse(text)));
         self.map.insert(
             key,
             CacheEntry {
@@ -152,7 +173,7 @@ pub struct MessageView<'a> {
 
 /// Renders `msg` as a column of blocks.
 pub fn render_message(
-    msg: &Rc<Message>,
+    msg: &Rc<Parsed>,
     view: MessageView<'_>,
     cx: &Context<GlanceApp>,
 ) -> AnyElement {
@@ -164,7 +185,9 @@ pub fn render_message(
         order: view.order,
         revealed: view.revealed,
         app: cx.entity().downgrade(),
-        links: msg.links.clone().into(),
+        links: msg.msg.links.clone().into(),
+        parsed: msg.clone(),
+        code_n: 0,
         size: theme.font_size,
         ui_font: theme.font_family.clone(),
         mono_font: theme.mono_font_family.clone(),
@@ -180,7 +203,7 @@ pub fn render_message(
         .min_w_0()
         .text_size(size)
         .line_height(relative(LINE_HEIGHT))
-        .children(r.blocks(&msg.blocks, true))
+        .children(r.blocks(&msg.msg.blocks, true))
         .into_any_element()
 }
 
@@ -199,6 +222,9 @@ struct Renderer<'a> {
     revealed: &'a HashSet<SpoilerKey>,
     app: WeakEntity<GlanceApp>,
     links: Rc<[Link]>,
+    parsed: Rc<Parsed>,
+    /// Code blocks rendered so far in this message.
+    code_n: usize,
     size: Pixels,
     ui_font: SharedString,
     mono_font: SharedString,
@@ -363,7 +389,9 @@ impl Renderer<'_> {
             strikethrough: None,
         };
         let mut runs = Vec::new();
-        let highlights = lang.and_then(|l| code_highlight::highlight(l, &text));
+        let n = self.code_n;
+        self.code_n += 1;
+        let highlights = lang.and_then(|l| self.highlights(n, l, &text));
         let mut at = 0;
         if let Some(hl) = highlights.filter(|_| !self.hidden) {
             for (range, kind) in hl.iter() {
@@ -398,6 +426,22 @@ impl Renderer<'_> {
             .min_w_0()
             .child(rich)
             .into_any_element()
+    }
+
+    /// The highlights of code block `n`, from the message when a render
+    /// already got them, else from `code_highlight` (a cache lookup; a miss
+    /// goes to its worker and re-renders when done).
+    fn highlights(&self, n: usize, lang: &str, code: &str) -> Option<Arc<Highlights>> {
+        if let Some(known) = self.parsed.highlights.borrow().get(&n) {
+            return known.clone();
+        }
+        let known = match code_highlight::highlight(lang, code) {
+            Highlight::Ready(h) => Some(h),
+            Highlight::Plain => None,
+            Highlight::Pending => return None,
+        };
+        self.parsed.highlights.borrow_mut().insert(n, known.clone());
+        known
     }
 
     fn block_spoiler(&mut self, id: u32, blocks: &[Block]) -> AnyElement {
@@ -634,9 +678,7 @@ impl GlanceApp {
 mod tests {
     use std::rc::Rc;
 
-    use glance_core::markdown::Message;
-
-    use super::{MarkdownCache, web_domain};
+    use super::{MarkdownCache, Parsed, web_domain};
 
     #[test]
     fn web_domains() {
@@ -684,7 +726,7 @@ mod tests {
         let texts: Vec<String> = (0..super::CACHE_CAPACITY + 300)
             .map(|i| format!("**message** {i}"))
             .collect();
-        let render = |cache: &mut MarkdownCache| -> Vec<Rc<Message>> {
+        let render = |cache: &mut MarkdownCache| -> Vec<Rc<Parsed>> {
             cache.begin_frame();
             texts.iter().map(|t| cache.get(t)).collect()
         };

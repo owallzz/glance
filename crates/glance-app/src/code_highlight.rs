@@ -14,14 +14,16 @@
 //!   [`highlight`] loads it synchronously.
 //! - The first parse in each grammar compiles that grammar's regexes: 120 ms
 //!   (HTML) to 160 ms (Rust), 280 ms (Python), 500 ms (JavaScript), 750 ms (C++)
-//!   and 1.8 s (TypeScript). That never runs on the caller's thread: the block
-//!   goes to a worker thread, [`highlight`] returns `None` (render plain) until
-//!   it is done, and then the [`set_on_ready`] callback asks for a re-render.
-//! - After that a grammar is fast (a few lines in ~0.2 ms) and is parsed on
-//!   the caller's thread.
+//!   and 1.8 s (TypeScript). Regexes compile lazily, so even a later block can
+//!   cost 200 ms (TypeScript), and a 4 KB block costs 10-40 ms when warm.
+//! - So no parse ever runs on the caller's thread: every block goes to a
+//!   worker thread, [`highlight`] answers [`Highlight::Pending`] (render plain)
+//!   until it is done, and then the [`set_on_ready`] callback asks for a
+//!   re-render. The caller's thread only looks up the cache.
 //!
-//! Results are cached by (language, code), so a chat list that re-renders
-//! often parses each block once.
+//! Results are cached by (language, code). The cache is a hand-off from the
+//! worker: callers keep the `Arc` they get (`markdown_view` stores it with
+//! the parsed message), so a chat list that re-renders doesn't ask again.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -66,8 +68,9 @@ pub type Highlights = Vec<(Range<usize>, SyntaxKind)>;
 /// paste would stall whoever renders it.
 const MAX_CODE_BYTES: usize = 32 * 1024;
 
-/// How many highlighted blocks the cache keeps.
-const CACHE_CAPACITY: usize = 256;
+/// How many highlighted blocks the cache keeps. Callers keep what they got,
+/// so this only has to hold results until the next render picks them up.
+const CACHE_CAPACITY: usize = 1024;
 
 /// Blocks waiting for the worker. A full queue drops the request; the block
 /// asks again the next time it renders.
@@ -79,39 +82,48 @@ static WARMING: AtomicBool = AtomicBool::new(false);
 
 type ReadyCallback = Arc<dyn Fn() + Send + Sync>;
 
+/// What [`highlight`] knows about a block.
+#[derive(Clone, Debug)]
+pub enum Highlight {
+    /// Byte ranges, ordered and non-overlapping.
+    Ready(Arc<Highlights>),
+    /// Render plain for now: the syntax set is loading, or the block is on
+    /// the worker. [`set_on_ready`] fires when that finishes; ask again then.
+    Pending,
+    /// Always plain: unknown language, or a block larger than 32 KiB.
+    Plain,
+}
+
 /// Highlight `code` written in `lang` (a Discord/highlight.js tag such as rs,
 /// rust, py, js, ts, c++, cs, json, yaml, toml, sh, bash, diff, md, html, css,
-/// go, java, kt, swift, sql, ini, xml).
-///
-/// `None` means render plain: the language is unknown, the block is larger
-/// than 32 KiB, or the highlight is not ready yet (the syntax set is loading on
-/// the warm-up thread, or this grammar's first parse is running on the worker;
-/// [`set_on_ready`] fires when that finishes). Ranges are byte ranges, ordered
-/// and non-overlapping. Cached by (lang, code).
-pub fn highlight(lang: &str, code: &str) -> Option<Arc<Highlights>> {
+/// go, java, kt, swift, sql, ini, xml). Never parses on this thread: a miss
+/// queues the block for the worker. Cached by (lang, code).
+pub fn highlight(lang: &str, code: &str) -> Highlight {
     if code.len() > MAX_CODE_BYTES {
-        return None;
+        return Highlight::Plain;
     }
-    let syntaxes = syntax_set()?;
-    let syntax = find_syntax(syntaxes, lang)?;
+    let Some(syntaxes) = syntax_set() else {
+        return Highlight::Pending;
+    };
+    let Some(syntax) = find_syntax(syntaxes, lang) else {
+        return Highlight::Plain;
+    };
     let key = cache_key(syntax, code);
-    {
-        let mut state = state().lock().ok()?;
-        if let Some(hit) = state.cache.get(key) {
-            return Some(hit);
-        }
-        if !state.warm.contains(syntax.name.as_str()) {
-            if state.pending.insert(key) && !enqueue(syntax, code, key) {
-                state.pending.remove(&key);
-            }
-            return None;
-        }
+    let Ok(mut state) = state().lock() else {
+        return Highlight::Plain;
+    };
+    if let Some(hit) = state.cache.get(key) {
+        return Highlight::Ready(hit);
     }
-    Some(parse_and_cache(syntaxes, syntax, code, key))
+    if state.pending.insert(key) && !enqueue(syntax, code, key) {
+        // Queue full: the next render asks again.
+        state.pending.remove(&key);
+    }
+    Highlight::Pending
 }
 
 /// Called (on the worker thread) whenever a highlight that [`highlight`]
-/// returned `None` for becomes ready, so the UI can re-render. Replaces any
+/// answered `Pending` for becomes ready, so the UI can re-render. Replaces any
 /// earlier callback.
 pub fn set_on_ready(f: impl Fn() + Send + Sync + 'static) {
     *on_ready().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
@@ -182,7 +194,7 @@ fn syntax_set() -> Option<&'static SyntaxSet> {
     Some(SYNTAXES.get_or_init(load))
 }
 
-/// Parses on the calling thread, caches, and marks the grammar as compiled.
+/// Parses on the calling thread (the worker, or a test) and caches.
 fn parse_and_cache(
     syntaxes: &'static SyntaxSet,
     syntax: &'static SyntaxReference,
@@ -191,7 +203,6 @@ fn parse_and_cache(
 ) -> Arc<Highlights> {
     let result = Arc::new(parse(syntaxes, syntax, code));
     if let Ok(mut state) = state().lock() {
-        state.warm.insert(syntax.name.as_str());
         state.pending.remove(&key);
         state.cache.insert(key, result.clone());
     }
@@ -381,8 +392,6 @@ impl Cache {
 
 struct State {
     cache: Cache,
-    /// Grammars that have been parsed once, so their regexes are compiled.
-    warm: HashSet<&'static str>,
     /// Blocks queued for the worker, so re-renders do not queue them again.
     pending: HashSet<CacheKey>,
 }
@@ -395,7 +404,6 @@ fn state() -> &'static Mutex<State> {
                 entries: HashMap::with_capacity(CACHE_CAPACITY),
                 tick: 0,
             },
-            warm: HashSet::new(),
             pending: HashSet::new(),
         })
     })
@@ -614,8 +622,8 @@ fn classify(scope: Scope) -> Class {
 #[cfg(test)]
 mod tests {
     use super::{
-        Highlights, SYNTAXES, SyntaxKind, cache_key, find_syntax, highlight, load, parse_and_cache,
-        set_on_ready, state, warm_up,
+        Highlight, Highlights, SYNTAXES, SyntaxKind, cache_key, find_syntax, highlight, load,
+        parse_and_cache, set_on_ready, state, warm_up,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -708,12 +716,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_language_is_none() {
+    fn unknown_language_is_plain() {
         SYNTAXES.get_or_init(load);
-        assert!(highlight("definitely-not-a-language", "x").is_none());
-        assert!(highlight("", "fn main() {}").is_none());
-        assert!(highlight("txt", "hello").is_none());
-        assert!(highlight("plaintext", "hello").is_none());
+        assert!(matches!(
+            highlight("definitely-not-a-language", "x"),
+            Highlight::Plain
+        ));
+        assert!(matches!(highlight("", "fn main() {}"), Highlight::Plain));
+        assert!(matches!(highlight("txt", "hello"), Highlight::Plain));
+        assert!(matches!(highlight("plaintext", "hello"), Highlight::Plain));
     }
 
     #[test]
@@ -844,9 +855,25 @@ mod tests {
         );
         let c = hl("rust", "fn other() {}\n");
         assert!(!Arc::ptr_eq(&a, &c));
-        // Rust is compiled now, so the public call answers on this thread.
-        let d = highlight("RS", code).expect("warm grammar highlights synchronously");
+        // A cached block answers from the cache.
+        let Highlight::Ready(d) = highlight("RS", code) else {
+            panic!("cached block is ready");
+        };
         assert!(Arc::ptr_eq(&a, &d));
+    }
+
+    #[test]
+    fn warm_grammar_still_parses_on_the_worker() {
+        // Rust is compiled after this...
+        hl("rust", "fn warm() {}\n");
+        // ...but a new block still goes to the worker, never this thread.
+        let code = "fn not_on_this_thread() -> u8 { 3 }\n";
+        assert!(matches!(highlight("rust", code), Highlight::Pending));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !matches!(highlight("rust", code), Highlight::Ready(_)) {
+            assert!(Instant::now() < deadline, "worker finished");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -859,12 +886,12 @@ mod tests {
         // No other test parses Lua, so its regexes are not compiled yet.
         let code = "local x = \"hi\" -- note\nfunction f() return 1 end\n";
         assert!(
-            highlight("lua", code).is_none(),
+            matches!(highlight("lua", code), Highlight::Pending),
             "first parse goes to the worker"
         );
         let deadline = Instant::now() + Duration::from_secs(60);
         let h = loop {
-            if let Some(h) = highlight("lua", code) {
+            if let Highlight::Ready(h) = highlight("lua", code) {
                 break h;
             }
             assert!(Instant::now() < deadline, "worker finished");
@@ -897,6 +924,6 @@ mod tests {
     fn huge_blocks_render_plain() {
         SYNTAXES.get_or_init(load);
         let code = "x".repeat(super::MAX_CODE_BYTES + 1);
-        assert!(highlight("rust", &code).is_none());
+        assert!(matches!(highlight("rust", &code), Highlight::Plain));
     }
 }
