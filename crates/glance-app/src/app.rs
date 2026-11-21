@@ -433,6 +433,9 @@ pub struct Room {
     /// What's needed to remember this room and save its chat.
     pub memory: crate::recent::RoomMemory,
     pub _events: Option<Task<()>>,
+    /// Redraws once a second so the call time in the user panel counts up;
+    /// dropped (stopped) with the room.
+    pub _clock: Option<Task<()>>,
 }
 
 actions!(glance, [CloseOverlay, ToggleMute, ToggleDeafen]);
@@ -805,11 +808,31 @@ impl GlanceApp {
         }
     }
 
+    /// Re-render on every whole second of a call that started at `started`,
+    /// so the elapsed time in the user panel ticks. Lives as long as the
+    /// task is kept (the room holds it).
+    pub fn call_clock(started: Instant, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                // Wake just after the next second boundary, so the display
+                // changes on the second instead of drifting.
+                let into = started.elapsed().subsec_millis() as u64;
+                let wait = std::time::Duration::from_millis(1000 - into + 5);
+                cx.background_executor().timer(wait).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
     /// The `--demo` room: fake participants, streams and chat.
     pub fn start_demo_room(&mut self, cx: &mut Context<Self>) {
+        let started = Instant::now();
         self.room = Some(Room {
             handle: None,
             _events: None,
+            _clock: Some(Self::call_clock(started, cx)),
             broadcast: None,
             _broadcast_task: None,
             stream_audio: None,
@@ -833,7 +856,7 @@ impl GlanceApp {
             focused: None,
             filmstrip_hidden: false,
             watching: HashMap::new(),
-            started: Instant::now(),
+            started,
         });
         self.screen = Screen::Room;
         cx.notify();

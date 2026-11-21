@@ -185,6 +185,7 @@ impl GlanceApp {
                 }
             }
         });
+        let started = Instant::now();
         self.room = Some(Room {
             name,
             link: handle.link(),
@@ -194,9 +195,10 @@ impl GlanceApp {
             focused: None,
             filmstrip_hidden: false,
             watching: HashMap::new(),
-            started: Instant::now(),
+            started,
             handle: Some(handle),
             _events: Some(task),
+            _clock: Some(Self::call_clock(started, cx)),
             broadcast: None,
             _broadcast_task: None,
             audio: None,
