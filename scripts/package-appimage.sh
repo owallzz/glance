@@ -3,8 +3,8 @@
 #   scripts/package-appimage.sh <glance-binary> <out.AppImage>
 # Uses linuxdeploy ($LINUXDEPLOY, or downloaded into a temp dir). Core
 # system libraries stay on the host: glibc, GL/Vulkan, fontconfig and
-# friends via linuxdeploy's excludelist, plus PipeWire, ALSA and D-Bus,
-# which must match the running daemons. Without FUSE, set
+# friends via linuxdeploy's excludelist, plus PipeWire, ALSA, D-Bus and the
+# C++ runtime, which must match the host. Without FUSE, set
 # APPIMAGE_EXTRACT_AND_RUN=1.
 set -euo pipefail
 bin=$(realpath "$1")
@@ -42,6 +42,8 @@ ARCH=x86_64 LDAI_OUTPUT="$out" OUTPUT="$out" "$ld" \
   --exclude-library 'libasound.so*' \
   --exclude-library 'libdbus-1.so*' \
   --exclude-library 'libvulkan.so*' \
+  --exclude-library 'libstdc++.so*' \
+  --exclude-library 'libgcc_s.so*' \
   --output appimage
 chmod +x "$out"
 echo "$out"
