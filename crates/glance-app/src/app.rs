@@ -492,6 +492,10 @@ pub struct GlanceApp {
     pub contact_menu: Option<PeerId>,
     /// Files sent to / received from contacts outside calls (newest first).
     pub direct_files: Vec<crate::direct::DirectFile>,
+    /// Decoded chat images (thumbnails, the lightbox copy).
+    pub images: crate::images::ImageCache,
+    /// The image open full-window, if any.
+    pub lightbox: Option<crate::images::Lightbox>,
     /// Direct messages with contacts.
     pub dms: crate::dms::Dms,
     /// The conversation open on the home screen.
@@ -672,6 +676,8 @@ impl GlanceApp {
             presence_menu: false,
             contact_menu: None,
             direct_files,
+            images: Default::default(),
+            lightbox: None,
             dms,
             dm_open: None,
             dm_input,
@@ -1212,8 +1218,8 @@ impl Render for GlanceApp {
             .key_context("GlanceApp")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {
-                if this.close_person_menu() {
-                    // Just the menu.
+                if this.close_person_menu() || this.close_lightbox() {
+                    // Just the menu or the image.
                 } else if this.immersive.is_some() {
                     this.exit_fullscreen(window, cx);
                 } else if this.settings_open {
@@ -1267,6 +1273,10 @@ impl Render for GlanceApp {
         if let Some(toast) = self.render_toast(&p) {
             content = content.child(toast);
         }
+        if let Some(lightbox) = self.render_lightbox(&p, window, cx) {
+            content = content.child(lightbox);
+        }
+        self.drop_stale_images(window, cx);
         root = root.child(content);
         root.into_any_element()
     }

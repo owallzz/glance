@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Local, TimeZone};
 use glance_core::dms::{Conversation, DmBody, DmFile, DmIndex, DmState, hex};
-use glance_core::{ContactState, PeerId, Presence, Profile, format};
+use glance_core::{ContactState, PeerId, Presence, Profile, Transfer, format};
 use glance_net::contacts::{ContactCommand, DmFailure};
 use glance_proto::{MAX_DM_LEN, WireDm, WireFile};
 use gpui_kit::assets::IconName;
@@ -796,9 +796,28 @@ impl GlanceApp {
             .iter()
             .position(|d| d.offer.hash == f.hash && d.incoming != mine)
         {
+            // Images we have on disk (sent, or downloaded) show inline.
+            let d = &self.direct_files[i];
+            let have = matches!(d.offer.transfer, Transfer::Sent | Transfer::Done);
+            let preview = d
+                .path
+                .clone()
+                .filter(|_| have && d.offer.is_image())
+                .and_then(|path| {
+                    self.image_preview(
+                        ("dm-image", file_entry_id(&f.hash)),
+                        &path,
+                        &f.name,
+                        crate::images::THUMB_MAX_W,
+                        cx,
+                    )
+                });
             return div()
-                .max_w(px(360.))
-                .child(self.direct_file_card(p, i, cx))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().max_w(px(360.)).child(self.direct_file_card(p, i, cx)))
+                .children(preview)
                 .into_any_element();
         }
         div()

@@ -231,7 +231,16 @@ impl GlanceApp {
             ev,
             RoomEvent::MemberJoined { .. } | RoomEvent::MemberLeft { .. }
         );
+        // Files someone can serve now (history, a sender back, a new
+        // provider): small images download for their inline preview.
+        let files = matches!(
+            ev,
+            RoomEvent::MemberJoined { .. } | RoomEvent::History(_) | RoomEvent::FileProvider { .. }
+        );
         self.apply_room_event(ev, cx);
+        if files {
+            self.auto_preview_images(cx);
+        }
         // The ringback plays only while we're alone in the room.
         if membership {
             self.sync_ringback();

@@ -9,6 +9,7 @@ mod dms;
 mod files;
 mod home;
 mod idle;
+mod images;
 mod instance;
 mod net;
 mod overlays;

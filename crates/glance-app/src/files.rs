@@ -26,6 +26,9 @@ pub struct FileEntry {
     pub path: Option<PathBuf>,
     pub abort: Option<tokio::task::AbortHandle>,
     pub _progress_task: Option<Task<()>>,
+    /// Downloaded once for the inline preview already (cancelling it
+    /// sticks).
+    pub auto_started: bool,
 }
 
 /// Files to send from a paste: copied files as they are, and pasted images
@@ -184,15 +187,41 @@ impl GlanceApp {
         file: WireFile,
         cx: &mut Context<Self>,
     ) {
-        let auto = self.settings.auto_preview
-            && file.mime.starts_with("image/")
-            && file.size <= AUTO_PREVIEW_MAX;
         let hash = file.hash;
         if let Some(room) = self.room.as_mut() {
             crate::recent::add_provider(room, hash, from);
         }
         self.post_file(peer_id(from), file, sent_at, Transfer::Available, None);
-        if auto {
+        self.auto_preview_images(cx);
+    }
+
+    /// Download the images in chat that are small enough to preview inline
+    /// and that someone here can serve: new offers, earlier ones from the
+    /// room's history, and ones whose sender came back. Each only once, so
+    /// a cancelled download stays cancelled.
+    pub fn auto_preview_images(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.auto_preview {
+            return;
+        }
+        let Some(room) = self.room.as_mut() else {
+            return;
+        };
+        let mut start = Vec::new();
+        for m in &room.chat {
+            if let ChatBody::File(f) = &m.body
+                && f.is_image()
+                && f.size <= AUTO_PREVIEW_MAX
+                && f.transfer == Transfer::Available
+                && let Some(e) = room.files.get_mut(&f.hash)
+                && !e.providers.is_empty()
+                && !e.auto_started
+                && e.abort.is_none()
+            {
+                e.auto_started = true;
+                start.push(f.hash);
+            }
+        }
+        for hash in start {
             self.start_download(hash, cx);
         }
     }

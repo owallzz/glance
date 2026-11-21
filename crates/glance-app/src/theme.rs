@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeSet};
-use gpui_kit::{App, Hsla, rgb};
+use gpui_kit::{App, Hsla, rgb, rgba};
 
 /// The bundled theme set (dark + light).
 pub const THEMES_JSON: &str = include_str!("../assets/themes/glance.json");
@@ -93,6 +93,8 @@ pub struct Palette {
     pub bg_menu: Hsla,
     /// Context menu outline and separators.
     pub menu_border: Hsla,
+    /// Behind the full-window image viewer.
+    pub lightbox_backdrop: Hsla,
 }
 
 impl Palette {
@@ -121,6 +123,7 @@ impl Palette {
             gray: rgb(0x80848e).into(),
             bg_menu: rgb(0x111214).into(),
             menu_border: rgb(0x2b2d31).into(),
+            lightbox_backdrop: rgba(0x000000e0).into(),
         }
     }
 
@@ -149,6 +152,7 @@ impl Palette {
             gray: rgb(0x80848e).into(),
             bg_menu: rgb(0xffffff).into(),
             menu_border: rgb(0xe3e5e8).into(),
+            lightbox_backdrop: rgba(0x000000cc).into(),
         }
     }
 

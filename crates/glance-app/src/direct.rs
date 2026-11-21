@@ -183,7 +183,12 @@ impl GlanceApp {
     }
 
     /// A contact sent us a file.
-    pub fn on_contact_file(&mut self, from: glance_net::EndpointId, file: WireFile) {
+    pub fn on_contact_file(
+        &mut self,
+        from: glance_net::EndpointId,
+        file: WireFile,
+        cx: &mut Context<Self>,
+    ) {
         let who = self
             .profile_of(peer_id(from))
             .map(|p| p.name)
@@ -195,6 +200,11 @@ impl GlanceApp {
             );
         }
         self.dm_file(peer_id(from), &file, false);
+        // Small images download right away to show in the conversation.
+        let auto = self.settings.auto_preview
+            && file.mime.starts_with("image/")
+            && file.size <= crate::files::AUTO_PREVIEW_MAX;
+        let hash = file.hash;
         // A resend of the same file replaces the old card.
         self.direct_files
             .retain(|d| !(d.incoming && d.offer.hash == file.hash));
@@ -206,6 +216,9 @@ impl GlanceApp {
             abort: None,
             _task: None,
         });
+        if auto {
+            self.toggle_direct_download(hash, cx);
+        }
     }
 
     fn push_direct(&mut self, file: DirectFile) {

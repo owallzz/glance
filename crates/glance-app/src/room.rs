@@ -1127,6 +1127,8 @@ impl GlanceApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let width = clamp_chat_width(self.settings.chat_width, window_width);
+        // Room for a message body: the panel less padding, avatar and gap.
+        let body_w = width - 84.;
         let hover = p.brand;
         let messages = self
             .room
@@ -1196,7 +1198,7 @@ impl GlanceApp {
                     .children(
                         groups
                             .into_iter()
-                            .map(|(author, msgs)| self.chat_group(p, author, msgs, cx)),
+                            .map(|(author, msgs)| self.chat_group(p, author, msgs, body_w, cx)),
                     ),
             )
             .child(
@@ -1243,6 +1245,7 @@ impl GlanceApp {
         p: &Palette,
         author: PeerId,
         msgs: Vec<ChatMessage>,
+        body_w: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let Some(ChatBody::System(text)) = msgs.first().map(|m| m.body.clone()) {
@@ -1299,7 +1302,7 @@ impl GlanceApp {
                                 .text_color(p.text_normal)
                                 .child(SelectableText::new(("chat-text", m.id), t))
                                 .into_any_element(),
-                            ChatBody::File(f) => self.file_card(p, m.id, f, cx).into_any_element(),
+                            ChatBody::File(f) => self.file_card(p, m.id, f, body_w, cx),
                             ChatBody::System(_) => div().into_any_element(),
                         }
                     })),
@@ -1312,6 +1315,7 @@ impl GlanceApp {
         p: &Palette,
         msg_id: u64,
         f: FileOffer,
+        max_w: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let glyph = if f.is_image() {
@@ -1367,12 +1371,17 @@ impl GlanceApp {
                 .map(|_| (IconName::FolderOpen, "Show in folder")),
         };
         let sent = f.transfer == Transfer::Sent;
-        // Inline preview for images we have on disk.
+        // Inline preview for images we have on disk (small ones download
+        // by themselves; bigger ones once you download them).
+        let card_w = max_w.min(crate::images::THUMB_MAX_W + 26.);
         let preview = path
-            .clone()
-            .filter(|_| f.is_image() && (done || sent) && f.size <= crate::files::AUTO_PREVIEW_MAX);
+            .filter(|_| f.is_image() && (done || sent))
+            .and_then(|path| {
+                // Card padding and border.
+                self.image_preview(("chat-image", msg_id), &path, &f.name, card_w - 26., cx)
+            });
         div()
-            .max_w(px(300.))
+            .max_w(px(card_w))
             .p_3()
             .rounded(px(8.))
             .border_1()
@@ -1394,7 +1403,13 @@ impl GlanceApp {
                             .flex()
                             .flex_col()
                             .child(div().text_color(p.brand).truncate().child(f.name.clone()))
-                            .child(div().text_xs().text_color(p.text_muted).child(status)),
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.text_muted)
+                                    .truncate()
+                                    .child(status),
+                            ),
                     )
                     .children(action.map(|(glyph, tip)| {
                         icon_button(
@@ -1422,13 +1437,7 @@ impl GlanceApp {
                     .bg(p.bg_selected)
                     .child(div().h_full().w(relative(frac)).rounded_full().bg(p.brand))
             }))
-            .children(preview.map(|path| {
-                img(path)
-                    .max_w(px(276.))
-                    .max_h(px(200.))
-                    .rounded(px(4.))
-                    .object_fit(ObjectFit::Contain)
-            }))
+            .children(preview)
             .into_any_element()
     }
 }

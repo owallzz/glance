@@ -632,7 +632,7 @@ impl GlanceApp {
                     self.join_error = Some(format!("{name}'s call isn't open to join right now."));
                 }
             },
-            ContactEvent::FileReceived { from, file } => self.on_contact_file(from, file),
+            ContactEvent::FileReceived { from, file } => self.on_contact_file(from, file, cx),
             ContactEvent::DmReceived { from, dm } => self.on_dm_received(peer_id(from), dm),
             ContactEvent::DmAcked { from, id } => self.on_dm_acked(peer_id(from), id),
             ContactEvent::DmFailed { to, id, reason } => self.on_dm_failed(peer_id(to), id, reason),
