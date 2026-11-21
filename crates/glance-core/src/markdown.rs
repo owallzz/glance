@@ -890,9 +890,18 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// A line that continues the list item above it: not blank, not a bullet.
+    /// A line that continues the list item above it: not blank, not a bullet,
+    /// and not the start of a heading, subtext or quote (`- a\n-# note` keeps
+    /// the note under the list, as people write it in Discord).
     fn lazy_line(&self, ls: usize) -> bool {
-        !self.s[ls..self.line_end(ls)].trim().is_empty() && self.bullet(ls).is_none()
+        let line = &self.s[ls..self.line_end(ls)];
+        let t = line.trim_start_matches(' ');
+        let hashes = t.bytes().take_while(|&b| b == b'#').count();
+        let starts_block = (1..=3).contains(&hashes) && t[hashes..].starts_with(' ')
+            || t.starts_with("-# ")
+            || t.starts_with("> ")
+            || t.starts_with(">>>");
+        !line.trim().is_empty() && !starts_block && self.bullet(ls).is_none()
     }
 
     fn list(&mut self, i: usize) -> Option<(Node, usize)> {
@@ -2658,6 +2667,19 @@ mod tests {
                 start: Some(1),
                 items: vec![vec![para("i: "), code_block(Some("sh"), "c")]],
             }]
+        );
+        // Headings, subtext and quotes after an item stay outside the list.
+        assert_eq!(blocks("- a\n# h"), vec![bullets(&["a"]), heading(1, "h")]);
+        assert_eq!(
+            blocks("- a\n-# note"),
+            vec![
+                bullets(&["a"]),
+                Block::Subtext(rich(&[("note", Style::default())]))
+            ]
+        );
+        assert_eq!(
+            blocks("- a\n> q"),
+            vec![bullets(&["a"]), Block::Quote(vec![para("q")])]
         );
         assert_eq!(blocks("x\n- a"), vec![para("x"), bullets(&["a"])]);
         assert_eq!(
