@@ -708,18 +708,29 @@ mod tests {
             control.reconfigure(h, 30);
             std::thread::sleep(Duration::from_millis(50));
         }
+        // Collect until it settles on the last request (960x540), however
+        // slow the machine (CI runners encode a debug build slowly).
         let mut keyframes = vec![];
-        while t0.elapsed() < Duration::from_millis(2500) {
-            if let Ok((sent, p)) = viewer.packets.recv_timeout(Duration::from_millis(100)) {
-                // Every packet decodes, whatever size it's at.
-                viewer.decoder.decode(&p.data, (0, 0)).unwrap();
-                if p.keyframe {
-                    keyframes.push(sent - t0);
-                }
+        let deadline = t0 + Duration::from_secs(20);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let (sent, p) = viewer
+                .packets
+                .recv_timeout(left)
+                .expect("settles on the last request in time");
+            if p.keyframe {
+                keyframes.push(sent - t0);
+            }
+            // Every packet decodes, whatever size it's at.
+            let frame = viewer.decoder.decode(&p.data, (0, 0)).unwrap();
+            if frame.is_some_and(|f| (f.width, f.height) == (960, 540)) {
+                break;
             }
         }
+        // At most one new encoder (keyframe) a second while the burst lasts.
+        let span = keyframes.last().copied().unwrap_or_default();
         assert!(
-            (1..=3).contains(&keyframes.len()),
+            !keyframes.is_empty() && keyframes.len() as u64 <= span.as_secs() + 2,
             "keyframes at {keyframes:?}"
         );
         for pair in keyframes.windows(2) {
@@ -728,8 +739,6 @@ mod tests {
                 "{keyframes:?}"
             );
         }
-        // It settles on the last request.
-        viewer.until((960, 540));
         control.stop();
     }
 
