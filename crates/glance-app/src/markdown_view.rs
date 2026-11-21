@@ -549,7 +549,9 @@ pub fn web_domain(url: &str) -> Option<String> {
     let rest = lower
         .strip_prefix("https://")
         .or_else(|| lower.strip_prefix("http://"))?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // Browsers (WHATWG URL rules) treat `\` like `/` in http(s) URLs, so it
+    // ends the authority too: `https://evil.com\@trusted.com` opens evil.com.
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
     let host = authority.rsplit('@').next().unwrap_or_default();
     let host = if let Some(v6) = host.strip_prefix('[') {
         // [::1]:8080
@@ -605,6 +607,14 @@ mod tests {
         assert_eq!(web_domain("http://a.io:8080").as_deref(), Some("a.io"));
         assert_eq!(
             web_domain("https://trusted.com@evil.com/x").as_deref(),
+            Some("evil.com")
+        );
+        assert_eq!(
+            web_domain(r"https://evil.com\@trusted.com").as_deref(),
+            Some("evil.com")
+        );
+        assert_eq!(
+            web_domain(r"https://evil.com\\@trusted.com/x").as_deref(),
             Some("evil.com")
         );
         assert_eq!(web_domain("https://[::1]:80/").as_deref(), Some("[::1]"));
