@@ -201,7 +201,8 @@ impl AudioEngine {
         recent_loud(&self.shared.levels.lock().unwrap())
     }
 
-    /// Peers loud enough in what reaches the speakers in the last 300 ms:
+    /// Peers loud enough at their own volume in the last 300 ms (the master
+    /// output volume is ignored):
     /// like [`Self::speaking_peers`] minus locally muted (or zero volume)
     /// peers, and nobody while deafened.
     pub fn audible_peers(&self) -> Vec<PeerKey> {
@@ -390,13 +391,17 @@ fn run(
             // Muted peers are still decoded so their decoder and jitter
             // buffer stay in step for when they're unmuted.
             if ok && !deafened && !muted_peers.contains(key) {
-                let vol = volumes.get(key).copied().unwrap_or(1.0) * master;
+                let peer_vol = volumes.get(key).copied().unwrap_or(1.0);
+                let vol = peer_vol * master;
                 if vol > 0.0 {
                     for (m, d) in mix.iter_mut().zip(&decoded) {
                         *m += d * vol;
                     }
+                    // Audible = their level at their volume. The master
+                    // output volume is left out: turning your speakers down
+                    // doesn't mean you can't hear them.
                     for d in decoded.iter_mut() {
-                        *d *= vol;
+                        *d *= peer_vol;
                     }
                     heard.push((*key, level_of(&decoded)));
                 }
@@ -566,7 +571,11 @@ mod tests {
             listener.audible_peers()
         );
         // Still shown as talking, just not played.
-        assert_eq!(listener.speaking_peers(), vec![alice, bob]);
+        assert!(
+            wait_until(&|| listener.speaking_peers() == vec![alice, bob]),
+            "muted peer should still show as speaking: {:?}",
+            listener.speaking_peers()
+        );
 
         listener.set_peer_muted(alice, false);
         assert_eq!(listener.peer_volume(&alice), 0.5);
@@ -579,9 +588,18 @@ mod tests {
         // Deafened: nobody is played (voice and stream audio alike).
         listener.set_deafened(true);
         assert!(wait_until(&|| listener.audible_peers().is_empty()));
-        assert_eq!(listener.speaking_peers(), vec![alice, bob]);
+        assert!(wait_until(&|| listener.speaking_peers() == vec![alice, bob]));
         listener.set_deafened(false);
         assert!(wait_until(&|| listener.audible_peers() == vec![alice, bob]));
+
+        // A low speaker volume doesn't make people inaudible.
+        listener.set_output_volume(0.05);
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            wait_until(&|| listener.audible_peers() == vec![alice, bob]),
+            "quiet output hid peers: {:?}",
+            listener.audible_peers()
+        );
         drop(talkers);
     }
 }
