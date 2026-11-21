@@ -58,6 +58,11 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.3.0" date="2026-11-21">
+      <description>
+        <p>Discord-style formatting in room chat and direct messages, with spoilers, highlighted code blocks, quotes, headings and lists; a message box that formats as you type; a check before web links open; multi-line room messages; and a bundled font so bold text looks right everywhere.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-21">
       <description>
         <p>Direct messages, recent rooms with saved chat, mute people for yourself, change a live stream's quality without stopping, better pop-out windows, new call sounds, installers and signed automatic updates.</p>
