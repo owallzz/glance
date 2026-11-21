@@ -811,6 +811,11 @@ impl GlanceApp {
     }
 
     pub fn leave_room(&mut self, cx: &mut Context<Self>) {
+        // An in-call mic test puts your mute/deafen back first, so the next
+        // call doesn't start deafened.
+        if self.mic_test.as_ref().is_some_and(|t| t.in_call()) {
+            self.stop_mic_test();
+        }
         self.record_call_end();
         self.cancel_rings();
         self.remember_room(true);
@@ -902,6 +907,15 @@ impl GlanceApp {
 
     pub fn set_deafened(&mut self, deafened: bool) {
         use glance_media::audio::sounds::Sound;
+        // Undeafening yourself during an in-call mic test ends the test
+        // (keeping what you chose rather than restoring the old state).
+        if !deafened
+            && let Some(test) = self.mic_test.as_mut()
+            && test.in_call()
+        {
+            test.restore = None;
+            self.stop_mic_test();
+        }
         self.voice.set_deafened(deafened);
         self.chime(if deafened {
             Sound::Deafen

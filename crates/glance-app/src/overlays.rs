@@ -1401,8 +1401,9 @@ impl GlanceApp {
             })
             .when(testing, |b| b.danger())
             .when(!testing, |b| b.primary())
-            .disabled(in_call)
-            .when(in_call, |b| b.tooltip("Not available during a call"))
+            .when(in_call && !testing, |b| {
+                b.tooltip("You'll be deafened while the test runs")
+            })
             .on_click(cx.listener(|this, _, _, cx| this.toggle_mic_test(cx)));
         div()
             .py_4()
