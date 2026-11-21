@@ -23,6 +23,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Asset name
+        # The tag on release runs; a manual run on a branch like `fix/x`
+        # gets `fix-x`, since a slash would break the file paths.
+        run: echo "ASSET_NAME=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_ENV"
       - name: Check tag matches workspace version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -32,13 +36,13 @@ jobs:
       - name: Package
         run: |
           mkdir dist
-          cp target/release/glance "dist/glance-${GITHUB_REF_NAME}-linux-x86_64"
+          cp target/release/glance "dist/glance-${ASSET_NAME}-linux-x86_64"
       - name: AppImage
         env:
           # GitHub runners have no FUSE.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          out="dist/glance-${GITHUB_REF_NAME}-linux-x86_64.AppImage"
+          out="dist/glance-${ASSET_NAME}-linux-x86_64.AppImage"
           scripts/package-appimage.sh target/release/glance "$out"
           "$out" --version
       - uses: actions/upload-artifact@v7
@@ -70,20 +74,24 @@ jobs:
       options: --privileged
     steps:
       - uses: actions/checkout@v7
+      - name: Asset name
+        shell: bash
+        run: echo "ASSET_NAME=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
         with:
           name: flatpak-cargo-sources
           path: packaging/flatpak
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: glance-${{ github.ref_name }}-linux-x86_64.flatpak
+          bundle: glance.flatpak
           manifest-path: packaging/flatpak/io.github.owallzz.glance.yml
           cache-key: flatpak-builder-${{ hashFiles('Cargo.lock') }}
           upload-artifact: false
       - name: Package
+        shell: bash
         run: |
           mkdir -p dist
-          mv "glance-${GITHUB_REF_NAME}-linux-x86_64.flatpak" dist/
+          mv glance.flatpak "dist/glance-${ASSET_NAME}-linux-x86_64.flatpak"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-flatpak
@@ -110,6 +118,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Asset name
+        # The tag on release runs; a manual run on a branch like `fix/x`
+        # gets `fix-x`, since a slash would break the file paths.
+        run: echo "ASSET_NAME=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_ENV"
       - name: Check tag matches workspace version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -122,21 +134,26 @@ jobs:
           mkdir dist
           bin=target/release/glance
           [ "${{ matrix.name }}" = "Windows" ] && bin=target/release/glance.exe
-          cp "$bin" "dist/glance-${GITHUB_REF_NAME}-${{ matrix.asset }}"
+          cp "$bin" "dist/glance-${ASSET_NAME}-${{ matrix.asset }}"
           "$bin" --version
       - name: macOS app bundle (.dmg, .app.tar.gz)
         if: matrix.name == 'macOS'
         run: |
           # The .app holds the permission prompts and glance:// handler.
-          scripts/package-macos.sh target/release/glance "${GITHUB_REF_NAME#v}" bundle
-          mv bundle/glance.dmg "dist/glance-${GITHUB_REF_NAME}-macos-aarch64.dmg"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="glance-app") | .version')
+          fi
+          scripts/package-macos.sh target/release/glance "$version" bundle
+          mv bundle/glance.dmg "dist/glance-${ASSET_NAME}-macos-aarch64.dmg"
           # No AppleDouble (._*) files, which would break the signature.
-          COPYFILE_DISABLE=1 tar -C bundle -czf "dist/glance-${GITHUB_REF_NAME}-macos-aarch64.app.tar.gz" glance.app
+          COPYFILE_DISABLE=1 tar -C bundle -czf "dist/glance-${ASSET_NAME}-macos-aarch64.app.tar.gz" glance.app
       - name: Windows installer and portable zip
         if: matrix.name == 'Windows'
         shell: pwsh
         run: |
-          $tag = $env:GITHUB_REF_NAME
+          $tag = $env:ASSET_NAME
           $version = ((cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
             Where-Object name -eq 'glance-app').version
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"

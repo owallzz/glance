@@ -144,7 +144,7 @@ impl GlanceApp {
         };
         self.set_update_status(Status::Installing(staged.version.clone()), cx);
         let install = cx.background_spawn(async move {
-            apply::apply(&staged).and_then(|next| match next {
+            apply::apply(&staged, true).and_then(|next| match next {
                 apply::Next::Launch(exe) => apply::relaunch(&exe, &[apply::AFTER_UPDATE]),
                 apply::Next::InstallerRelaunches => Ok(()),
             })

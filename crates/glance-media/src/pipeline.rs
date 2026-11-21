@@ -95,6 +95,15 @@ impl RateController {
             last_change: self.last_change,
         }
     }
+
+    /// The controller for a new encoder at `base`: the old one rebased, or
+    /// a fresh one for the first encoder.
+    pub fn for_rebuild(old: Option<&Self>, base: u32) -> Self {
+        match old {
+            Some(old) => old.rebased(base),
+            None => Self::new(base),
+        }
+    }
 }
 
 /// Encoders are remade (each starting with a keyframe) at most this often,
@@ -359,8 +368,13 @@ pub fn start_broadcast(
                 let may_rebuild = encoder.is_none()
                     || last_rebuild.is_none_or(|t| t.elapsed() >= MIN_REBUILD_GAP);
                 if stale && may_rebuild {
+                    // The new encoder starts at the carried-over rate, not
+                    // at the full base, so a backed-off viewer isn't
+                    // flooded by the rebuild.
                     let base = bitrate_for(out.0, out.1, config.fps);
-                    match VideoEncoder::with_choice(out.0, out.1, config.fps, base, choice) {
+                    let rc = RateController::for_rebuild(rate.as_ref(), base);
+                    let bps = rc.current();
+                    match VideoEncoder::with_choice(out.0, out.1, config.fps, bps, choice) {
                         Ok(e) => {
                             tracing::info!(
                                 "encoding {}x{}@{} with {}",
@@ -373,11 +387,7 @@ pub fn start_broadcast(
                             encoder = Some(e);
                             encoder_fps = config.fps;
                             last_rebuild = Some(Instant::now());
-                            let rc = match &rate {
-                                Some(old) => old.rebased(base),
-                                None => RateController::new(base),
-                            };
-                            ctl.bitrate.store(rc.current() as u64, Ordering::Relaxed);
+                            ctl.bitrate.store(bps as u64, Ordering::Relaxed);
                             rate = Some(rc);
                             // A new encoder starts with a keyframe (with
                             // SPS/PPS), which answers any pending request.
@@ -573,6 +583,21 @@ mod tests {
         let r = rc.rebased(4_000_000);
         assert_eq!(r.current(), 2_800_000);
         assert_eq!(RateController::new(1_000).rebased(8_000).current(), 8_000);
+    }
+
+    #[test]
+    fn rebuilt_encoder_starts_at_the_backed_off_rate() {
+        assert_eq!(
+            RateController::for_rebuild(None, 3_000_000).current(),
+            3_000_000
+        );
+        let mut rc = RateController::new(1_000_000);
+        rc.on_congestion(Instant::now());
+        // Same size and rate (e.g. a hardware fallback): stays backed off.
+        assert_eq!(
+            RateController::for_rebuild(Some(&rc), 1_000_000).current(),
+            700_000
+        );
     }
 
     /// Runs a software-encoded broadcast and decodes what it sends with
