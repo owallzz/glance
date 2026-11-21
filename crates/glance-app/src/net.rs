@@ -14,12 +14,75 @@ use serde::{Deserialize, Serialize};
 
 /// Where glance keeps its identity, profile and settings.
 /// `GLANCE_DATA_DIR` overrides it, which is how you run a second "person"
-/// on one machine.
+/// on one machine. A portable copy (see [`portable_dir`]) keeps its data in
+/// `data` next to the executable; otherwise it's the OS data dir.
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("GLANCE_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::data_dir().map(|d| d.join("glance")))
+    choose_data_dir(
+        std::env::var_os("GLANCE_DATA_DIR").map(PathBuf::from),
+        portable_dir(),
+        dirs::data_dir(),
+    )
+}
+
+fn choose_data_dir(
+    override_dir: Option<PathBuf>,
+    portable: Option<PathBuf>,
+    os_data: Option<PathBuf>,
+) -> PathBuf {
+    override_dir
+        .or_else(|| portable.map(|d| d.join("data")))
+        .or_else(|| os_data.map(|d| d.join("glance")))
         .unwrap_or_else(|| PathBuf::from(".glance"))
+}
+
+/// Name of the marker file that makes a copy portable.
+pub const PORTABLE_MARKER: &str = "portable";
+
+/// The folder of a portable copy: the folder of [`launch_path`] (the
+/// AppImage's for an AppImage) when a file named `portable` sits in it.
+/// Portable copies keep their data next to themselves and leave the system
+/// alone (no start-on-login, no glance:// registration).
+pub fn portable_dir() -> Option<PathBuf> {
+    portable_root(&launch_path()?, |p| p.is_file())
+}
+
+fn portable_root(launch: &Path, is_file: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let dir = launch.parent()?;
+    is_file(&dir.join(PORTABLE_MARKER)).then(|| dir.to_path_buf())
+}
+
+/// The file that starts this copy of glance, for start-on-login entries and
+/// link handlers: the `.AppImage` when running from one (the executable sits
+/// in a temporary mount that's gone once glance exits), else the executable.
+pub fn launch_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
+    let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+    Some(choose_launch_path(exe, appimage, appdir))
+}
+
+fn choose_launch_path(exe: PathBuf, appimage: Option<PathBuf>, appdir: Option<PathBuf>) -> PathBuf {
+    // APPIMAGE and APPDIR are inherited by everything an AppImage starts, so
+    // trust them only when this executable really sits inside that AppDir.
+    match (appimage, appdir) {
+        (Some(image), Some(dir)) if !dir.as_os_str().is_empty() && exe.starts_with(&dir) => image,
+        _ => exe,
+    }
+}
+
+/// Running inside a Flatpak sandbox: updates, start-on-login and the
+/// glance:// handler are the sandbox's business.
+pub fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists()
+}
+
+/// Whether this copy may change the system (start-on-login, link handler):
+/// only release builds using the real data dir, never portable copies, so
+/// dev builds and test identities don't take over the installed app.
+pub fn may_integrate() -> bool {
+    !cfg!(debug_assertions)
+        && std::env::var_os("GLANCE_DATA_DIR").is_none()
+        && portable_dir().is_none()
 }
 
 /// Load the identity key, creating it on first run (0600 on Unix).
@@ -266,6 +329,62 @@ impl Net {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_dir_prefers_override_then_portable_then_os() {
+        let o = Some(PathBuf::from("/o"));
+        let port = Some(PathBuf::from("/apps/glance"));
+        let os = Some(PathBuf::from("/home/u/.local/share"));
+        assert_eq!(
+            choose_data_dir(o.clone(), port.clone(), os.clone()),
+            PathBuf::from("/o")
+        );
+        assert_eq!(
+            choose_data_dir(None, port, os.clone()),
+            PathBuf::from("/apps/glance/data")
+        );
+        assert_eq!(
+            choose_data_dir(None, None, os),
+            PathBuf::from("/home/u/.local/share/glance")
+        );
+        assert_eq!(choose_data_dir(None, None, None), PathBuf::from(".glance"));
+    }
+
+    #[test]
+    fn portable_needs_the_marker_next_to_the_launch_path() {
+        let exe = Path::new("/apps/glance/glance.exe");
+        let marker = |want: &'static str| move |p: &Path| p == Path::new(want);
+        assert_eq!(
+            portable_root(exe, marker("/apps/glance/portable")),
+            Some(PathBuf::from("/apps/glance"))
+        );
+        assert_eq!(portable_root(exe, marker("/elsewhere/portable")), None);
+    }
+
+    #[test]
+    fn launch_path_is_the_appimage_only_inside_its_mount() {
+        let mounted = PathBuf::from("/tmp/.mount_abc/usr/bin/glance");
+        let image = PathBuf::from("/home/u/Apps/glance.AppImage");
+        let appdir = PathBuf::from("/tmp/.mount_abc");
+        assert_eq!(
+            choose_launch_path(mounted.clone(), Some(image.clone()), Some(appdir.clone())),
+            image
+        );
+        // Not an AppImage at all.
+        assert_eq!(choose_launch_path(mounted.clone(), None, None), mounted);
+        // A plain binary started from inside another AppImage inherits its
+        // APPIMAGE/APPDIR: keep the binary's own path.
+        let plain = PathBuf::from("/home/u/tools/glance/glance");
+        assert_eq!(
+            choose_launch_path(
+                plain.clone(),
+                Some(PathBuf::from("/home/u/Apps/Other.AppImage")),
+                Some(PathBuf::from("/tmp/.mount_xyz"))
+            ),
+            plain
+        );
+        assert_eq!(choose_launch_path(plain.clone(), Some(image), None), plain);
+    }
 
     #[test]
     fn key_and_profile_persist() {

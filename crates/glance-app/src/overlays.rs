@@ -483,7 +483,7 @@ impl GlanceApp {
             .text_color(p.text_header)
             .child(page.label());
         macro_rules! toggle {
-            ($id:literal, $label:literal, $desc:literal, $field:ident) => {
+            ($id:literal, $label:literal, $desc:expr, $field:ident) => {
                 setting_row(
                     p,
                     $label,
@@ -495,7 +495,7 @@ impl GlanceApp {
                             this.on_settings_changed();
                             this.apply_theme(window, cx);
                             this.apply_tray(window, cx);
-                            crate::tray::sync_autostart(this.settings.autostart);
+                            this.sync_autostart(cx);
                             cx.notify();
                         })),
                 )
@@ -785,12 +785,18 @@ impl GlanceApp {
                     "Closing the window keeps glance reachable so contacts can ring you.",
                     tray
                 ))
-                .child(toggle!(
-                    "autostart",
-                    "Start glance on login",
-                    "Opens quietly in the tray when you sign in.",
-                    autostart
-                ))
+                .when(crate::tray::autostart_available(), |d| {
+                    d.child(toggle!(
+                        "autostart",
+                        "Start glance on login",
+                        if crate::net::in_flatpak() {
+                            "Opens quietly in the tray when you sign in. Your desktop may ask to allow it."
+                        } else {
+                            "Opens quietly in the tray when you sign in."
+                        },
+                        autostart
+                    ))
+                })
                 .into_any_element(),
             SettingsPage::Files => div()
                 .flex()

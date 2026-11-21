@@ -286,6 +286,36 @@ impl GlanceApp {
         cx.notify();
     }
 
+    /// Bring start-on-login in line with the setting, once per change (the
+    /// Flatpak portal may prompt, so don't ask again for unrelated toggles).
+    pub fn sync_autostart(&mut self, cx: &mut Context<Self>) {
+        let want = self.settings.autostart && self.net.is_some();
+        if self.autostart_synced == Some(want) {
+            return;
+        }
+        let first = self.autostart_synced.is_none();
+        self.autostart_synced = Some(want);
+        // Nothing to undo at startup inside Flatpak, and asking the portal
+        // to drop autostart on every launch would be noise.
+        if first && !want && crate::net::in_flatpak() {
+            return;
+        }
+        let Some(refused) = crate::tray::sync_autostart(want) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            if refused.recv_async().await.is_ok() {
+                let _ = this.update(cx, |app, cx| {
+                    app.settings.autostart = false;
+                    app.autostart_synced = Some(false);
+                    app.save_settings();
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     pub fn save_settings(&self) {
         glance_media::codec::set_hardware_decoding(self.settings.hardware_encoding);
         if let Some(net) = &self.net
@@ -436,6 +466,8 @@ pub struct GlanceApp {
     pub immersive: Option<PeerId>,
     pub _tray: Option<crate::tray::Tray>,
     pub _tray_task: Option<Task<()>>,
+    /// Start-on-login state last handed to the system.
+    pub autostart_synced: Option<bool>,
     pub camera_list: Option<Vec<glance_media::camera::CameraInfo>>,
     /// Audio devices, listed when the voice settings open.
     pub audio_devices: Option<(
@@ -588,6 +620,7 @@ impl GlanceApp {
             invite_open: false,
             _tray: None,
             _tray_task: None,
+            autostart_synced: None,
             immersive: None,
         };
         // While the tray icon is up, closing the window minimizes it so calls
@@ -606,7 +639,7 @@ impl GlanceApp {
                 .update(cx, |s, cx| s.set_value(url, window, cx));
         }
         app.apply_tray(window, cx);
-        crate::tray::sync_autostart(app.settings.autostart && app.net.is_some());
+        app.sync_autostart(cx);
         if !demo_room {
             app.start_contacts(cx);
             app.watch_idle(cx);

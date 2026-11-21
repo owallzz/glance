@@ -36,6 +36,7 @@ auto-launch = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3", default-features = false }
 ksni = { version = "0.3", default-features = false, features = ["tokio"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
@@ -44,3 +45,7 @@ tray-icon = "0.26"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.56"
+
+# Icon and version info in glance.exe (see build.rs).
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"

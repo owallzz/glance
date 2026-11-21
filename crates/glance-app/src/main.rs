@@ -35,6 +35,10 @@ fn main() {
         )
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("glance {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if args.first().map(String::as_str) == Some("--export-icons") {
         let dir = args
             .get(1)

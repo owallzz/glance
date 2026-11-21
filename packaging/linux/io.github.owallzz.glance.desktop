@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=glance
+GenericName=Screen Sharing
+Comment=Peer-to-peer screen sharing rooms with voice, chat and webcams
+Exec=glance %u
+Icon=io.github.owallzz.glance
+Terminal=false
+Categories=Network;Chat;VideoConference;
+Keywords=screen;share;stream;voice;call;chat;webcam;p2p;
+MimeType=x-scheme-handler/glance;
+StartupNotify=true
+StartupWMClass=glance

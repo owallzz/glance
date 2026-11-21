@@ -22,8 +22,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-dev libx11-xcb-dev libxrandr-dev libwayland-dev libvulkan-dev libssl-dev libpipewire-0.3-dev libclang-dev libdbus-1-dev libasound2-dev nasm
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-dev libx11-xcb-dev libxrandr-dev libwayland-dev libvulkan-dev libssl-dev libpipewire-0.3-dev libclang-dev libdbus-1-dev libasound2-dev nasm desktop-file-utils appstream
       - uses: actions/checkout@v7
+      - name: Validate Linux packaging metadata
+        run: |
+          desktop-file-validate packaging/linux/io.github.owallzz.glance.desktop
+          appstreamcli validate --no-net packaging/linux/io.github.owallzz.glance.metainfo.xml
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
