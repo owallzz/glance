@@ -88,3 +88,54 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: dist/*
+
+  # Signs every release asset with minisign (packaging/minisign.pub holds the
+  # public key the updater checks against). The trusted comment names the
+  # file, so a signature can't be reused for another version's asset.
+  sign:
+    name: Sign
+    # Every job that uploads a dist-* artifact belongs here.
+    needs: [release, native]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Sign assets
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              echo "::error::MINISIGN_SECRET_KEY is not set; tagged releases must be signed"
+              exit 1
+            fi
+            echo "::warning::MINISIGN_SECRET_KEY is not set; skipping signatures (test run)"
+            exit 0
+          fi
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+          umask 077
+          key="$RUNNER_TEMP/minisign.key"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          cd dist
+          shopt -s nullglob
+          for f in *; do
+            case "$f" in *.minisig) continue ;; esac
+            [ -f "$f" ] || continue
+            minisign -S -s "$key" -m "$f" -x "$f.minisig" \
+              -t "$(printf 'timestamp:%s\tfile:%s\thashed' "$(date +%s)" "$f")"
+          done
+          rm -f "$key"
+          ls -l
+      - uses: actions/upload-artifact@v7
+        with:
+          name: signatures
+          path: dist/*.minisig
+          if-no-files-found: ignore
+      - uses: softprops/action-gh-release@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/*.minisig
