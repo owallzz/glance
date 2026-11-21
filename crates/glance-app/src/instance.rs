@@ -73,6 +73,24 @@ pub fn hand_off(dir: &Path, req: &Request) -> bool {
     BufReader::new(stream).read_line(&mut reply).is_ok() && reply.trim() == "ok"
 }
 
+/// Wait (up to `timeout`) until the instance that wrote `instance.json`
+/// stops answering, i.e. has exited. Used after an update restart.
+pub fn wait_until_gone(dir: &Path, timeout: Duration) {
+    let Some(info) = std::fs::read_to_string(info_path(dir))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Info>(&t).ok())
+    else {
+        return;
+    };
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, info.port));
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline
+        && TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+    {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// Become the running instance: accept hand-offs and send them to `tx`.
 /// The listener thread lives as long as the process.
 pub fn listen(dir: &Path, tx: flume::Sender<Request>) -> std::io::Result<()> {
@@ -142,6 +160,35 @@ mod tests {
         // A wrong token is ignored.
         std::fs::write(info_path(&dir), r#"{"port":1,"token":"x"}"#).unwrap();
         assert!(!hand_off(&dir, &Request::Show));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn waits_for_the_old_instance_to_go() {
+        let dir = std::env::temp_dir().join(format!("glance-instance-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Nobody wrote instance.json: returns at once.
+        let start = std::time::Instant::now();
+        wait_until_gone(&dir, Duration::from_secs(5));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // Someone still listening: waits until the listener closes.
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let info = Info {
+            port: listener.local_addr().unwrap().port(),
+            token: "t".into(),
+        };
+        std::fs::write(info_path(&dir), serde_json::to_vec(&info).unwrap()).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(600));
+            drop(listener);
+        });
+        let start = std::time::Instant::now();
+        wait_until_gone(&dir, Duration::from_secs(5));
+        let waited = start.elapsed();
+        closer.join().unwrap();
+        assert!(waited >= Duration::from_millis(500), "{waited:?}");
+        assert!(waited < Duration::from_secs(4), "{waited:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

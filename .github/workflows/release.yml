@@ -17,8 +17,6 @@ jobs:
     name: Linux
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: write
     steps:
       - name: System packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-dev libx11-xcb-dev libxrandr-dev libwayland-dev libvulkan-dev libssl-dev libpipewire-0.3-dev libclang-dev libdbus-1-dev libasound2-dev nasm file desktop-file-utils appstream
@@ -47,10 +45,6 @@ jobs:
         with:
           name: dist-linux
           path: dist/*
-      - uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: dist/*
 
   # flatpak-builder builds offline, so the crates come from a sources file
   # generated from Cargo.lock.
@@ -71,8 +65,6 @@ jobs:
     needs: flatpak-sources
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    permissions:
-      contents: write
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
       options: --privileged
@@ -96,10 +88,6 @@ jobs:
         with:
           name: dist-flatpak
           path: dist/*
-      - uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: dist/*
 
   native:
     name: ${{ matrix.name }}
@@ -115,8 +103,6 @@ jobs:
             asset: windows-x86_64.exe
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 90
-    permissions:
-      contents: write
     defaults:
       run:
         shell: bash
@@ -175,7 +161,69 @@ jobs:
         with:
           name: dist-${{ matrix.name }}
           path: dist/*
+
+  # Signs every release asset with minisign (packaging/minisign.pub holds the
+  # public key the updater checks against). The trusted comment names the
+  # file, so a signature can't be reused for another version's asset.
+  sign:
+    name: Sign
+    # Every job that uploads a dist-* artifact belongs here. Runs even when a
+    # build leg failed, so the platforms that did build still get signatures
+    # (an unsigned asset is never installed by the updater).
+    needs: [release, flatpak, native]
+    permissions:
+      contents: write
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Sign assets
+        id: sign
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              echo "::error::MINISIGN_SECRET_KEY is not set; tagged releases must be signed"
+              exit 1
+            fi
+            echo "::warning::MINISIGN_SECRET_KEY is not set; skipping signatures (test run)"
+            exit 0
+          fi
+          mkdir -p dist
+          if [ -z "$(ls -A dist)" ]; then
+            echo "::warning::no build artifacts to sign"
+            exit 0
+          fi
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+          umask 077
+          key="$RUNNER_TEMP/minisign.key"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          cd dist
+          shopt -s nullglob
+          for f in *; do
+            case "$f" in *.minisig) continue ;; esac
+            [ -f "$f" ] || continue
+            minisign -S -s "$key" -m "$f" -x "$f.minisig" \
+              -t "$(printf 'timestamp:%s\tfile:%s\thashed' "$(date +%s)" "$f")"
+          done
+          rm -f "$key"
+          ls -l
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        if: steps.sign.outputs.signed == 'true'
+        with:
+          name: signatures
+          path: dist/*.minisig
+      # The build jobs only make artifacts; the release gets every asset and
+      # its signature here in one go, so the updater never sees a release
+      # whose files aren't signed yet.
       - uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && steps.sign.outputs.signed == 'true'
         with:
           files: dist/*

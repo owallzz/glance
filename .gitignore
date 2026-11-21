@@ -16,3 +16,4 @@
 /build-dir
 *.AppImage
 *.flatpak
+.claude/worktrees/

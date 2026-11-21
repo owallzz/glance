@@ -17,6 +17,8 @@ pub fn active() -> bool {
 pub enum TrayEvent {
     Open,
     SetPresence(Presence),
+    /// "Restart to update" (only listed while an update is staged).
+    RestartToUpdate,
     Quit,
 }
 
@@ -109,8 +111,47 @@ pub fn export_icons(dir: &std::path::Path) -> std::io::Result<()> {
 pub struct Tray {
     #[cfg(target_os = "linux")]
     _handle: ksni::Handle<linux::GlanceTray>,
+    #[cfg(target_os = "linux")]
+    rt: tokio::runtime::Handle,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     _icon: tray_icon::TrayIcon,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    menu: tray_icon::menu::Menu,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    update_item: tray_icon::menu::MenuItem,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    update_shown: std::cell::Cell<bool>,
+}
+
+impl Tray {
+    /// Show "Restart to update to vX" in the menu (`None` hides it).
+    #[cfg(target_os = "linux")]
+    pub fn set_update_ready(&self, label: Option<String>) {
+        let handle = self._handle.clone();
+        self.rt.spawn(async move {
+            handle.update(move |t| t.update = label).await;
+        });
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub fn set_update_ready(&self, label: Option<String>) {
+        match label {
+            Some(label) => {
+                self.update_item.set_text(label);
+                if !self.update_shown.get() && self.menu.insert(&self.update_item, 1).is_ok() {
+                    self.update_shown.set(true);
+                }
+            }
+            None => {
+                if self.update_shown.get() && self.menu.remove(&self.update_item).is_ok() {
+                    self.update_shown.set(false);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    pub fn set_update_ready(&self, _label: Option<String>) {}
 }
 
 impl Drop for Tray {
@@ -127,6 +168,8 @@ mod linux {
     #[derive(Debug)]
     pub struct GlanceTray {
         pub tx: flume::Sender<TrayEvent>,
+        /// "Restart to update" label while an update is staged.
+        pub update: Option<String>,
     }
 
     impl ksni::Tray for GlanceTray {
@@ -176,8 +219,11 @@ mod linux {
                 }
                 .into()
             };
-            vec![
-                item("Open glance", TrayEvent::Open),
+            let mut items = vec![item("Open glance", TrayEvent::Open)];
+            if let Some(label) = &self.update {
+                items.push(item(label, TrayEvent::RestartToUpdate));
+            }
+            items.extend([
                 MenuItem::Separator,
                 item("Online", TrayEvent::SetPresence(Presence::Online)),
                 item("Idle", TrayEvent::SetPresence(Presence::Idle)),
@@ -188,7 +234,8 @@ mod linux {
                 item("Invisible", TrayEvent::SetPresence(Presence::Invisible)),
                 MenuItem::Separator,
                 item("Quit glance", TrayEvent::Quit),
-            ]
+            ]);
+            items
         }
     }
 }
@@ -202,16 +249,20 @@ pub fn start(net: &crate::net::Net, tx: flume::Sender<TrayEvent>) -> Option<Tray
     // Flatpak doesn't let apps own the spec's StatusNotifierItem-PID-N
     // name; hosts accept the unique bus name instead.
     let sandboxed = crate::net::in_flatpak();
-    let handle = net
+    let (handle, rt) = net
         .block_on(async move {
-            linux::GlanceTray { tx }
+            let tray = linux::GlanceTray { tx, update: None }
                 .disable_dbus_name(sandboxed)
                 .spawn()
-                .await
+                .await;
+            tray.map(|t| (t, tokio::runtime::Handle::current()))
         })
         .ok()?;
     TRAY_ACTIVE.store(true, Ordering::Relaxed);
-    Some(Tray { _handle: handle })
+    Some(Tray {
+        _handle: handle,
+        rt,
+    })
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -224,6 +275,8 @@ pub fn start(_net: &crate::net::Net, tx: flume::Sender<TrayEvent>) -> Option<Tra
     let dnd = MenuItem::new("Do Not Disturb", true, None);
     let invisible = MenuItem::new("Invisible", true, None);
     let quit = MenuItem::new("Quit glance", true, None);
+    // Inserted below "Open glance" once an update is staged.
+    let update_item = MenuItem::new("Restart to update", true, None);
     menu.append_items(&[
         &open,
         &PredefinedMenuItem::separator(),
@@ -250,13 +303,14 @@ pub fn start(_net: &crate::net::Net, tx: flume::Sender<TrayEvent>) -> Option<Tra
             invisible.id().clone(),
             TrayEvent::SetPresence(Presence::Invisible),
         ),
+        (update_item.id().clone(), TrayEvent::RestartToUpdate),
         (quit.id().clone(), TrayEvent::Quit),
     ];
     let icon = tray_icon::Icon::from_rgba(icon_rgba(32), 32, 32).ok()?;
     let tray = tray_icon::TrayIconBuilder::new()
         .with_icon(icon)
         .with_tooltip("glance")
-        .with_menu(Box::new(menu))
+        .with_menu(Box::new(menu.clone()))
         .build()
         .ok()?;
     // Menu clicks arrive on a global channel; forward them.
@@ -270,7 +324,12 @@ pub fn start(_net: &crate::net::Net, tx: flume::Sender<TrayEvent>) -> Option<Tra
         }
     });
     TRAY_ACTIVE.store(true, Ordering::Relaxed);
-    Some(Tray { _icon: tray })
+    Some(Tray {
+        _icon: tray,
+        menu,
+        update_item,
+        update_shown: std::cell::Cell::new(false),
+    })
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

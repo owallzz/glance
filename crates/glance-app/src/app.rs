@@ -45,10 +45,11 @@ pub enum SettingsPage {
     Appearance,
     Keybinds,
     Connection,
+    Updates,
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 8] = [
+    pub const ALL: [SettingsPage; 9] = [
         SettingsPage::Account,
         SettingsPage::Voice,
         SettingsPage::Streaming,
@@ -57,6 +58,7 @@ impl SettingsPage {
         SettingsPage::Appearance,
         SettingsPage::Keybinds,
         SettingsPage::Connection,
+        SettingsPage::Updates,
     ];
 
     pub fn label(self) -> &'static str {
@@ -69,6 +71,7 @@ impl SettingsPage {
             SettingsPage::Appearance => "Appearance",
             SettingsPage::Keybinds => "Keybinds",
             SettingsPage::Connection => "Connection",
+            SettingsPage::Updates => "Updates",
         }
     }
 }
@@ -125,6 +128,8 @@ pub struct Settings {
     /// Encode (and decode) video with the GPU when there's a supported one.
     /// The name predates GPU decoding; it stays for saved settings.
     pub hardware_encoding: bool,
+    /// Check GitHub Releases for updates and download them in the background.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -149,6 +154,7 @@ impl Default for Settings {
             stream_resolution: Resolution::P1080,
             stream_fps: 60,
             hardware_encoding: true,
+            auto_update: true,
         }
     }
 }
@@ -187,8 +193,10 @@ impl GlanceApp {
         let Some(net) = self.net.clone() else { return };
         let (tx, rx) = flume::unbounded();
         self._tray = crate::tray::start(&net, tx);
-        if self._tray.is_none() {
-            return;
+        let Some(tray) = &self._tray else { return };
+        // A rebuilt tray starts without the update item.
+        if let Some(label) = self.update.status.tray_label() {
+            tray.set_update_ready(Some(label));
         }
         self._tray_task = Some(cx.spawn_in(window, async move |this, cx| {
             while let Ok(ev) = rx.recv_async().await {
@@ -200,6 +208,12 @@ impl GlanceApp {
                         }
                         crate::tray::TrayEvent::SetPresence(p) => {
                             app.set_presence(p, cx);
+                            false
+                        }
+                        crate::tray::TrayEvent::RestartToUpdate => {
+                            // Disabled during calls: show the window (and the pill).
+                            window.activate_window();
+                            app.restart_to_update(cx);
                             false
                         }
                         crate::tray::TrayEvent::Quit => true,
@@ -480,6 +494,8 @@ pub struct GlanceApp {
     /// Mic and speaker volume sliders in the voice settings (0–200%).
     pub input_volume_slider: Entity<SliderState>,
     pub output_volume_slider: Entity<SliderState>,
+    /// Updates from GitHub Releases (`update_ui.rs`).
+    pub update: crate::update_ui::UpdateState,
 }
 
 impl GlanceApp {
@@ -622,6 +638,7 @@ impl GlanceApp {
             _tray_task: None,
             autostart_synced: None,
             immersive: None,
+            update: Default::default(),
         };
         // While the tray icon is up, closing the window minimizes it so calls
         // keep going and contacts can still ring you.
@@ -643,6 +660,7 @@ impl GlanceApp {
         if !demo_room {
             app.start_contacts(cx);
             app.watch_idle(cx);
+            app.start_updater(cx);
         }
         if demo_room {
             app.start_demo_room(cx);
@@ -1133,7 +1151,7 @@ impl Render for GlanceApp {
             .font_family(font)
             .text_color(p.text_normal)
             .bg(p.bg_rail)
-            .child(render_title_bar(&p));
+            .child(render_title_bar(&p, self.render_update_pill(&p, cx)));
         // Overlays live below the title bar so the window can always be
         // dragged, minimized and closed.
         let mut content = div()
@@ -1167,7 +1185,7 @@ impl Render for GlanceApp {
 /// Discord-style title bar: a thin strip in the rail colour with the app name
 /// centred. gpui-kit's `TitleBar` handles dragging, double-click to maximize,
 /// the window menu, and the minimize/maximize/close buttons per platform.
-fn render_title_bar(p: &Palette) -> impl IntoElement {
+fn render_title_bar(p: &Palette, update_pill: Option<AnyElement>) -> impl IntoElement {
     gpui_kit::component::TitleBar::new()
         // Linux close button (other platforms use on_window_should_close).
         .on_close_window(|_, window, _| {
@@ -1191,7 +1209,8 @@ fn render_title_bar(p: &Palette) -> impl IntoElement {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(p.text_muted)
                 .child(icon(IconName::Monitor, 14., p.text_muted))
-                .child("glance"),
+                .child("glance")
+                .children(update_pill),
         )
 }
 
