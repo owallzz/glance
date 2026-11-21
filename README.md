@@ -28,11 +28,32 @@ Start a room, send the link, and everyone in it can go live at the same time. Th
 
 ## Installation
 
-Download the file for your system from the [latest release](https://github.com/owallzz/glance/releases/latest). They are plain binaries, not archives.
+Download the file for your system from the [latest release](https://github.com/owallzz/glance/releases/latest). `vX.Y.Z` below stands for the version you downloaded.
 
-- **Linux x86_64:** `chmod +x glance-*-linux-x86_64` and run it. Needs Wayland or X11, Vulkan, and PipeWire for screen capture on Wayland. The first launch registers `glance://` links and a desktop entry.
-- **macOS (Apple Silicon):** open the `.dmg` and drag glance to Applications. It isn't notarized yet, so right-click > Open the first time.
-- **Windows x86_64:** run the `.exe`. It isn't signed yet, so SmartScreen may warn: choose "More info > Run anyway".
+| System | Pick | Then |
+|---|---|---|
+| Windows | `glance-vX.Y.Z-windows-x86_64-setup.exe` | Run it. Installs for your user only (no admin), adds a Start menu entry. |
+| Windows, no install | `glance-vX.Y.Z-windows-x86_64-portable.zip` | Extract and run `glance.exe`. Keeps its data in a `data` folder next to it. |
+| macOS (Apple Silicon) | `glance-vX.Y.Z-macos-aarch64.dmg` | Open it and drag glance to Applications. |
+| Linux, any distro | `glance-vX.Y.Z-linux-x86_64.AppImage` | `chmod +x glance-*.AppImage` and run it. |
+| Linux, Flatpak | `glance-vX.Y.Z-linux-x86_64.flatpak` | `flatpak install --user glance-*.flatpak`, then start glance from your app menu. |
+
+Every release also has plain binaries (`glance-vX.Y.Z-linux-x86_64`, `-windows-x86_64.exe`, `-macos-aarch64`): download, make executable, run.
+
+### First launch
+
+The builds aren't signed with a paid certificate yet, so your system warns the first time:
+
+- **Windows:** SmartScreen says "Windows protected your PC". Click **More info**, then **Run anyway**.
+- **macOS:** Gatekeeper refuses to open an app from an unidentified developer. Open glance once, then go to **System Settings > Privacy & Security** and click **Open Anyway** (on macOS 14 and older, right-click glance and choose **Open** instead). Or clear the download flag in Terminal: `xattr -dr com.apple.quarantine /Applications/glance.app`.
+- **Linux:** nothing to approve. Screen capture on Wayland asks which screen or window to share through your desktop's dialog.
+
+### Linux notes
+
+- The AppImage and the plain binary use your system's PipeWire, Vulkan and graphics drivers. They need a distro from 2024 or newer (glibc 2.39, e.g. Ubuntu 24.04, Fedora 40). If the AppImage complains about FUSE, run it with `--appimage-extract-and-run`.
+- The Flatpak needs the Flathub remote for its runtime: `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. It doesn't update itself; install the new `.flatpak` to upgrade.
+- glance waits in the system tray so contacts can ring you. KDE, Cinnamon, XFCE and most desktops show it; stock GNOME needs the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Without a tray, closing the window quits glance.
+- The AppImage and plain binary register `glance://` links on first launch; the Flatpak does so when it's installed.
 
 ## Usage
 
