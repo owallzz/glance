@@ -228,7 +228,10 @@ mod process_loopback {
                     },
                 },
             };
-            let prop = PROPVARIANT {
+            // ManuallyDrop: PROPVARIANT's Drop runs PropVariantClear, which
+            // would CoTaskMemFree the blob, a pointer to `params` on our stack
+            // (heap corruption, the process dies).
+            let prop = std::mem::ManuallyDrop::new(PROPVARIANT {
                 Anonymous: PROPVARIANT_0 {
                     Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
                         vt: VT_BLOB,
@@ -244,13 +247,13 @@ mod process_loopback {
                         },
                     }),
                 },
-            };
+            });
             let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
             let handler: IActivateAudioInterfaceCompletionHandler = Activated(done_tx).into();
             let op = ActivateAudioInterfaceAsync(
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
                 &IAudioClient::IID,
-                Some(&prop),
+                Some(&*prop),
                 &handler,
             )?;
             done_rx

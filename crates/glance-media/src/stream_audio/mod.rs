@@ -3,7 +3,8 @@
 //! - Linux: PipeWire. Either one application's output (excludes glance's
 //!   own call audio, so viewers don't hear themselves) or the whole system
 //!   (the default output's monitor).
-//! - Windows: WASAPI loopback of the default output (via cpal).
+//! - Windows: WASAPI process loopback of everything but glance itself
+//!   (device loopback via cpal before Windows 10 2004).
 //! - macOS: ScreenCaptureKit system audio, minus glance's own sound.
 //!
 //! Captured audio is 48 kHz mono f32, encoded with Opus for music and sent
