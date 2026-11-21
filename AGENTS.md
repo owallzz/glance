@@ -48,6 +48,7 @@ Run the tests and the linter before every commit; CI runs the same checks.
   - `code_highlight.rs`: code-block highlighting (syntect + two-face grammars folded into `SyntaxKind`, palette colours); every parse runs on a worker (the UI thread only looks up the cache) and `set_on_ready` triggers a re-render; `markdown_view` keeps each result with the cached message.
   - `composer.rs`: the chat box for room chat and DMs (`new_composer`, `composer_element[_with_paste]`) with live markdown highlighting from `markdown::composer` (spans plus code blocks, which get syntax colours from `code_highlight`; an unclosed ``` counts as a block being typed).
   - `camera.rs`: webcam on/off (camera track broadcast at 640×360@24) and auto-watching everyone's camera into person tiles.
+  - `console.rs`: glance.exe is a Windows GUI-subsystem program (`windows_subsystem` in `main.rs`, so no console window opens); run from a terminal it attaches to that terminal's console for `--version`, `update` and `bot` output.
   - `ui.rs`: shared widgets (Avatar, icon_button, pill, live_badge).
   - `video.rs`: `VideoView` tile. `spike.rs`: the render benchmark.
   - `theme.rs` + `assets/themes/glance.json`: design tokens and the gpui-kit component theme (dark + light).
@@ -145,4 +146,5 @@ Check the diff for these before every commit.
 - The composer is gpui-kit's code-editor input (`EditorState`) with every code feature off and a custom `InputHighlighter`: the only input kind with per-range styling. It can't change font size or family per range, has no auto-grow (`composer_element` sizes it from the wrapped row count, one frame late), Tab moves focus, and the wrapper catches Shift+Enter to insert a bare newline (the editor would copy the line's indentation).
 - `RichText` clicks need the press and release in separate frames (gpui's `InteractiveText` registers the mouse-up listener on the frame after the press): `xdotool click` is too fast, use `mousedown`, a short sleep, then `mouseup`.
 - Chat text is rendered from the raw markdown every frame through `MarkdownCache`; never store rendered text (saved chat dedupes by raw text). Room chat is capped at `MAX_CHAT_LEN` (4000 bytes) like DMs.
+- Windows: glance.exe never opens a console window. From cmd or PowerShell the prompt returns at once and output (`glance update`, `glance bot`, logs) prints over it; use `start /wait glance ...` (cmd) or `glance ... | Out-Host` (PowerShell) to wait for it and get the exit code. `cargo run` and redirected output keep their own handles.
 - Test modules in files that `use gpui_kit::*` must import items explicitly, not `use super::*`: the glob brings GPUI's `test` macro, which shadows `#[test]` ("recursion limit reached").

@@ -1,10 +1,16 @@
 //! glance: peer-to-peer screen sharing rooms.
 
+// A GUI program on Windows: starting it (from the Start menu, the installer,
+// a glance:// link, start on login) opens no console window. Run from a
+// terminal, it attaches to that terminal's console (see `console`).
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 mod app;
 mod bot;
 mod camera;
 mod code_highlight;
 mod composer;
+mod console;
 mod contacts;
 mod direct;
 mod dms;
@@ -40,6 +46,7 @@ use gpui_kit::*;
 actions!(glance, [Quit]);
 
 fn main() {
+    console::attach();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
