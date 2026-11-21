@@ -246,7 +246,9 @@ pub fn run(
             .recv(&room.events, |ev| {
                 let Ok(ev) = ev else { std::process::exit(0) };
                 match &ev {
-                    RoomEvent::MemberJoined { id, profile, state } => {
+                    RoomEvent::MemberJoined {
+                        id, profile, state, ..
+                    } => {
                         names.borrow_mut().insert(*id, profile.name.clone());
                         room.send(Command::Chat(format!("hi {}!", profile.name)));
                         if autowatch && state.stream.is_some() {

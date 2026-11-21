@@ -1,8 +1,10 @@
 //! The room actor: one task per room owning membership, plus a reader and a
 //! writer task per peer connection.
 //!
-//! Joining: the newcomer dials the ticket's host, proves it knows the room
-//! secret, and gets back the member list in `Welcome`; it then dials every
+//! Joining: the newcomer dials the ticket's host (or, when rejoining, any
+//! member a probe found still in the room; the next one if that fails),
+//! proves it knows the room secret, and gets back the member list in
+//! `Welcome`; it then dials every
 //! member it doesn't know. Existing members tell each other about newcomers
 //! with `Introduce` so simultaneous joins still end up fully meshed. If two
 //! connections to the same peer exist, the one dialed by the smaller
@@ -49,6 +51,12 @@ pub enum Command {
     StreamAudio(bytes::Bytes),
     /// Offer a file (already added to our store) to the room.
     OfferFile(glance_proto::WireFile),
+    /// Send a chat message or file offer stamped with `sent_at` (Unix ms),
+    /// so the sender's own copy matches what everyone else stores.
+    Post {
+        sent_at: u64,
+        body: HistoryBody,
+    },
     /// Tell the room we now have a file and can serve it.
     HaveFile([u8; 32]),
     /// Where incoming voice datagrams go (bypasses the UI event channel).
@@ -76,6 +84,8 @@ pub enum RoomEvent {
         id: EndpointId,
         profile: WireProfile,
         state: MemberState,
+        /// Where they can be reached (remembered for rejoining).
+        addr: EndpointAddr,
     },
     MemberUpdated {
         id: EndpointId,
@@ -210,6 +220,12 @@ pub(crate) enum Inbound {
     DialIfMissing(EndpointAddr),
     /// A viewer's video stream ended (generation identifies which one).
     WatcherGone(EndpointId, Track, u64),
+    /// Someone holding the link asks whether the room is alive.
+    Probe {
+        from: EndpointId,
+        request: glance_proto::ProbeRequest,
+        reply: tokio::sync::oneshot::Sender<glance_proto::ProbeReply>,
+    },
 }
 
 /// Someone watching our stream.
@@ -253,6 +269,8 @@ struct Actor {
     history: std::collections::VecDeque<HistoryItem>,
     /// Only the first Welcome's history is used (others would duplicate it).
     got_history: bool,
+    /// Members still to try if the one we dialed to get in fails.
+    entry: std::collections::VecDeque<EndpointAddr>,
 }
 
 pub(crate) fn spawn(
@@ -260,7 +278,7 @@ pub(crate) fn spawn(
     ticket: Ticket,
     profile: WireProfile,
     state: MemberState,
-    dial_host: bool,
+    entry: Vec<EndpointAddr>,
     slot: RoomSlot,
 ) -> (RoomHandle, flume::Sender<Inbound>) {
     let (inbound_tx, inbound_rx) = flume::unbounded();
@@ -272,7 +290,7 @@ pub(crate) fn spawn(
     let mut actor = Actor {
         endpoint,
         me,
-        ticket: ticket.clone(),
+        ticket,
         profile,
         state,
         peers: HashMap::new(),
@@ -285,6 +303,7 @@ pub(crate) fn spawn(
         audio_sink: AudioSink::default(),
         history: Default::default(),
         got_history: false,
+        entry: entry.into_iter().filter(|a| a.id != me).collect(),
     };
     let fwd = inbound_tx.clone();
     tokio::spawn(async move {
@@ -295,8 +314,8 @@ pub(crate) fn spawn(
         }
     });
     tokio::spawn(async move {
-        if dial_host && ticket.host.id != me {
-            actor.dial(ticket.host.clone(), true);
+        if let Some(first) = actor.entry.pop_front() {
+            actor.dial(first, true);
         }
         actor.run(inbound_rx).await;
         // Free the slot if it still points at us.
@@ -398,6 +417,13 @@ impl Actor {
                 self.dialing.remove(&id);
                 warn!("dial {id} failed: {error}");
                 if host && self.peers.is_empty() {
+                    // Try the next member we know of.
+                    while let Some(next) = self.entry.pop_front() {
+                        if !self.dialing.contains(&next.id) {
+                            self.dial(next, true);
+                            return true;
+                        }
+                    }
                     let _ = self.events.send(RoomEvent::Problem(format!(
                         "Couldn't reach the room. The person who shared the link may have left. ({error})"
                     )));
@@ -430,6 +456,24 @@ impl Actor {
                 if !self.peers.contains_key(&addr.id) {
                     self.dial(addr, false);
                 }
+            }
+            Inbound::Probe {
+                from,
+                request,
+                reply,
+            } => {
+                let answer = crate::probe::reply_for(&self.ticket, self.me, from, &request, || {
+                    let mut members = vec![MemberInfo {
+                        addr: self.endpoint.addr(),
+                        profile: self.profile.clone(),
+                    }];
+                    members.extend(self.peers.values().map(|p| MemberInfo {
+                        addr: p.addr.clone(),
+                        profile: p.profile.clone(),
+                    }));
+                    members
+                });
+                let _ = reply.send(answer);
             }
             Inbound::Cmd(cmd) => return self.on_command(cmd),
         }
@@ -541,9 +585,12 @@ impl Actor {
             },
         );
         if is_new {
-            let _ = self
-                .events
-                .send(RoomEvent::MemberJoined { id, profile, state });
+            let _ = self.events.send(RoomEvent::MemberJoined {
+                id,
+                profile,
+                state,
+                addr: info.addr,
+            });
         }
     }
 
@@ -642,12 +689,8 @@ impl Actor {
                 self.send_to(id, Control::KeyframeRequest(track))
             }
             Command::Video(track, pkt) => self.fan_out(track, pkt),
-            Command::OfferFile(file) => {
-                let sent_at = now_ms();
-                let (me, name, color) = (self.me, self.profile.name.clone(), self.profile.color);
-                self.remember(me, name, color, sent_at, HistoryBody::File(file.clone()));
-                self.broadcast(Control::File { sent_at, file });
-            }
+            Command::OfferFile(file) => self.post(now_ms(), HistoryBody::File(file)),
+            Command::Post { sent_at, body } => self.post(sent_at, body),
             Command::HaveFile(hash) => self.broadcast(Control::HaveFile(hash)),
             Command::Audio(bytes) => {
                 for p in self.peers.values() {
@@ -667,17 +710,7 @@ impl Actor {
                 self.profile = profile.clone();
                 self.broadcast(Control::Profile(profile));
             }
-            Command::Chat(text) => {
-                self.chat_seq += 1;
-                let sent_at = now_ms();
-                let (me, name, color) = (self.me, self.profile.name.clone(), self.profile.color);
-                self.remember(me, name, color, sent_at, HistoryBody::Text(text.clone()));
-                self.broadcast(Control::Chat {
-                    id: self.chat_seq,
-                    sent_at,
-                    text,
-                });
-            }
+            Command::Chat(text) => self.post(now_ms(), HistoryBody::Text(text)),
             Command::Leave => {
                 self.broadcast(Control::Leave);
                 // Writers flush Leave and finish; close shortly after.
@@ -692,6 +725,23 @@ impl Actor {
             }
         }
         true
+    }
+
+    /// Send our own chat message or file offer and keep it in the history.
+    fn post(&mut self, sent_at: u64, body: HistoryBody) {
+        let (me, name, color) = (self.me, self.profile.name.clone(), self.profile.color);
+        self.remember(me, name, color, sent_at, body.clone());
+        match body {
+            HistoryBody::Text(text) => {
+                self.chat_seq += 1;
+                self.broadcast(Control::Chat {
+                    id: self.chat_seq,
+                    sent_at,
+                    text,
+                });
+            }
+            HistoryBody::File(file) => self.broadcast(Control::File { sent_at, file }),
+        }
     }
 
     fn remember(

@@ -215,7 +215,9 @@ impl GlanceApp {
             });
         };
         match ev {
-            RoomEvent::MemberJoined { id, profile, state } => {
+            RoomEvent::MemberJoined {
+                id, profile, state, ..
+            } => {
                 let id = peer_id(id);
                 if room.participants.iter().any(|p| p.profile.id == id) {
                     return;
