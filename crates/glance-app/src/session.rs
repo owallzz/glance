@@ -85,9 +85,8 @@ impl GlanceApp {
                     Ok(handle) => {
                         let link = handle.link();
                         tracing::info!("room link: {link}");
-                        cx.write_to_clipboard(ClipboardItem::new_string(link));
-                        app.link_copied = true;
                         app.attach_room(handle, "Your room".into(), cx);
+                        app.copy_invite_link(cx);
                         app.ring_pending();
                     }
                     Err(e) => app.join_error = Some(format!("Couldn't start a room: {e:#}")),

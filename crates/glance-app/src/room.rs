@@ -39,6 +39,31 @@ impl TileKind {
 }
 
 impl GlanceApp {
+    /// Copy the room's invite link and say so for a couple of seconds.
+    pub fn copy_invite_link(&mut self, cx: &mut Context<Self>) {
+        let Some(link) = self.room.as_ref().map(|r| r.link.clone()) else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(link));
+        self.link_copied = true;
+        self.link_copied_gen = self.link_copied_gen.wrapping_add(1);
+        let generation = self.link_copied_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                // A later copy restarts the timer.
+                if app.link_copied_gen == generation {
+                    app.link_copied = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub fn render_room(
         &mut self,
         p: &Palette,
@@ -99,8 +124,7 @@ impl GlanceApp {
                             p,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
-                            this.link_copied = true;
+                            this.copy_invite_link(cx);
                             this.invite_open = true;
                             cx.notify();
                         })),
@@ -132,36 +156,58 @@ impl GlanceApp {
                     ),
             )
             // Invite link card
-            .child(
+            .child({
+                let hover = p.bg_hover;
                 div()
+                    .id("invite-link")
                     .mx_2()
                     .mb_2()
                     .p_3()
                     .rounded(px(8.))
                     .bg(p.bg_content)
+                    .hover(move |s| s.bg(hover))
+                    .cursor_pointer()
                     .flex()
-                    .flex_col()
-                    .gap_1()
+                    .items_center()
+                    .gap_2()
+                    .tooltip(|window, cx| Tooltip::new("Copy invite link").build(window, cx))
+                    .on_click(cx.listener(|this, _, _, cx| this.copy_invite_link(cx)))
                     .child(
                         div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text_muted)
-                            .child(if copied {
-                                "INVITE LINK COPIED"
-                            } else {
-                                "INVITE LINK"
-                            }),
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(if copied { p.green } else { p.text_muted })
+                                    .child(if copied {
+                                        "INVITE LINK COPIED"
+                                    } else {
+                                        "INVITE LINK"
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.text_normal)
+                                    .truncate()
+                                    .child(link),
+                            ),
                     )
-                    .child(
-                        div().text_xs().text_color(p.text_normal).truncate().child(
-                            self.room
-                                .as_ref()
-                                .map(|r| r.link.clone())
-                                .unwrap_or_default(),
-                        ),
-                    ),
-            )
+                    .child(icon(
+                        if copied {
+                            IconName::CopyCheck
+                        } else {
+                            IconName::Copy
+                        },
+                        16.,
+                        if copied { p.green } else { p.interactive },
+                    ))
+            })
             // Voice connected panel
             .child(
                 div()
@@ -856,10 +902,7 @@ impl GlanceApp {
                     false,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(link) = this.room.as_ref().map(|r| r.link.clone()) {
-                        cx.write_to_clipboard(ClipboardItem::new_string(link));
-                        this.link_copied = true;
-                    }
+                    this.copy_invite_link(cx);
                     this.invite_open = true;
                     cx.notify();
                 })),

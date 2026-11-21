@@ -875,6 +875,7 @@ impl GlanceApp {
             .as_ref()
             .map(|r| r.link.clone())
             .unwrap_or_default();
+        let copied = self.link_copied;
         let in_room: Vec<glance_core::PeerId> = self
             .room
             .as_ref()
@@ -919,17 +920,40 @@ impl GlanceApp {
                             },
                         ))),
                 )
-                .child(section_label(p, "SEND A LINK (COPIED)"))
+                .child(section_label(p, "SEND A LINK"))
                 .child(
                     div()
-                        .px_3()
-                        .py_2()
+                        .id("invite-dialog-link")
+                        .pl_3()
+                        .pr_1()
+                        .py_1()
                         .rounded(px(4.))
                         .bg(p.bg_input)
-                        .text_sm()
-                        .text_color(p.text_normal)
-                        .truncate()
-                        .child(link),
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .on_click(cx.listener(|this, _, _, cx| this.copy_invite_link(cx)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .text_color(p.text_normal)
+                                .truncate()
+                                .child(link),
+                        )
+                        .child({
+                            let copy = Button::new("invite-copy")
+                                .small()
+                                .label(if copied { "Copied" } else { "Copy" })
+                                .on_click(cx.listener(|this, _, _, cx| this.copy_invite_link(cx)));
+                            if copied {
+                                copy.success()
+                            } else {
+                                copy.primary()
+                            }
+                        }),
                 )
                 .when(live, |d| {
                     d.child(section_label(p, "RING A CONTACT")).child(
