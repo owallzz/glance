@@ -404,6 +404,21 @@ pub fn run(
                     ContactEvent::RingAnswered { accepted, .. } => {
                         println!("ring answered: {accepted}")
                     }
+                    // Echo direct messages from contacts.
+                    ContactEvent::DmReceived { from, dm } => {
+                        println!("dm: {}", dm.text);
+                        contacts.send(ContactCommand::SendDm {
+                            to: *from,
+                            dm: glance_proto::WireDm {
+                                id: rand::random(),
+                                sent_at: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0),
+                                text: format!("echo: {}", dm.text),
+                            },
+                        });
+                    }
                     other => println!("contacts: {other:?}"),
                 }
             })
