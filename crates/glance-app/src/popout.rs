@@ -653,8 +653,12 @@ impl PopoutView {
                     |window, _| window.zoom_window(),
                 ));
             }
-            let close = overlay_button("popout-close", IconName::X, "Close (back to main window)")
-                .hover(move |s| s.bg(red));
+            let close = overlay_button_with_hover(
+                "popout-close",
+                IconName::X,
+                "Close (back to main window)",
+                red,
+            );
             let close = if cfg!(target_os = "windows") {
                 close.window_control_area(WindowControlArea::Close)
             } else {
@@ -774,12 +778,22 @@ fn window_exit_watcher(view: WeakEntity<PopoutView>) -> impl IntoElement {
 
 /// Round translucent button for the overlay (the video is dark in both themes).
 fn overlay_button(id: &'static str, glyph: IconName, tip: &'static str) -> Stateful<Div> {
+    overlay_button_with_hover(id, glyph, tip, gpui_kit::white().opacity(0.15))
+}
+
+/// An overlay button whose hover fill is `hover` (a div takes one hover style).
+fn overlay_button_with_hover(
+    id: &'static str,
+    glyph: IconName,
+    tip: &'static str,
+    hover: Hsla,
+) -> Stateful<Div> {
     div()
         .id(id)
         .size(px(28.))
         .flex_shrink_0()
         .rounded(px(6.))
-        .hover(|s| s.bg(gpui_kit::white().opacity(0.15)))
+        .hover(move |s| s.bg(hover))
         .cursor_pointer()
         .flex()
         .items_center()
