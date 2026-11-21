@@ -201,6 +201,53 @@ impl Net {
         }
     }
 
+    /// Join by dialing these members first (rejoining a room whose creator
+    /// may have left), then the ticket's host.
+    pub fn join_room_via(
+        &self,
+        ticket: Ticket,
+        members: Vec<glance_proto::EndpointAddr>,
+        profile: WireProfile,
+        state: MemberState,
+    ) -> impl Future<Output = Result<RoomHandle>> + use<> {
+        let node = self.node.clone();
+        let fut =
+            self.run(async move { node.join_room_via(ticket, members, profile, state).await });
+        async move {
+            fut.await
+                .unwrap_or_else(|| Err(anyhow::anyhow!("network stopped")))
+        }
+    }
+
+    /// Start a remembered room again with us as its first member.
+    pub fn host_room(
+        &self,
+        ticket: Ticket,
+        profile: WireProfile,
+        state: MemberState,
+    ) -> impl Future<Output = Result<RoomHandle>> + use<> {
+        let node = self.node.clone();
+        let fut = self.run(async move { node.host_room(ticket, profile, state).await });
+        async move {
+            fut.await
+                .unwrap_or_else(|| Err(anyhow::anyhow!("network stopped")))
+        }
+    }
+
+    /// Ask remembered members whether a room is still going.
+    pub fn probe_room(
+        &self,
+        ticket: Ticket,
+        candidates: Vec<glance_proto::EndpointAddr>,
+    ) -> impl Future<Output = glance_net::RoomStatus> + use<> {
+        let node = self.node.clone();
+        let fut = self.run(async move {
+            node.probe_room(&ticket, candidates, std::time::Duration::from_secs(6))
+                .await
+        });
+        async move { fut.await.unwrap_or(glance_net::RoomStatus::Unknown) }
+    }
+
     pub fn contacts(&self) -> glance_net::contacts::ContactsHandle {
         self.node.contacts().clone()
     }

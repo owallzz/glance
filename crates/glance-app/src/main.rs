@@ -12,6 +12,7 @@ mod instance;
 mod net;
 mod overlays;
 mod popout;
+mod recent;
 mod room;
 mod scheme;
 mod session;

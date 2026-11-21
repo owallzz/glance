@@ -589,6 +589,7 @@ impl GlanceApp {
         let files: Vec<AnyElement> = (0..self.direct_files.len())
             .map(|i| self.direct_file_card(p, i, cx))
             .collect();
+        let recent_rooms = self.render_recent_rooms(p, cx);
         let in_calls: Vec<&Contact> = self
             .contacts
             .iter()
@@ -640,6 +641,7 @@ impl GlanceApp {
                             ),
                     )
             }))
+            .children(recent_rooms)
             .when(!files.is_empty(), |d| {
                 d.child(div().pt_2().child(section_label(p, "FILES")))
                     .children(files)

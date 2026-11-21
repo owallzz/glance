@@ -1241,6 +1241,13 @@ impl GlanceApp {
                 None,
             ),
             Transfer::Failed(e) => (format!("Failed: {e}"), None),
+            Transfer::Unavailable => (
+                format!(
+                    "{} · unavailable (nobody here has it)",
+                    format::human_bytes(f.size)
+                ),
+                None,
+            ),
             Transfer::Downloading {
                 done,
                 bytes_per_sec,
@@ -1265,6 +1272,7 @@ impl GlanceApp {
         let action = match &f.transfer {
             Transfer::Available | Transfer::Failed(_) => Some((IconName::Download, "Download")),
             Transfer::Downloading { .. } => Some((IconName::X, "Cancel")),
+            Transfer::Unavailable => None,
             Transfer::Done => Some((IconName::FolderOpen, "Show in folder")),
             Transfer::Sent => path
                 .as_ref()
