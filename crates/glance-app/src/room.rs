@@ -509,10 +509,10 @@ impl GlanceApp {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if stream {
                         let v = this.stream_volume(id);
-                        this.set_stream_volume(id, ((v + delta) * 10.0).round() / 10.0);
+                        this.set_stream_volume(id, ((v + delta) * 10.0).round() / 10.0, true);
                     } else {
                         let v = this.user_volume(id);
-                        this.set_user_volume(id, ((v + delta) * 10.0).round() / 10.0);
+                        this.set_user_volume(id, ((v + delta) * 10.0).round() / 10.0, true);
                     }
                     cx.notify();
                 }))
