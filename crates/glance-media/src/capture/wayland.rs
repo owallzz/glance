@@ -22,11 +22,11 @@ pub fn is_wayland_session() -> bool {
 }
 
 /// Run the portal dialog and the PipeWire loop on a dedicated thread.
-pub fn start(sink: Sink, fps: u32) -> Result<()> {
+pub fn start(sink: Sink) -> Result<()> {
     std::thread::Builder::new()
         .name("capture-wayland".into())
         .spawn(move || {
-            if let Err(e) = run(&sink, fps) {
+            if let Err(e) = run(&sink) {
                 sink.end(format!("{e:#}"));
             } else if !sink.stopped() {
                 sink.end("sharing ended");
@@ -35,14 +35,14 @@ pub fn start(sink: Sink, fps: u32) -> Result<()> {
     Ok(())
 }
 
-fn run(sink: &Sink, fps: u32) -> Result<()> {
+fn run(sink: &Sink) -> Result<()> {
     // Testing aid: GLANCE_PW_NODE=<id> skips the portal dialog and reads an
     // existing PipeWire video node from the default PipeWire daemon.
     if let Some(node) = std::env::var("GLANCE_PW_NODE")
         .ok()
         .and_then(|v| v.parse().ok())
     {
-        return run_pipewire(sink, node, None, fps);
+        return run_pipewire(sink, node, None);
     }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -53,7 +53,7 @@ fn run(sink: &Sink, fps: u32) -> Result<()> {
     if sink.stopped() {
         return Ok(());
     }
-    run_pipewire(sink, node_id, Some(fd), fps)
+    run_pipewire(sink, node_id, Some(fd))
 }
 
 async fn open_portal() -> Result<(
@@ -97,7 +97,7 @@ struct State {
     last: Option<Instant>,
 }
 
-fn run_pipewire(sink: &Sink, node_id: u32, fd: Option<OwnedFd>, fps: u32) -> Result<()> {
+fn run_pipewire(sink: &Sink, node_id: u32, fd: Option<OwnedFd>) -> Result<()> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
@@ -115,7 +115,8 @@ fn run_pipewire(sink: &Sink, node_id: u32, fd: Option<OwnedFd>, fps: u32) -> Res
         },
     )?;
 
-    let min_interval = Duration::from_secs_f64(1.0 / fps.max(1) as f64) * 9 / 10;
+    // Read on every frame: the sharer can change the frame rate while live.
+    let fps = sink.fps.clone();
     let frames = sink.frames.clone();
     let ended = Rc::new(RefCell::new(None::<String>));
     let ended_cb = ended.clone();
@@ -149,6 +150,8 @@ fn run_pipewire(sink: &Sink, node_id: u32, fd: Option<OwnedFd>, fps: u32) -> Res
                 return;
             };
             let now = Instant::now();
+            let fps = fps.load(std::sync::atomic::Ordering::Relaxed).max(1);
+            let min_interval = Duration::from_secs_f64(1.0 / fps as f64) * 9 / 10;
             if state.last.is_some_and(|t| now - t < min_interval) {
                 return;
             }

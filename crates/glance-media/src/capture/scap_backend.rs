@@ -58,14 +58,14 @@ fn find_target(src: &Source) -> Option<scap::Target> {
         })
 }
 
-pub fn start(sink: Sink, src: Source, fps: u32) -> Result<()> {
+pub fn start(sink: Sink, src: Source) -> Result<()> {
     let target =
         find_target(&src).ok_or_else(|| anyhow!("'{}' is no longer available", src.name))?;
-    let options = Options {
-        fps: fps.max(1),
+    let options = move |fps: u32| Options {
+        fps,
         show_cursor: true,
         show_highlight: false,
-        target: Some(target),
+        target: Some(target.clone()),
         output_type: FrameType::BGRAFrame,
         ..Default::default()
     };
@@ -75,7 +75,8 @@ pub fn start(sink: Sink, src: Source, fps: u32) -> Result<()> {
     std::thread::Builder::new()
         .name("capture".into())
         .spawn(move || {
-            let mut capturer = match Capturer::build(options) {
+            let mut fps = sink.fps();
+            let mut capturer = match Capturer::build(options(fps)) {
                 Ok(c) => {
                     let _ = ready_tx.send(Ok(()));
                     c
@@ -87,6 +88,20 @@ pub fn start(sink: Sink, src: Source, fps: u32) -> Result<()> {
             };
             capturer.start_capture();
             while !sink.stopped() {
+                // The frame rate is fixed per capturer: a new one takes over
+                // the same source when the sharer changes it.
+                if sink.fps() != fps {
+                    fps = sink.fps();
+                    capturer.stop_capture();
+                    match Capturer::build(options(fps)) {
+                        Ok(c) => capturer = c,
+                        Err(e) => {
+                            sink.end(format!("capture stopped: {e:?}"));
+                            return;
+                        }
+                    }
+                    capturer.start_capture();
+                }
                 match capturer.get_next_frame() {
                     Ok(frame) => {
                         if let Some(f) = convert(frame) {

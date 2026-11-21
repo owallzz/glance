@@ -123,7 +123,47 @@ impl GlanceApp {
             })
             .collect();
 
-        let picker_body: AnyElement = if gl.system_picker {
+        let editing = gl.editing;
+        // What the running stream shows now (editing only).
+        let sharing_now = self
+            .room
+            .as_ref()
+            .and_then(|r| r.participants.iter().find(|x| x.profile.id == self.me.id))
+            .and_then(|x| x.stream.as_ref())
+            .map(|s| s.source.clone())
+            .unwrap_or_default();
+        let picker_body: AnyElement = if gl.system_picker && editing {
+            div()
+                .p_4()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(icon(IconName::ScreenShare, 32., p.brand))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_color(p.text_header)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(format!("Sharing {sharing_now}")),
+                        )
+                        .child(div().text_sm().text_color(p.text_muted).child(
+                            "Pick another screen or window; viewers switch over without leaving.",
+                        )),
+                )
+                .child(
+                    Button::new("go-live-change-source")
+                        .label("Change source")
+                        .on_click(cx.listener(|this, _, _, cx| this.change_stream_source(cx))),
+                )
+                .into_any_element()
+        } else if gl.system_picker {
             div()
                 .p_4()
                 .flex()
@@ -288,7 +328,7 @@ impl GlanceApp {
                                 .text_xl()
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(p.text_header)
-                                .child("Screen Share"),
+                                .child(if editing { "Stream Settings" } else { "Screen Share" }),
                         )
                         .child(close_button("go-live-close", p).on_click(cx.listener(|this, _, _, cx| {
                             this.go_live = None;
@@ -364,15 +404,33 @@ impl GlanceApp {
                         .justify_end()
                         .gap_2()
                         .bg(p.bg_sidebar)
+                        .when(editing, |d| {
+                            d.child(
+                                Button::new("go-live-stop")
+                                    .danger()
+                                    .label("Stop streaming")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.go_live = None;
+                                        this.stop_streaming(cx);
+                                    })),
+                            )
+                            .child(div().flex_1())
+                        })
                         .child(Button::new("go-live-cancel").ghost().label("Cancel").on_click(cx.listener(
                             |this, _, _, cx| {
                                 this.go_live = None;
                                 cx.notify();
                             },
                         )))
-                        .child(Button::new("go-live-start").primary().label("Go Live").on_click(cx.listener(
-                            |this, _, _, cx| this.start_streaming(cx),
-                        ))),
+                        .child(if editing {
+                            Button::new("go-live-apply").primary().label("Apply").on_click(cx.listener(
+                                |this, _, _, cx| this.apply_stream_settings(cx),
+                            ))
+                        } else {
+                            Button::new("go-live-start").primary().label("Go Live").on_click(cx.listener(
+                                |this, _, _, cx| this.start_streaming(cx),
+                            ))
+                        }),
                 ),
         )
     }
@@ -383,6 +441,15 @@ impl GlanceApp {
             return;
         };
         let me = self.me.id;
+        if let Some(room) = self.room.as_mut() {
+            room.live_settings = Some(crate::app::LiveSettings {
+                selection: glance_media::capture::Selection::SystemPicker,
+                pending_selection: None,
+                resolution: gl.resolution,
+                fps: gl.fps,
+                audio: None,
+            });
+        }
         if let Some(room) = self.room.as_mut()
             && let Some(x) = room.participants.iter_mut().find(|x| x.profile.id == me)
         {
