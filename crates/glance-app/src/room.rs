@@ -1356,13 +1356,10 @@ impl GlanceApp {
                     .children({
                         // Selection order across the whole list.
                         let mut order = 0;
-                        let scope = crate::markdown_view::ChatScope::room(
-                            self.room.as_ref().map_or("", |r| r.link.as_str()),
-                        );
                         groups
                             .into_iter()
                             .map(|(author, msgs)| {
-                                self.chat_group(p, scope, author, msgs, body_w, &mut order, cx)
+                                self.chat_group(p, author, msgs, body_w, &mut order, cx)
                             })
                             .collect::<Vec<_>>()
                     }),
@@ -1451,13 +1448,15 @@ impl GlanceApp {
     fn chat_group(
         &mut self,
         p: &Palette,
-        scope: crate::markdown_view::ChatScope,
         author: PeerId,
         msgs: Vec<ChatMessage>,
         body_w: f32,
         order: &mut u64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let scope = crate::markdown_view::ChatScope::room(
+            self.room.as_ref().map_or("", |r| r.link.as_str()),
+        );
         if let Some(ChatBody::System(text)) = msgs.first().map(|m| m.body.clone()) {
             // Wraps (long words too) so the whole line stays readable.
             return div()
