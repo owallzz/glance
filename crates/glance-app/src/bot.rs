@@ -14,7 +14,9 @@ use crate::net::Net;
 /// `tone`: speak a sine tone so others see/hear us talking.
 /// `file`: offer this file to the room after joining.
 /// `switch`: while streaming, change to this size and frame rate after this
-/// many seconds, without stopping (tests live stream settings).
+/// many seconds, without stopping (tests live stream settings). A smaller
+/// size of the same shape caps the running capture; anything else swaps in
+/// a new test pattern.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     link: &str,
@@ -437,17 +439,33 @@ pub fn run(
                 let (Ok((w, h, fps)), Some(b)) = (spec, &broadcast) else {
                     return;
                 };
-                // A new source of the new size, at the new frame rate: the
-                // encoder is remade and watchers get a keyframe, no rejoin.
-                b.reconfigure(None, fps);
-                b.replace_capture(
-                    glance_media::capture::test_pattern(w, h, fps),
-                    "Test pattern",
-                );
+                let cur = live.borrow().as_ref().map(|s| (s.width, s.height));
+                let how = match cur {
+                    // A smaller size of the same shape: only the quality
+                    // changes on the same capture (the GUI's preset path).
+                    Some((cw, ch))
+                        if h <= ch
+                            && u64::from(w) * u64::from(ch) == u64::from(h) * u64::from(cw) =>
+                    {
+                        b.reconfigure(Some(h), fps);
+                        "same source"
+                    }
+                    // Otherwise a new source of the new size, at the new
+                    // frame rate. Either way the encoder is remade and
+                    // watchers get a keyframe, no rejoin.
+                    _ => {
+                        b.reconfigure(None, fps);
+                        b.replace_capture(
+                            glance_media::capture::test_pattern(w, h, fps),
+                            "Test pattern",
+                        );
+                        "new source"
+                    }
+                };
                 if let Some(s) = live.borrow_mut().as_mut() {
                     (s.width, s.height, s.fps) = (w, h, fps);
                 }
-                println!("switched stream to {w}x{h}@{fps}");
+                println!("switched stream to {w}x{h}@{fps} ({how})");
                 room.send(Command::SetState(MemberState {
                     muted: muted.get(),
                     stream: live.borrow().clone(),
