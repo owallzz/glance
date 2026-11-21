@@ -307,7 +307,7 @@ impl GlanceApp {
         let system_picker = gl.system_picker;
         let error = gl.error.clone();
 
-        modal_backdrop("go-live-backdrop").child(
+        modal_backdrop("go-live-backdrop", self.corners).child(
             div()
                 .id("go-live")
                 .occlude()
@@ -500,18 +500,26 @@ impl GlanceApp {
             .inset_0()
             .flex()
             .bg(p.bg_content)
+            .rounded_bl(self.corners.bottom_left)
+            .rounded_br(self.corners.bottom_right)
             .child(
-                div().flex_1().flex().justify_end().bg(p.bg_sidebar).child(
-                    div()
-                        .w(px(218.))
-                        .pt_16()
-                        .pr_2()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(div().px_3().pb_1().child(section_label(p, "USER SETTINGS")))
-                        .children(nav),
-                ),
+                div()
+                    .flex_1()
+                    .flex()
+                    .justify_end()
+                    .bg(p.bg_sidebar)
+                    .rounded_bl(self.corners.bottom_left)
+                    .child(
+                        div()
+                            .w(px(218.))
+                            .pt_16()
+                            .pr_2()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(div().px_3().pb_1().child(section_label(p, "USER SETTINGS")))
+                            .children(nav),
+                    ),
             )
             .child(
                 div()
@@ -988,7 +996,7 @@ impl GlanceApp {
             .cloned()
             .collect();
         let live = self.room.as_ref().is_some_and(|r| r.handle.is_some());
-        modal_backdrop("invite-backdrop").child(
+        modal_backdrop("invite-backdrop", self.corners).child(
             div()
                 .id("invite")
                 .occlude()
@@ -1143,7 +1151,7 @@ impl GlanceApp {
         } else {
             format!("is calling you · with {}", others.join(", "))
         };
-        modal_backdrop("call-backdrop").child(
+        modal_backdrop("call-backdrop", self.corners).child(
             div()
                 .id("incoming-call")
                 .occlude()
@@ -1244,8 +1252,9 @@ impl GlanceApp {
                     .id("presence-menu")
                     .occlude()
                     .absolute()
-                    .left(px(80.))
-                    .bottom(px(60.))
+                    // Just above the floating panel, by your avatar.
+                    .left(px(crate::app::PANEL_MARGIN))
+                    .bottom(px(self.floating_panel_reserve()))
                     .w(px(240.))
                     .p_2()
                     .rounded(px(8.))
@@ -1289,12 +1298,15 @@ fn round_button(id: &'static str, glyph: IconName, bg: Hsla, tip: &'static str) 
         .child(icon(glyph, 26., gpui_kit::white()))
 }
 
-fn modal_backdrop(id: &'static str) -> Stateful<Div> {
+/// Dims the window below the title bar; `corners` are the window's.
+fn modal_backdrop(id: &'static str, corners: Corners<Pixels>) -> Stateful<Div> {
     div()
         .id(id)
         .occlude()
         .absolute()
         .inset_0()
+        .rounded_bl(corners.bottom_left)
+        .rounded_br(corners.bottom_right)
         .bg(gpui_kit::black().opacity(0.7))
         .flex()
         .items_center()

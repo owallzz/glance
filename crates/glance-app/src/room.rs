@@ -6,12 +6,13 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::SelectableText;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::Input;
+use gpui_kit::component::input::Textarea;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::GlanceApp;
+use crate::app::{COMPOSER_HEIGHT, GlanceApp, PANEL_MARGIN};
+use crate::home::SIDEBAR_RADIUS;
 use crate::theme::Palette;
 use crate::ui::{Avatar, icon, icon_button, live_badge, section_label};
 
@@ -27,21 +28,94 @@ pub const CHAT_MAX_WIDTH: f32 = 640.;
 pub const CHAT_DEFAULT_WIDTH: f32 = 360.;
 /// The rail and the room sidebar, left of the stage.
 pub const LEFT_PANELS_WIDTH: f32 = 312.;
-/// Keep at least this much for the stage (its control bar needs it).
-const STAGE_MIN_WIDTH: f32 = 420.;
+/// Keep at least this much for the stage: its control bar at full size
+/// with every button (sharing adds stream settings), plus margins.
+const STAGE_MIN_WIDTH: f32 = ControlSize::FULL.row_width(7) + 2. * CONTROLS_MARGIN;
+/// The stage never gets narrower than this, even if chat has to shrink below
+/// its minimum: the compact control bar with every button on one line.
+const STAGE_COMPACT_MIN_WIDTH: f32 = ControlSize::COMPACT.row_width(7) + 2. * CONTROLS_MARGIN;
+/// The main window's minimum size. Wide enough for the rail, sidebar,
+/// chat and the compact control bar (it also fits half of a 1080p screen).
+pub const WINDOW_MIN_WIDTH: f32 = 960.;
+pub const WINDOW_MIN_HEIGHT: f32 = 480.;
+/// Space left and right of the stage's control bar.
+const CONTROLS_MARGIN: f32 = 16.;
 
-/// The chat panel width to use in a window this wide: at least the minimum,
-/// and at most the maximum, half the window, or what leaves the stage its
-/// minimum, whichever is smallest.
+/// Size of the stage's call buttons: full size when the stage is wide
+/// enough, smaller when chat squeezes it (and the row wraps if even that
+/// doesn't fit, so a button is never cut off).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ControlSize {
+    width: f32,
+    leave_width: f32,
+    height: f32,
+    gap: f32,
+    icon: f32,
+}
+
+impl ControlSize {
+    const FULL: Self = Self {
+        width: 56.,
+        leave_width: 64.,
+        height: 48.,
+        gap: 12.,
+        icon: 24.,
+    };
+    const COMPACT: Self = Self {
+        width: 44.,
+        leave_width: 52.,
+        height: 40.,
+        gap: 8.,
+        icon: 20.,
+    };
+
+    /// Width of a row of `buttons` (the last one is Disconnect).
+    const fn row_width(self, buttons: usize) -> f32 {
+        (buttons - 1) as f32 * (self.width + self.gap) + self.leave_width
+    }
+
+    /// The largest size whose row of `buttons` fits a stage this wide.
+    fn for_stage(stage_width: f32, buttons: usize) -> Self {
+        if Self::FULL.row_width(buttons) + 2. * CONTROLS_MARGIN <= stage_width {
+            Self::FULL
+        } else {
+            Self::COMPACT
+        }
+    }
+}
+
+/// Left and right edges of the window's content, inside the shadow and
+/// border that Linux client decorations draw around it.
+pub fn content_edges(window: &Window) -> (f32, f32) {
+    let pad = gpui_kit::component::window_paddings(window);
+    let border = |p: Pixels| if p > px(0.) { 1. } else { 0. };
+    let left = f32::from(pad.left) + border(pad.left);
+    let right = f32::from(window.viewport_size().width) - f32::from(pad.right) - border(pad.right);
+    (left, right.max(left))
+}
+
+/// Width of the window's content (see [`content_edges`]).
+pub fn content_width(window: &Window) -> f32 {
+    let (left, right) = content_edges(window);
+    right - left
+}
+
+/// The chat panel width to use in a window this wide: at most the maximum,
+/// half the window, or what leaves the stage room for the full-size control
+/// bar, whichever is smallest; at least the chat minimum, unless that would
+/// squeeze the stage below the compact control bar (then the stage wins).
 pub fn clamp_chat_width(width: f32, window_width: f32) -> f32 {
+    let min = CHAT_MIN_WIDTH
+        .min(window_width - LEFT_PANELS_WIDTH - STAGE_COMPACT_MIN_WIDTH)
+        .max(0.);
     let max = CHAT_MAX_WIDTH
         .min(window_width * 0.5)
         .min(window_width - LEFT_PANELS_WIDTH - STAGE_MIN_WIDTH)
-        .max(CHAT_MIN_WIDTH);
+        .max(min);
     if width.is_finite() {
-        width.clamp(CHAT_MIN_WIDTH, max)
+        width.clamp(min, max)
     } else {
-        CHAT_DEFAULT_WIDTH.clamp(CHAT_MIN_WIDTH, max)
+        CHAT_DEFAULT_WIDTH.clamp(min, max)
     }
 }
 
@@ -91,24 +165,23 @@ impl TileKind {
     }
 }
 
-/// Whether someone has video on (a screen stream or their camera).
-fn has_video(person: &Participant) -> bool {
-    person.stream.is_some() || person.camera
-}
-
 /// The stage's tiles: everyone's streams first, then a tile per person.
-/// With `hide_non_video`, people with neither a stream nor a camera on are
-/// left out (the participant list still shows them).
+/// With `hide_non_video`, only streams and camera tiles stay (the
+/// participant list still shows everyone).
 fn stage_tiles(participants: &[Participant], hide_non_video: bool) -> Vec<TileKind> {
-    let shown = || {
-        participants
-            .iter()
-            .filter(move |p| !hide_non_video || has_video(p))
-    };
-    shown()
+    // Hiding non-video people (like Discord): a stream tile stays, and a
+    // person tile only when its camera is on, so a sharer without a camera
+    // shows as just their stream.
+    participants
+        .iter()
         .filter(|p| p.stream.is_some())
         .map(|p| TileKind::Stream(p.clone()))
-        .chain(shown().map(|p| TileKind::Person(p.clone())))
+        .chain(
+            participants
+                .iter()
+                .filter(|p| !hide_non_video || p.camera)
+                .map(|p| TileKind::Person(p.clone())),
+        )
         .collect()
 }
 
@@ -288,19 +361,21 @@ impl GlanceApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let chat_open = self.room.as_ref().is_some_and(|r| r.chat_open);
-        let window_width = f32::from(window.viewport_size().width);
+        let window_width = content_width(window);
         div()
             .id("room-view")
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
+            // Shows around the sidebar's rounded top-left corner.
+            .bg(p.bg_rail)
             // Drop files anywhere in the room to send them.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 this.send_files(paths.paths().to_vec(), cx);
             }))
             .child(self.render_room_sidebar(p, cx))
-            .child(self.render_stage(p, cx))
+            .child(self.render_stage(p, window_width, cx))
             .when(chat_open, |d| {
                 d.child(self.render_chat(p, window_width, cx))
             })
@@ -308,10 +383,10 @@ impl GlanceApp {
             // right edge, so its width is what's right of the pointer.
             .on_drag_move(
                 cx.listener(|this, ev: &DragMoveEvent<ChatResize>, window, cx| {
-                    let window_width = f32::from(window.viewport_size().width);
+                    let (_, right) = content_edges(window);
                     let width = clamp_chat_width(
-                        window_width - f32::from(ev.event.position.x),
-                        window_width,
+                        right - f32::from(ev.event.position.x),
+                        content_width(window),
                     );
                     if (width - this.settings.chat_width).abs() >= 0.5 {
                         this.settings.chat_width = width;
@@ -328,14 +403,15 @@ impl GlanceApp {
         let name = room.name.clone();
         let link = room.link.clone();
         let people = room.participants.clone();
-        let elapsed = format::duration(room.started.elapsed().as_secs());
         let copied = self.link_copied;
+        let reserve = self.floating_panel_reserve();
         div()
             .w(px(240.))
             .h_full()
             .flex()
             .flex_col()
             .bg(p.bg_sidebar)
+            .rounded_tl(px(SIDEBAR_RADIUS))
             .child(
                 div()
                     .h(px(48.))
@@ -394,52 +470,8 @@ impl GlanceApp {
             )
             // Invite link card
             .child(self.render_invite_card(p, link, copied, cx))
-            // Voice connected panel
-            .child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(p.bg_rail)
-                    .bg(p.bg_user_panel)
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.green)
-                                    .child(icon(IconName::Signal, 16., p.green))
-                                    .child("Voice Connected"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(p.text_muted)
-                                    .child(format!("Direct · {elapsed}")),
-                            ),
-                    )
-                    .child(
-                        icon_button(
-                            "disconnect",
-                            IconName::PhoneOff,
-                            "Disconnect",
-                            p.interactive,
-                            p,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.leave_room(cx))),
-                    ),
-            )
-            .child(self.render_user_panel(p, cx))
+            // Room for the floating panel (voice + your own row).
+            .child(div().h(px(reserve)).flex_shrink_0())
     }
 
     fn person_row(
@@ -524,12 +556,23 @@ impl GlanceApp {
             .into_any_element()
     }
 
-    fn render_stage(&mut self, _p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_stage(
+        &mut self,
+        _p: &Palette,
+        window_width: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         // The stage is dark in both themes (like Discord's call view), so
         // video and the control bar read the same everywhere.
         let p = &Palette::dark();
         let room = self.room.as_ref().expect("in a room");
         let chat_open = room.chat_open;
+        let chat_width = if chat_open {
+            clamp_chat_width(self.settings.chat_width, window_width)
+        } else {
+            0.
+        };
+        let stage_width = window_width - LEFT_PANELS_WIDTH - chat_width;
         let filmstrip_hidden = room.filmstrip_hidden;
         let name = room.name.clone();
         let hide_non_video = self.settings.hide_non_video;
@@ -643,6 +686,7 @@ impl GlanceApp {
             .flex()
             .flex_col()
             .bg(p.bg_stage)
+            .when(!chat_open, |d| d.rounded_br(self.corners.bottom_right))
             .child(
                 div()
                     .h(px(48.))
@@ -710,7 +754,7 @@ impl GlanceApp {
                     ),
             )
             .child(body)
-            .child(self.render_controls(p, cx))
+            .child(self.render_controls(p, stage_width, cx))
     }
 
     /// The stage when nobody has video on and non-video people are hidden.
@@ -1052,7 +1096,12 @@ impl GlanceApp {
         }
     }
 
-    fn render_controls(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_controls(
+        &mut self,
+        p: &Palette,
+        stage_width: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let me = self.me.id;
         let live = self
             .room
@@ -1064,6 +1113,8 @@ impl GlanceApp {
             .as_ref()
             .and_then(|r| r.participants.iter().find(|x| x.profile.id == me))
             .is_some_and(|x| x.camera);
+        // Camera, share, (stream settings,) mute, deafen, invite, disconnect.
+        let size = ControlSize::for_stage(stage_width, if live { 7 } else { 6 });
         let ctrl =
             |id: &'static str, glyph: IconName, tip: &'static str, active: bool, danger: bool| {
                 let (bg, hover) = if danger {
@@ -1080,9 +1131,14 @@ impl GlanceApp {
                 };
                 div()
                     .id(id)
-                    .w(px(if danger { 64. } else { 56. }))
-                    .h(px(48.))
-                    .rounded(px(if danger { 24. } else { 12. }))
+                    .flex_shrink_0()
+                    .w(px(if danger { size.leave_width } else { size.width }))
+                    .h(px(size.height))
+                    .rounded(px(if danger {
+                        size.height / 2.
+                    } else {
+                        size.height / 4.
+                    }))
                     .bg(bg)
                     .hover(move |s| s.bg(hover))
                     .cursor_pointer()
@@ -1090,14 +1146,18 @@ impl GlanceApp {
                     .items_center()
                     .justify_center()
                     .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
-                    .child(icon(glyph, 24., fg))
+                    .child(icon(glyph, size.icon, fg))
             };
         div()
-            .h(px(80.))
+            .min_h(px(80.))
+            .flex_shrink_0()
+            .px(px(CONTROLS_MARGIN))
+            .py_2()
             .flex()
+            .flex_wrap()
             .items_center()
             .justify_center()
-            .gap_3()
+            .gap(px(size.gap))
             .child(
                 ctrl(
                     "ctrl-camera",
@@ -1269,6 +1329,7 @@ impl GlanceApp {
             .flex()
             .flex_col()
             .bg(p.bg_content)
+            .rounded_br(self.corners.bottom_right)
             .border_l_1()
             .border_color(p.bg_rail)
             .child(
@@ -1301,38 +1362,53 @@ impl GlanceApp {
                     ),
             )
             .child(
-                div().p_4().child(
+                div().px_4().pt_2().pb(px(PANEL_MARGIN)).child(
                     div()
                         .rounded(px(8.))
                         .bg(p.bg_hover)
                         .flex()
-                        .items_center()
+                        // Like the DM box: the + stays level with the last
+                        // line, and a long message grows the box upwards.
+                        .items_end()
                         .gap_2()
                         .px_2()
                         .child(
-                            icon_button(
-                                "attach",
-                                IconName::CirclePlus,
-                                "Send a file",
-                                p.interactive,
-                                p,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| this.pick_files_to_send(cx))),
+                            div().h(px(COMPOSER_HEIGHT)).flex().items_center().child(
+                                icon_button(
+                                    "attach",
+                                    IconName::CirclePlus,
+                                    "Send a file",
+                                    p.interactive,
+                                    p,
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.pick_files_to_send(cx)),
+                                ),
+                            ),
                         )
-                        .child(div().flex_1().child(
-                            Input::new(&self.chat_input).appearance(false).on_paste({
-                                // Pasted files or images are sent; text pastes as usual.
-                                let app = cx.entity().downgrade();
-                                move |item, _, cx| {
-                                    let paths = crate::files::pasted_files(item);
-                                    if paths.is_empty() {
-                                        return false;
-                                    }
-                                    let _ = app.update(cx, |app, cx| app.send_files(paths, cx));
-                                    true
-                                }
-                            }),
-                        )),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                // A one-line textarea is 40 px tall.
+                                .py(px((COMPOSER_HEIGHT - 40.) / 2.))
+                                .child(Textarea::new(&self.chat_input).appearance(false).on_paste(
+                                    {
+                                        // Pasted files or images are sent; text
+                                        // pastes as usual.
+                                        let app = cx.entity().downgrade();
+                                        move |item, _, cx| {
+                                            let paths = crate::files::pasted_files(item);
+                                            if paths.is_empty() {
+                                                return false;
+                                            }
+                                            let _ =
+                                                app.update(cx, |app, cx| app.send_files(paths, cx));
+                                            true
+                                        }
+                                    },
+                                )),
+                        ),
                 ),
             )
             // Last, so it's on top of the panel's left edge.
@@ -1613,8 +1689,14 @@ fn muted_by_you_icon(p: &Palette, id: PeerId, size: f32) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::{
-        CHAT_DEFAULT_WIDTH, CHAT_MAX_WIDTH, CHAT_MIN_WIDTH, TileKind, clamp_chat_width, stage_tiles,
+        CHAT_DEFAULT_WIDTH, CHAT_MAX_WIDTH, CHAT_MIN_WIDTH, CONTROLS_MARGIN, ControlSize,
+        LEFT_PANELS_WIDTH, STAGE_MIN_WIDTH, TileKind, WINDOW_MIN_WIDTH, clamp_chat_width,
+        stage_tiles,
     };
+
+    /// Shadow plus border on each side of a floating client-decorated
+    /// window on Linux (gpui-kit's frame); zero elsewhere.
+    const FRAME_INSET: f32 = if cfg!(target_os = "linux") { 21. } else { 0. };
     use glance_core::Participant;
 
     fn keys(tiles: &[TileKind]) -> Vec<String> {
@@ -1644,15 +1726,11 @@ mod tests {
         assert_eq!(all.len(), people.len() + 1);
         assert_eq!(all[0].key(), format!("stream-{s}"));
 
-        // Hidden: only the streamer (stream + their tile) and the camera.
+        // Hidden: the stream (not the sharer's camera-less tile) and the camera.
         let video = stage_tiles(&people, true);
         assert_eq!(
             keys(&video),
-            vec![
-                format!("stream-{s}"),
-                format!("person-{s}"),
-                format!("person-{c}"),
-            ]
+            vec![format!("stream-{s}"), format!("person-{c}")]
         );
 
         // Nobody with video: nothing on the stage.
@@ -1668,12 +1746,57 @@ mod tests {
         assert_eq!(clamp_chat_width(360., 1920.), 360.);
         assert_eq!(clamp_chat_width(900., 1920.), CHAT_MAX_WIDTH);
         assert_eq!(clamp_chat_width(100., 1920.), CHAT_MIN_WIDTH);
-        // The stage keeps its minimum: 1200 - 312 - 420, 1100 - 312 - 420.
-        assert_eq!(clamp_chat_width(600., 1200.), 468.);
-        assert_eq!(clamp_chat_width(900., 1100.), 368.);
-        // A tiny window still gets the minimum.
-        assert_eq!(clamp_chat_width(500., 400.), CHAT_MIN_WIDTH);
+        // The stage keeps its minimum: 1200 - 312 - 504, 1100 - 312 - 504.
+        assert_eq!(STAGE_MIN_WIDTH, 504.);
+        assert_eq!(clamp_chat_width(600., 1200.), 384.);
+        assert_eq!(clamp_chat_width(900., 1100.), 284.);
+        // A narrow window shrinks chat below its minimum before the stage
+        // drops below the compact bar: 918 - 312 - 396.
+        assert_eq!(clamp_chat_width(500., 918.), 210.);
+        // A tiny window: nothing left for chat.
+        assert_eq!(clamp_chat_width(500., 400.), 0.);
         // Garbage from a hand-edited settings file.
         assert_eq!(clamp_chat_width(f32::NAN, 1920.), CHAT_DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn call_controls_fit_the_stage() {
+        // Whatever the window and chat width, a stage at its minimum fits
+        // the full-size bar with every button.
+        for window in [1100., 1400., 1920.] {
+            let stage = window - LEFT_PANELS_WIDTH - clamp_chat_width(CHAT_MAX_WIDTH, window);
+            assert_eq!(
+                ControlSize::for_stage(stage, 7),
+                ControlSize::FULL,
+                "{window}"
+            );
+        }
+        // Any window at least the minimum size, floating (inside the
+        // frame) or tiled, chat open at any width or closed: the bar never
+        // wraps, whether sharing (7 buttons) or not (6).
+        let smallest = WINDOW_MIN_WIDTH - 2. * FRAME_INSET;
+        let mut content = smallest;
+        while content <= 2000. {
+            for chat in [
+                None,
+                Some(0.),
+                Some(CHAT_DEFAULT_WIDTH),
+                Some(CHAT_MAX_WIDTH),
+            ] {
+                let chat_width = chat.map_or(0., |w| clamp_chat_width(w, content));
+                let stage = content - LEFT_PANELS_WIDTH - chat_width;
+                for buttons in [6, 7] {
+                    let size = ControlSize::for_stage(stage, buttons);
+                    assert!(
+                        size.row_width(buttons) + 2. * CONTROLS_MARGIN <= stage,
+                        "content {content}, chat {chat:?}, {buttons} buttons"
+                    );
+                }
+            }
+            content += 1.;
+        }
+        // The smallest floating window with chat open shrinks the buttons.
+        let stage = smallest - LEFT_PANELS_WIDTH - clamp_chat_width(CHAT_MAX_WIDTH, smallest);
+        assert_eq!(ControlSize::for_stage(stage, 6), ControlSize::COMPACT);
     }
 }

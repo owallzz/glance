@@ -173,8 +173,12 @@ fn main() {
         // one, and on Windows/macOS it replaces the system bar.
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(720.), px(480.))),
+            window_min_size: Some(size(
+                px(room::WINDOW_MIN_WIDTH),
+                px(room::WINDOW_MIN_HEIGHT),
+            )),
             window_decorations: Some(WindowDecorations::Client),
+            window_background: crate::ui::window_background(),
             // The OS still shows this in the taskbar and Alt+Tab.
             titlebar: Some(TitlebarOptions {
                 title: Some("glance".into()),
