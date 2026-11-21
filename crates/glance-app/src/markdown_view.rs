@@ -353,12 +353,14 @@ impl Renderer<'_> {
         let p = self.p;
         let color = self.visible(p.text_normal);
         // Ordered markers are right-aligned in a column as wide as the
-        // longest number (Discord: 0.4em + 0.6em per digit).
+        // longest number (Discord: 0.4em + 0.6em per digit), so single-digit
+        // items line up with bullets; the marker's own gap hangs into the
+        // gutter like Discord's outside markers.
         let marker_w = match start {
             Some(n) => {
                 let last = n.saturating_add(items.len().saturating_sub(1) as u64);
                 let digits = last.to_string().len() as f32;
-                self.size * (0.4 + 0.6 * digits) + px(6.)
+                self.size * (0.4 + 0.6 * digits)
             }
             None => px(16.),
         };
