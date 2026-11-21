@@ -80,10 +80,17 @@ impl GlanceApp {
         let events = handle.events.clone();
         self._contacts_task = Some(cx.spawn(async move |this, cx| {
             while let Ok(ev) = events.recv_async().await {
-                if this
-                    .update(cx, |app, cx| app.on_contact_event(ev, cx))
-                    .is_err()
-                {
+                // Handle a burst (e.g. acks for a flushed outbox) in one
+                // update so the DM files are saved once.
+                let mut batch = vec![ev];
+                batch.extend(events.try_iter().take(255));
+                let handled = this.update(cx, |app, cx| {
+                    for ev in batch {
+                        app.on_contact_event(ev, cx);
+                    }
+                    app.dms.flush();
+                });
+                if handled.is_err() {
                     break;
                 }
             }
@@ -529,11 +536,16 @@ impl GlanceApp {
                 }
                 self.book
                     .update_profile(&pid.0, &profile.name, profile.color);
+                if self.book.is_mutual(&pid.0) {
+                    self.flush_dms(pid);
+                }
             }
             ContactEvent::Offline(id) => {
                 let pid = peer_id(id);
                 self.live.online.remove(&pid);
                 self.live.presence.remove(&pid);
+                // They may come back with a newer glance.
+                self.dms.unsupported.remove(&pid);
             }
             ContactEvent::Presence { id, info } => {
                 self.live.presence.insert(peer_id(id), info);
@@ -621,6 +633,9 @@ impl GlanceApp {
                 }
             },
             ContactEvent::FileReceived { from, file } => self.on_contact_file(from, file),
+            ContactEvent::DmReceived { from, dm } => self.on_dm_received(peer_id(from), dm),
+            ContactEvent::DmAcked { from, id } => self.on_dm_acked(peer_id(from), id),
+            ContactEvent::DmFailed { to, id, reason } => self.on_dm_failed(peer_id(to), id, reason),
             ContactEvent::Undeliverable { to, what } => {
                 if what == "call" {
                     self.stop_ringing(peer_id(to));

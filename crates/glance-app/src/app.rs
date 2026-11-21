@@ -489,6 +489,13 @@ pub struct GlanceApp {
     pub contact_menu: Option<PeerId>,
     /// Files sent to / received from contacts outside calls (newest first).
     pub direct_files: Vec<crate::direct::DirectFile>,
+    /// Direct messages with contacts.
+    pub dms: crate::dms::Dms,
+    /// The conversation open on the home screen.
+    pub dm_open: Option<PeerId>,
+    pub dm_input: Entity<gpui_kit::component::input::TextareaState>,
+    /// The window has focus (unread counts and notifications depend on it).
+    pub window_active: bool,
     /// We switched to Idle automatically (and switch back on activity).
     pub auto_idle: bool,
     /// "Invite" panel in a room.
@@ -594,6 +601,11 @@ impl GlanceApp {
             .as_ref()
             .map(|n| crate::direct::load(&n.data_dir))
             .unwrap_or_default();
+        let dms = match (&net, demo_room) {
+            (Some(n), false) => crate::dms::Dms::open(&n.data_dir),
+            _ => Default::default(),
+        };
+        let dm_input = Self::new_dm_input(window, cx);
         let volume_slider = |value: f32, cx: &mut Context<Self>| {
             cx.new(|_| {
                 SliderState::new()
@@ -657,6 +669,10 @@ impl GlanceApp {
             presence_menu: false,
             contact_menu: None,
             direct_files,
+            dms,
+            dm_open: None,
+            dm_input,
+            window_active: true,
             auto_idle: false,
             invite_open: false,
             _tray: None,
@@ -676,6 +692,7 @@ impl GlanceApp {
             }
         });
         app.apply_theme(window, cx);
+        app.watch_window_activation(window, cx);
         if let Some(url) = app.settings.relay_url.clone() {
             app.relay_input
                 .update(cx, |s, cx| s.set_value(url, window, cx));
@@ -908,6 +925,7 @@ impl GlanceApp {
 
     fn render_rail(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let home_selected = self.screen == Screen::Home;
+        let unread = self.dm_total_unread();
         let rail_item = |id: &'static str, selected: bool, bg: Hsla, child: AnyElement| {
             let hover_bg = p.brand;
             div()
@@ -966,13 +984,28 @@ impl GlanceApp {
                     )
                     .into_any_element(),
                 )
+                .when(unread > 0, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .right(px(10.))
+                            .bottom(px(-2.))
+                            .rounded_full()
+                            .border_3()
+                            .border_color(p.bg_rail)
+                            .child(crate::dms::unread_badge(p, unread)),
+                    )
+                })
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
+                    cx.listener(|this, _, window, cx| {
                         if this.screen != Screen::Home {
                             this.recent.home_shown();
                         }
                         this.screen = Screen::Home;
+                        if let Some(peer) = this.dm_open {
+                            this.open_dm(peer, window, cx);
+                        }
                         cx.notify();
                     }),
                 ),

@@ -5,6 +5,7 @@ mod bot;
 mod camera;
 mod contacts;
 mod direct;
+mod dms;
 mod files;
 mod home;
 mod idle;
