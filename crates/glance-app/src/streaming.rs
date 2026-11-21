@@ -45,25 +45,12 @@ impl GlanceApp {
         cx: &mut Context<Self>,
     ) {
         let system_picker = capture::uses_system_picker();
-        let sources = if system_picker {
+        let mut sources = if system_picker {
             Vec::new()
         } else {
             capture::list_sources()
         };
-        let has_screens = sources.iter().any(|s| s.kind == SourceKind::Screen);
-        let mut windows_tab = !has_screens && !sources.is_empty();
-        let mut source = 0;
-        if let Some(Selection::Source(cur)) = &editing {
-            let same = |s: &&capture::Source| s.kind == cur.kind && s.id == cur.id;
-            if let Some(i) = sources
-                .iter()
-                .filter(|s| s.kind == cur.kind)
-                .position(|s| same(&s))
-            {
-                windows_tab = cur.kind == SourceKind::Window;
-                source = i;
-            }
-        }
+        let (windows_tab, source) = preselect(&mut sources, editing.as_ref());
         self.go_live = Some(GoLive {
             windows_tab,
             source,
@@ -439,15 +426,17 @@ impl GlanceApp {
             Ok(c) => {
                 control.replace_capture(c, source_label(&Selection::SystemPicker));
                 live.pending_selection = Some(Selection::SystemPicker);
-                self.go_live = None;
+                // Quality and sound picked in the same window apply too
+                // (this also closes it).
+                self.apply_stream_settings(cx);
             }
             Err(e) => {
                 if let Some(gl) = self.go_live.as_mut() {
                     gl.error = Some(format!("Couldn't start screen capture: {e:#}"));
                 }
+                cx.notify();
             }
         }
-        cx.notify();
     }
 
     fn on_broadcast_notice(&mut self, notice: BroadcastNotice, cx: &mut Context<Self>) {
@@ -616,6 +605,30 @@ impl GlanceApp {
     }
 }
 
+/// Which tab and card the picker opens on. While editing, that is the
+/// running stream's source; if the fresh list misses it (a minimized or
+/// untitled window, another Space), it is added so it stays selected.
+/// Otherwise "Apply" would quietly switch the stream to the first screen.
+fn preselect(sources: &mut Vec<capture::Source>, editing: Option<&Selection>) -> (bool, usize) {
+    if let Some(Selection::Source(cur)) = editing {
+        let of_kind = || sources.iter().filter(|s| s.kind == cur.kind);
+        let index = match of_kind().position(|s| s.id == cur.id) {
+            Some(i) => i,
+            None => {
+                let at = sources
+                    .iter()
+                    .position(|s| s.kind == cur.kind)
+                    .unwrap_or(sources.len());
+                sources.insert(at, cur.clone());
+                0
+            }
+        };
+        return (cur.kind == SourceKind::Window, index);
+    }
+    let has_screens = sources.iter().any(|s| s.kind == SourceKind::Screen);
+    (!has_screens && !sources.is_empty(), 0)
+}
+
 /// Whether two selections capture the same thing (a window's title or a
 /// screen's size may have changed since).
 fn same_source(a: &Selection, b: &Selection) -> bool {
@@ -654,8 +667,60 @@ fn start_stream_audio(handle: &RoomHandle, src: AudioSource) -> anyhow::Result<S
 
 #[cfg(test)]
 mod tests {
-    use super::{output_size, same_source};
+    use super::{output_size, preselect, same_source};
     use glance_media::capture::{Selection, Source, SourceKind};
+
+    fn source(kind: SourceKind, id: u32) -> Source {
+        Source {
+            id,
+            name: format!("{kind:?} {id}"),
+            kind,
+            size: None,
+        }
+    }
+
+    #[test]
+    fn editing_opens_on_the_running_source() {
+        let list = vec![
+            source(SourceKind::Screen, 1),
+            source(SourceKind::Window, 7),
+            source(SourceKind::Window, 9),
+        ];
+        let mut sources = list.clone();
+        let cur = Selection::Source(source(SourceKind::Window, 9));
+        assert_eq!(preselect(&mut sources, Some(&cur)), (true, 1));
+        assert_eq!(sources, list);
+        // Nothing being edited: screens first.
+        assert_eq!(preselect(&mut sources, None), (false, 0));
+    }
+
+    #[test]
+    fn an_unlisted_running_source_stays_selected() {
+        // A minimized window can be missing from a fresh list; "Apply" must
+        // not fall back to the first screen.
+        let mut sources = vec![source(SourceKind::Screen, 1), source(SourceKind::Window, 7)];
+        let cur = source(SourceKind::Window, 9);
+        let (windows_tab, i) = preselect(&mut sources, Some(&Selection::Source(cur.clone())));
+        assert!(windows_tab);
+        let picked = sources
+            .iter()
+            .filter(|s| s.kind == SourceKind::Window)
+            .nth(i)
+            .unwrap();
+        assert_eq!(picked, &cur);
+        assert!(same_source(
+            &Selection::Source(picked.clone()),
+            &Selection::Source(cur)
+        ));
+
+        let mut empty = Vec::new();
+        let screen = source(SourceKind::Screen, 2);
+        assert_eq!(
+            preselect(&mut empty, Some(&Selection::Source(screen.clone()))),
+            (false, 0)
+        );
+        assert_eq!(empty, vec![screen]);
+    }
 
     #[test]
     fn a_renamed_window_is_the_same_source() {
