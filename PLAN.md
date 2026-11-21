@@ -202,6 +202,7 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - [x] **Call sounds:** synthesized kalimba ringtone with a first-ring fade-in, outgoing ringback while a call is unanswered, matching chimes. No audio files shipped.
   - [x] **Packaging:** AppImage, Flatpak bundle, Windows per-user installer and portable zip, macOS .dmg and .app.tar.gz, `glance --version`.
   - [x] **Signed auto-updates:** every release asset signed with minisign in CI; glance checks GitHub Releases at startup and every 6 hours, downloads in the background and asks before restarting (Settings → Updates, `glance update`). Flatpak updates through Flatpak.
+- [x] **Chat markdown:** Discord-style formatting in room chat and DMs (bold, italic, underline, strikethrough, spoilers, inline code, highlighted code blocks, quotes, headings, subtext, lists, links and masked links), a composer that formats live as you type (Enter sends, Shift+Enter adds a line), a "Leaving glance" check before web links open (trusted sites remembered), invite links that join in-app, and a 4000-byte limit on room messages.
 
 ## 5. Running and testing
 - Run: `cargo run -p glance-app` (or `cargo run -p glance-app -- join <link>`, `-- bot <link>`)

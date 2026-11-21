@@ -22,7 +22,7 @@ Start a room, send the link, and everyone in it can go live at the same time. Th
 - **Rooms:** start one and the invite link is on your clipboard. Clicking a `glance://` link opens glance (or hands the link to the copy already running) and joins.
 - **Screen sharing:** anyone can go live at once, up to 4K60 with a hardware encoder (1440p60 in software), with an optional app or system audio track. Watch in a grid, focus, fullscreen or a pop-out window, with per-stream volume and stats.
 - **Voice and webcams:** echo cancellation, noise suppression, automatic gain, per-person volume, speaking rings, mute/deafen.
-- **Chat and files:** room chat; drop, attach or paste files and screenshots. Files go peer to peer, and anyone who downloaded one helps serve it.
+- **Chat and files:** room chat with Discord-style formatting; drop, attach or paste files and screenshots. Files go peer to peer, and anyone who downloaded one helps serve it.
 - **Contacts:** add people you've called, see when they're online or in a call, ring them, send them files outside calls. glance waits in the tray and can start on login.
 - **Updates itself:** glance checks for new releases, downloads them in the background and asks before restarting.
 - **Light on resources:** nothing is encoded while nobody watches. Video is encoded and decoded on the GPU when there is one (NVENC/NVDEC on NVIDIA, VA-API on Linux AMD/Intel, Media Foundation on Windows, VideoToolbox on Macs), with OpenH264 as the fallback.
@@ -85,6 +85,25 @@ glance bot <link> --stream 1920x1080@60 --tone   # ...and shares a test pattern 
 glance update [--apply]    # check for an update (and install it) from a terminal
 glance --version
 ```
+
+### Formatting messages
+
+Room chat and direct messages use Discord-style formatting, shown live as you type. **Enter** sends; **Shift+Enter** starts a new line.
+
+| Type | To get |
+|---|---|
+| `*italic*` or `_italic_`, `**bold**`, `__underline__`, `~~strikethrough~~` | the styles (they combine: `***bold italic***`) |
+| `` `code` `` | inline code |
+| ```` ```rs ```` ... ```` ``` ```` | a code block, highlighted when it names a language (`rs`, `py`, `js`, `ts`, `json`, `sh`, `diff`, ...) |
+| `\|\|spoiler\|\|` | hidden until clicked |
+| `> quote` at the start of a line, or `>>> quote` for the rest of the message | a block quote |
+| `# `, `## `, `### ` at the start of a line | headings |
+| `-# small text` | subtext |
+| `- item` or `1. item` (indent to nest) | lists |
+| `[label](https://example.com)` | a masked link (hover shows where it goes) |
+| `\*` | a literal `*` (any symbol can be escaped) |
+
+Web addresses become links. Clicking one asks before opening your browser, unless you chose to trust that site; `glance://` invite links join the room right away.
 
 | Environment variable | Effect |
 |---|---|
