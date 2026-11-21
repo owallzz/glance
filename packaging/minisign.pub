@@ -1,0 +1,3 @@
+# Placeholder: the minisign public key that release assets are signed with
+# goes here (the two-line file `minisign -G -W` writes). Until then the app
+# treats updates as disabled ("no signing key").

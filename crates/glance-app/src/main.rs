@@ -20,6 +20,8 @@ mod streaming;
 mod theme;
 mod tray;
 mod ui;
+mod update;
+mod update_ui;
 mod video;
 mod voice;
 
@@ -44,6 +46,13 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if args.iter().any(|a| a == "--version") {
+        println!("glance {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if args.first().map(String::as_str) == Some("update") {
+        std::process::exit(update::cli::run(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
@@ -88,6 +97,11 @@ fn main() {
     let (instance_tx, instance_rx) = flume::unbounded::<instance::Request>();
     if normal_launch {
         let dir = net::data_dir();
+        // Restarted by the updater: let the old process finish quitting
+        // first, or we'd hand our launch straight back to it.
+        if args.iter().any(|a| a == update::apply::AFTER_UPDATE) {
+            instance::wait_until_gone(&dir, std::time::Duration::from_secs(10));
+        }
         if instance::hand_off(&dir, &instance::Request::from_args(&args)) {
             return;
         }

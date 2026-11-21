@@ -851,6 +851,23 @@ impl GlanceApp {
                         ),
                 )
                 .into_any_element(),
+            SettingsPage::Updates => {
+                let auto = self.updates_available().then(|| {
+                    toggle!(
+                        "auto-update",
+                        "Check for updates automatically",
+                        "Looks for a new version at startup and every 6 hours and downloads it in the background. glance never restarts on its own.",
+                        auto_update
+                    )
+                });
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(info_row(p, "Current version", self.version_label().into()))
+                    .children(auto)
+                    .child(self.render_update_status(p, cx))
+                    .into_any_element()
+            }
         };
         div()
             .max_w(px(660.))
