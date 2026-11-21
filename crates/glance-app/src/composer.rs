@@ -127,8 +127,6 @@ pub fn new_composer(
     state
 }
 
-/// The editor, styled to sit inside the existing input pill (no background or
-/// border of its own), sized to its content.
 /// The length of what Enter would send (trimmed), when that is over `max`
 /// bytes: such a message stays in the composer instead of being cut.
 pub fn too_long(state: &EditorState, max: usize) -> Option<usize> {
@@ -151,6 +149,8 @@ pub fn too_long_note(state: &Entity<EditorState>, max: usize, cx: &App) -> Optio
     )
 }
 
+/// The editor, styled to sit inside the existing input pill (no background or
+/// border of its own), sized to its content.
 pub fn composer_element(state: &Entity<EditorState>, cx: &App) -> impl IntoElement {
     build(state, None, cx)
 }
