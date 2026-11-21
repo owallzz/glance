@@ -15,7 +15,7 @@ pub fn register() {
     if !crate::net::may_integrate() || crate::net::in_flatpak() {
         return;
     }
-    let Ok(exe) = std::env::current_exe() else {
+    let Some(exe) = crate::net::launch_path() else {
         return;
     };
     if let Err(e) = register_for(&exe) {
@@ -28,10 +28,6 @@ fn register_for(exe: &std::path::Path) -> anyhow::Result<()> {
     let Some(apps) = dirs::data_dir().map(|d| d.join("applications")) else {
         return Ok(());
     };
-    // AppImages run from a temporary mount; point at the AppImage itself.
-    let exe = std::env::var_os("APPIMAGE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| exe.to_path_buf());
     let entry = desktop_entry(&exe.to_string_lossy());
     let path = apps.join("glance.desktop");
     if std::fs::read_to_string(&path).ok().as_deref() == Some(entry.as_str()) {

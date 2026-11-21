@@ -38,25 +38,36 @@ fn choose_data_dir(
 /// Name of the marker file that makes a copy portable.
 pub const PORTABLE_MARKER: &str = "portable";
 
-/// The folder of a portable copy: the executable's folder (the AppImage's
-/// for an AppImage) when a file named `portable` sits in it. Portable copies
-/// keep their data next to themselves and leave the system alone (no
-/// start-on-login, no glance:// registration).
+/// The folder of a portable copy: the folder of [`launch_path`] (the
+/// AppImage's for an AppImage) when a file named `portable` sits in it.
+/// Portable copies keep their data next to themselves and leave the system
+/// alone (no start-on-login, no glance:// registration).
 pub fn portable_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
-    portable_root(&exe, appimage.as_deref(), |p| p.is_file())
+    portable_root(&launch_path()?, |p| p.is_file())
 }
 
-fn portable_root(
-    exe: &Path,
-    appimage: Option<&Path>,
-    is_file: impl Fn(&Path) -> bool,
-) -> Option<PathBuf> {
-    // An AppImage runs from a temporary mount; the marker sits next to the
-    // .AppImage file itself.
-    let dir = appimage.unwrap_or(exe).parent()?;
+fn portable_root(launch: &Path, is_file: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let dir = launch.parent()?;
     is_file(&dir.join(PORTABLE_MARKER)).then(|| dir.to_path_buf())
+}
+
+/// The file that starts this copy of glance, for start-on-login entries and
+/// link handlers: the `.AppImage` when running from one (the executable sits
+/// in a temporary mount that's gone once glance exits), else the executable.
+pub fn launch_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
+    let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+    Some(choose_launch_path(exe, appimage, appdir))
+}
+
+fn choose_launch_path(exe: PathBuf, appimage: Option<PathBuf>, appdir: Option<PathBuf>) -> PathBuf {
+    // APPIMAGE and APPDIR are inherited by everything an AppImage starts, so
+    // trust them only when this executable really sits inside that AppDir.
+    match (appimage, appdir) {
+        (Some(image), Some(dir)) if !dir.as_os_str().is_empty() && exe.starts_with(&dir) => image,
+        _ => exe,
+    }
 }
 
 /// Running inside a Flatpak sandbox: updates, start-on-login and the
@@ -340,32 +351,39 @@ mod tests {
     }
 
     #[test]
-    fn portable_needs_the_marker_next_to_the_exe() {
+    fn portable_needs_the_marker_next_to_the_launch_path() {
         let exe = Path::new("/apps/glance/glance.exe");
         let marker = |want: &'static str| move |p: &Path| p == Path::new(want);
         assert_eq!(
-            portable_root(exe, None, marker("/apps/glance/portable")),
+            portable_root(exe, marker("/apps/glance/portable")),
             Some(PathBuf::from("/apps/glance"))
         );
+        assert_eq!(portable_root(exe, marker("/elsewhere/portable")), None);
+    }
+
+    #[test]
+    fn launch_path_is_the_appimage_only_inside_its_mount() {
+        let mounted = PathBuf::from("/tmp/.mount_abc/usr/bin/glance");
+        let image = PathBuf::from("/home/u/Apps/glance.AppImage");
+        let appdir = PathBuf::from("/tmp/.mount_abc");
         assert_eq!(
-            portable_root(exe, None, marker("/elsewhere/portable")),
-            None
+            choose_launch_path(mounted.clone(), Some(image.clone()), Some(appdir.clone())),
+            image
         );
-        // AppImage: look next to the .AppImage, not inside its mount.
-        let mounted = Path::new("/tmp/.mount_abc/usr/bin/glance");
-        let image = Path::new("/home/u/Apps/glance.AppImage");
+        // Not an AppImage at all.
+        assert_eq!(choose_launch_path(mounted.clone(), None, None), mounted);
+        // A plain binary started from inside another AppImage inherits its
+        // APPIMAGE/APPDIR: keep the binary's own path.
+        let plain = PathBuf::from("/home/u/tools/glance/glance");
         assert_eq!(
-            portable_root(mounted, Some(image), marker("/home/u/Apps/portable")),
-            Some(PathBuf::from("/home/u/Apps"))
-        );
-        assert_eq!(
-            portable_root(
-                mounted,
-                Some(image),
-                marker("/tmp/.mount_abc/usr/bin/portable")
+            choose_launch_path(
+                plain.clone(),
+                Some(PathBuf::from("/home/u/Apps/Other.AppImage")),
+                Some(PathBuf::from("/tmp/.mount_xyz"))
             ),
-            None
+            plain
         );
+        assert_eq!(choose_launch_path(plain.clone(), Some(image), None), plain);
     }
 
     #[test]
