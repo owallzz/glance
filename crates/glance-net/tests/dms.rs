@@ -310,3 +310,78 @@ async fn old_peers_still_connect_but_get_no_messages() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(conn.close_reason().is_none());
 }
+
+/// Ana sees Ben as a contact a moment before Ben's app has marked her one
+/// (she just got his acceptance): Ben drops her message without an ack.
+/// Ana's actor gives up on it after the ack timeout, and once Ben's
+/// relations catch up his Hello brings her online again, so her app's
+/// resend gets through.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_dropped_before_the_contact_is_mutual_is_resent() {
+    let a = node_with(SecretKey::generate(), "Ana").await;
+    let b = node_with(SecretKey::generate(), "Ben").await;
+    meet(&a, &b).await;
+    let (ca, cb) = (a.contacts().clone(), b.contacts().clone());
+    ca.send(ContactCommand::SetRelations(rel(b.id(), Relation::Mutual)));
+    cb.send(ContactCommand::SetRelations(rel(
+        a.id(),
+        Relation::Incoming,
+    )));
+
+    ca.send(ContactCommand::SendDm {
+        to: b.id(),
+        dm: dm(1, "hi, contact!"),
+    });
+    // Ben's actor drops it: no receipt, no ack.
+    let got = collect(&cb, Duration::from_secs(2)).await;
+    assert!(
+        got.iter()
+            .all(|e| !matches!(e, ContactEvent::DmReceived { .. })),
+        "{got:?}"
+    );
+    // Ana stops waiting for the ack, so her app shows it as queued.
+    let deadline = glance_net::contacts::DM_ACK_TIMEOUT + Duration::from_secs(10);
+    let ev = tokio::time::timeout(deadline, async {
+        loop {
+            match ca.events.recv_async().await.unwrap() {
+                ev @ ContactEvent::DmFailed { .. } => return ev,
+                ContactEvent::DmAcked { .. } => panic!("acked while dropped"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("unacked message never failed");
+    assert_eq!(
+        ev,
+        ContactEvent::DmFailed {
+            to: b.id(),
+            id: 1,
+            reason: DmFailure::Offline
+        }
+    );
+
+    // Ben's app catches up: Ana hears from him and resends (as her app's
+    // flush on Online does).
+    cb.send(ContactCommand::SetRelations(rel(a.id(), Relation::Mutual)));
+    expect(
+        &ca,
+        "ben online",
+        |e| matches!(e, ContactEvent::Online { id, .. } if *id == b.id()),
+    )
+    .await;
+    ca.send(ContactCommand::SendDm {
+        to: b.id(),
+        dm: dm(1, "hi, contact!"),
+    });
+    expect(
+        &cb,
+        "resent dm",
+        |e| matches!(e, ContactEvent::DmReceived { dm, .. } if dm.id == 1),
+    )
+    .await;
+    expect(&ca, "ack", |e| {
+        matches!(e, ContactEvent::DmAcked { id: 1, .. })
+    })
+    .await;
+}

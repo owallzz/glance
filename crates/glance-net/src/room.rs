@@ -9,6 +9,11 @@
 //! with `Introduce` so simultaneous joins still end up fully meshed. If two
 //! connections to the same peer exist, the one dialed by the smaller
 //! endpoint id wins.
+//!
+//! Merging: two copies of the same room (two people restarted it at once)
+//! join up when one learns of the other's members (`Inbound::Merge`). It
+//! connects to them under the same rule, and each side's `Introduce` and
+//! `Welcome` spread the other mesh's members until everyone is connected.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -218,6 +223,9 @@ pub(crate) enum Inbound {
     Cmd(Command),
     /// Fallback from `expect_dial`.
     DialIfMissing(EndpointAddr),
+    /// Members of another copy of this room (it was restarted twice at
+    /// once): connect to them so the two meshes become one.
+    Merge(Vec<EndpointAddr>),
     /// A viewer's video stream ended (generation identifies which one).
     WatcherGone(EndpointId, Track, u64),
     /// Someone holding the link asks whether the room is alive.
@@ -404,13 +412,7 @@ impl Actor {
                 // bigger side is dialed when its peer hears about us (the
                 // host sends Introduce); `expect` falls back after a delay.
                 for m in members {
-                    if m.addr.id != self.me && !self.peers.contains_key(&m.addr.id) {
-                        if self.me < m.addr.id {
-                            self.dial(m.addr, false);
-                        } else {
-                            self.expect_dial(m.addr);
-                        }
-                    }
+                    self.meet(m.addr);
                 }
             }
             Inbound::DialFailed { id, error, host } => {
@@ -450,6 +452,11 @@ impl Actor {
                     .is_some_and(|w| w.generation == generation)
                 {
                     self.remove_watcher(id, track);
+                }
+            }
+            Inbound::Merge(members) => {
+                for addr in members {
+                    self.meet(addr);
                 }
             }
             Inbound::DialIfMissing(addr) => {
@@ -623,16 +630,7 @@ impl Actor {
                     text,
                 });
             }
-            Control::Introduce(info) => {
-                let id = info.addr.id;
-                if id != self.me && !self.peers.contains_key(&id) {
-                    if self.me < id {
-                        self.dial(info.addr, false);
-                    } else {
-                        self.expect_dial(info.addr);
-                    }
-                }
-            }
+            Control::Introduce(info) => self.meet(info.addr),
             Control::Leave => {
                 if let Some(p) = self.peers.remove(&from) {
                     p.conn.close(0u32.into(), b"left");
@@ -852,6 +850,20 @@ impl Actor {
     fn broadcast(&self, msg: Control) {
         for p in self.peers.values() {
             let _ = p.tx.send(msg.clone());
+        }
+    }
+
+    /// Connect to a member we just heard of, unless we know them already.
+    /// Only the smaller id dials; the other side waits to be dialed.
+    fn meet(&mut self, addr: EndpointAddr) {
+        let id = addr.id;
+        if id == self.me || self.peers.contains_key(&id) {
+            return;
+        }
+        if self.me < id {
+            self.dial(addr, false);
+        } else {
+            self.expect_dial(addr);
         }
     }
 
