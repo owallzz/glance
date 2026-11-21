@@ -174,6 +174,11 @@ impl Net {
         async move { rx.recv_async().await.ok() }
     }
 
+    /// Run `fut` on the network runtime without waiting for it.
+    pub fn spawn<F: Future<Output = ()> + Send + 'static>(&self, fut: F) {
+        self.rt.spawn(fut);
+    }
+
     pub fn create_room(
         &self,
         profile: WireProfile,

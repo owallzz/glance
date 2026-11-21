@@ -93,7 +93,7 @@ impl GlanceApp {
         self.update.status = Status::Checking;
         cx.notify();
         let (tx, rx) = flume::unbounded::<(bool, Status)>();
-        let _ = net.run(async move {
+        net.spawn(async move {
             let progress = tx.clone();
             let status = crate::update::check_and_stage(&cfg, move |s| {
                 let _ = progress.send((false, s));
