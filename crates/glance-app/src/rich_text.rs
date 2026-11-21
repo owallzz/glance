@@ -4,7 +4,10 @@
 //! GPUI's `InteractiveText`).
 //!
 //! The text is laid out from caller-given [`TextRun`]s, so a range can use its
-//! own font (monospace inline code) and background. Clicks, the cursor and
+//! own font (monospace inline code). Range backgrounds that need rounded,
+//! padded boxes (inline code, inline spoilers) are [`Background`]s, painted
+//! here: a run's `background_color` is a square slab the exact size of the
+//! glyphs. Clicks, the cursor and
 //! tooltips are delegated to an inner `InteractiveText`; selection follows
 //! `SelectableText` through the public `gpui_kit::base` selection API.
 
@@ -21,6 +24,24 @@ type ClickFn = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 type TooltipFn = Rc<dyn Fn(usize, &mut Window, &mut App) -> Option<AnyView>>;
 type HoverStyleFn = Rc<dyn Fn(usize) -> Option<HighlightStyle>>;
 
+/// A rounded box behind a byte range, one per visual row it spans.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Background {
+    pub range: Range<usize>,
+    pub color: Hsla,
+    /// Used instead while the pointer is over a clickable range overlapping
+    /// this one.
+    pub hover: Option<Hsla>,
+    /// Horizontal padding, as a fraction of the font size.
+    pub pad_em: f32,
+}
+
+/// Corner radius of a [`Background`] (Discord: 3px).
+const BACKGROUND_RADIUS: f32 = 3.;
+/// A background's height as a fraction of the font size (Discord's inline
+/// code: 85% text plus 0.2em padding above and below, in a 1.375 line).
+const BACKGROUND_HEIGHT_EM: f32 = 1.25;
+
 /// Rich, selectable text with clickable ranges.
 pub struct RichText {
     id: ElementId,
@@ -32,6 +53,7 @@ pub struct RichText {
     on_click: Option<ClickFn>,
     tooltip: Option<TooltipFn>,
     hovered_style: Option<HoverStyleFn>,
+    backgrounds: Rc<[Background]>,
     /// Built in `request_layout`, once the hovered range is known.
     inner: Option<InteractiveText>,
     layout: Option<TextLayout>,
@@ -49,6 +71,7 @@ impl RichText {
             on_click: None,
             tooltip: None,
             hovered_style: None,
+            backgrounds: Rc::from(Vec::new()),
             inner: None,
             layout: None,
         }
@@ -101,6 +124,13 @@ impl RichText {
         f: impl Fn(usize, &mut Window, &mut App) -> Option<AnyView> + 'static,
     ) -> Self {
         self.tooltip = Some(Rc::new(f));
+        self
+    }
+
+    /// Rounded, padded boxes behind ranges, painted in order (later on top).
+    /// Adjacent ranges with the same look should be merged by the caller.
+    pub fn backgrounds(mut self, backgrounds: Vec<Background>) -> Self {
+        self.backgrounds = Rc::from(backgrounds);
         self
     }
 
@@ -274,6 +304,77 @@ fn paint_selection(layout: &TextLayout, range: Range<usize>, color: Hsla, window
     }
 }
 
+/// The rows `range` covers in a laid-out text: (row index across the whole
+/// text, x of the range's start in the row, x of its end), relative to the
+/// text's origin. Only the start of the range on each row is needed from the
+/// layout, so this is linear in the rows and glyphs the range touches.
+fn range_rows(layout: &TextLayout, range: Range<usize>) -> Vec<(usize, Pixels, Pixels)> {
+    let mut out = Vec::new();
+    let mut line_start = 0;
+    let mut row0 = 0;
+    for wl in layout.line_layouts() {
+        let len = wl.len();
+        let line_end = line_start + len;
+        let rows = wl.wrap_boundaries.len() + 1;
+        if range.start <= line_end && range.end > line_start {
+            let ul = &wl.unwrapped_layout;
+            let a = range.start.max(line_start) - line_start;
+            let b = range.end.min(line_end) - line_start;
+            let ends = wl
+                .wrap_boundaries
+                .iter()
+                .filter_map(|w| Some(ul.runs.get(w.run_ix)?.glyphs.get(w.glyph_ix)?.index))
+                .chain([len]);
+            let mut row_start = 0;
+            for (row, row_end) in ends.enumerate() {
+                let (lo, hi) = (a.max(row_start), b.min(row_end));
+                if lo < hi {
+                    let x0 = ul.x_for_index(row_start);
+                    out.push((row0 + row, ul.x_for_index(lo) - x0, ul.x_for_index(hi) - x0));
+                }
+                row_start = row_end;
+            }
+        }
+        row0 += rows;
+        line_start = line_end + 1;
+    }
+    out
+}
+
+fn paint_backgrounds(
+    layout: &TextLayout,
+    backgrounds: &[Background],
+    hovered: Option<&Range<usize>>,
+    window: &mut Window,
+) {
+    if backgrounds.is_empty() {
+        return;
+    }
+    let origin = layout.bounds().origin;
+    let line_height = layout.line_height();
+    let font_size = layout
+        .line_layouts()
+        .first()
+        .map_or(px(16.), |l| l.unwrapped_layout.font_size);
+    let height = (font_size * BACKGROUND_HEIGHT_EM).min(line_height);
+    let inset = (line_height - height) / 2.;
+    for bg in backgrounds {
+        let color = match (bg.hover, hovered) {
+            (Some(h), Some(r)) if r.start < bg.range.end && bg.range.start < r.end => h,
+            _ => bg.color,
+        };
+        let pad = font_size * bg.pad_em;
+        for (row, x0, x1) in range_rows(layout, bg.range.clone()) {
+            let top = origin.y + line_height * row as f32 + inset;
+            let bounds = Bounds::from_corners(
+                point(origin.x + x0 - pad, top),
+                point(origin.x + x1 + pad, top + height),
+            );
+            window.paint_quad(fill(bounds, color).corner_radii(px(BACKGROUND_RADIUS)));
+        }
+    }
+}
+
 impl IntoElement for RichText {
     type Element = Self;
 
@@ -426,6 +527,8 @@ impl Element for RichText {
             cx,
         );
         let selected = projection.ranges().first().cloned().flatten();
+        let hovered = frame.hovered.get().and_then(|ix| self.click_ranges.get(ix));
+        paint_backgrounds(&layout, &self.backgrounds, hovered, window);
         if *frame.projected.borrow() != selected {
             *frame.projected.borrow_mut() = selected.clone();
             window.refresh();

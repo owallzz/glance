@@ -32,7 +32,7 @@ use gpui_kit::*;
 
 use crate::app::GlanceApp;
 use crate::code_highlight::{self, Highlight, Highlights};
-use crate::rich_text::RichText;
+use crate::rich_text::{Background, RichText};
 use crate::theme::Palette;
 
 /// Parsed messages kept at least; the cache grows past this while a render
@@ -517,6 +517,9 @@ impl Renderer<'_> {
         // Clickable ranges, merged across spans with the same target.
         let mut ranges: Vec<(Range<usize>, Target)> = Vec::new();
         let mut masked: Vec<Range<usize>> = Vec::new();
+        // Inline spoiler boxes, then inline code boxes on top of them.
+        let mut spoiler_bgs: Vec<(Background, u32)> = Vec::new();
+        let mut code_bgs: Vec<(Background, u32)> = Vec::new();
         for span in &line.spans {
             let st = span.style;
             let hidden_spoiler = self.hidden
@@ -524,6 +527,28 @@ impl Renderer<'_> {
                     .spoiler
                     .is_some_and(|id| Some(id) != self.block_spoiler && !self.is_revealed(id));
             runs.push(self.run(span.range.len(), &st, color, bold, hidden_spoiler));
+            if !self.hidden {
+                if let Some(id) = st.spoiler.filter(|id| Some(*id) != self.block_spoiler) {
+                    let (color, hover) = if hidden_spoiler {
+                        (p.spoiler_hidden, Some(p.spoiler_hidden_hover))
+                    } else {
+                        (p.spoiler_revealed, None)
+                    };
+                    // Discord: ~2px of padding at 16px.
+                    push_background(
+                        &mut spoiler_bgs,
+                        span.range.clone(),
+                        color,
+                        hover,
+                        0.125,
+                        id,
+                    );
+                }
+                if st.code && !hidden_spoiler {
+                    // Discord: `padding: 0.2em` of an 85% font.
+                    push_background(&mut code_bgs, span.range.clone(), p.code_bg, None, 0.17, 0);
+                }
+            }
             let target = if self.hidden {
                 None
             } else if hidden_spoiler {
@@ -546,10 +571,12 @@ impl Renderer<'_> {
                 }
             }
         }
+        spoiler_bgs.extend(code_bgs);
         let mut rich = RichText::new(self.next_id(), text)
             .runs(runs)
             .document_order(self.next_order())
-            .masked_ranges(masked);
+            .masked_ranges(masked)
+            .backgrounds(spoiler_bgs.into_iter().map(|(bg, _)| bg).collect());
         if !ranges.is_empty() {
             let targets: Rc<[Target]> = ranges.iter().map(|(_, t)| *t).collect();
             let app = self.app.clone();
@@ -570,7 +597,7 @@ impl Renderer<'_> {
             let tip_targets = targets.clone();
             let links = self.links.clone();
             let hover_targets = targets;
-            let (link_color, spoiler_hover) = (p.link, p.spoiler_hidden_hover);
+            let link_color = p.link;
             rich = rich
                 .on_click(ranges.into_iter().map(|(r, _)| r).collect(), on_click)
                 .tooltip(move |ix, window, cx| {
@@ -593,10 +620,8 @@ impl Renderer<'_> {
                         }),
                         ..Default::default()
                     }),
-                    Target::Reveal(_) => Some(HighlightStyle {
-                        background_color: Some(spoiler_hover),
-                        ..Default::default()
-                    }),
+                    // The spoiler's box changes colour instead (`Background::hover`).
+                    Target::Reveal(_) => None,
                 });
         }
         rich.into_any_element()
@@ -616,27 +641,15 @@ impl Renderer<'_> {
             f.style = FontStyle::Italic;
         }
         let mut color = if st.link.is_some() { p.link } else { color };
-        let mut background = st.code.then_some(p.code_bg);
-        if let Some(id) = st.spoiler
-            && Some(id) != self.block_spoiler
-        {
-            background = Some(if hidden {
-                p.spoiler_hidden
-            } else {
-                p.spoiler_revealed
-            });
-        }
         if hidden {
             color = color.opacity(0.);
-            if self.hidden {
-                background = None;
-            }
         }
+        // Code and spoiler backgrounds are `Background`s, painted by RichText.
         TextRun {
             len,
             font: f,
             color,
-            background_color: background,
+            background_color: None,
             underline: st.underline.then_some(UnderlineStyle {
                 thickness: px(1.),
                 color: Some(color),
@@ -648,6 +661,36 @@ impl Renderer<'_> {
             }),
         }
     }
+}
+
+/// Adds a box behind `range`, merged into the previous one when they touch
+/// and belong together (same spoiler id, or both code), so a bold word inside
+/// a spoiler doesn't split its box. `group` tells boxes apart.
+fn push_background(
+    out: &mut Vec<(Background, u32)>,
+    range: Range<usize>,
+    color: Hsla,
+    hover: Option<Hsla>,
+    pad_em: f32,
+    group: u32,
+) {
+    if let Some((last, g)) = out.last_mut()
+        && *g == group
+        && last.range.end == range.start
+        && last.color == color
+    {
+        last.range.end = range.end;
+        return;
+    }
+    out.push((
+        Background {
+            range,
+            color,
+            hover,
+            pad_em,
+        },
+        group,
+    ));
 }
 
 /// A block's (top, bottom) margin in px, Discord's values: headings 16/8
@@ -749,7 +792,23 @@ mod tests {
 
     use glance_core::markdown::parse;
 
-    use super::{MarkdownCache, Parsed, block_margins, room_message_key, web_domain};
+    use super::{
+        MarkdownCache, Parsed, block_margins, push_background, room_message_key, web_domain,
+    };
+
+    #[test]
+    fn touching_backgrounds_of_one_spoiler_merge() {
+        let c = gpui_kit::red();
+        let mut out = Vec::new();
+        push_background(&mut out, 0..3, c, None, 0.1, 0);
+        push_background(&mut out, 3..5, c, None, 0.1, 0);
+        // Another spoiler right after: its own box.
+        push_background(&mut out, 5..8, c, None, 0.1, 1);
+        // A gap: a new box.
+        push_background(&mut out, 9..10, c, None, 0.1, 1);
+        let ranges: Vec<_> = out.iter().map(|(b, _)| b.range.clone()).collect();
+        assert_eq!(ranges, vec![0..5, 5..8, 9..10]);
+    }
 
     /// The gaps between a message's top-level blocks after collapsing.
     fn gaps(src: &str) -> Vec<f32> {
