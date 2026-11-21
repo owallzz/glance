@@ -743,11 +743,8 @@ impl GlanceApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let gpui_kit::component::input::InputEvent::PressEnter {
-            shift: false,
-            secondary: false,
-        } = event
-        {
+        // Enter and Ctrl/Cmd+Enter send; Shift+Enter is a newline.
+        if let gpui_kit::component::input::InputEvent::PressEnter { shift: false, .. } = event {
             if crate::composer::too_long(input.read(cx), glance_proto::MAX_CHAT_LEN).is_some() {
                 // Keep it in the box; the note above it says why.
                 cx.notify();

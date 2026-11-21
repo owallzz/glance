@@ -229,11 +229,8 @@ impl GlanceApp {
             &input,
             window,
             |this: &mut Self, input, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter {
-                    shift: false,
-                    secondary: false,
-                } = ev
-                {
+                // Enter and Ctrl/Cmd+Enter send; Shift+Enter is a newline.
+                if let InputEvent::PressEnter { shift: false, .. } = ev {
                     if crate::composer::too_long(input.read(cx), MAX_DM_LEN).is_some() {
                         // Keep it in the box; the note above it says why.
                         cx.notify();

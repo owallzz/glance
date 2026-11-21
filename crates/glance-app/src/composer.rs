@@ -6,8 +6,10 @@
 //! off, the UI font instead of the monospace one, and a highlighter that
 //! styles the raw source from `glance_core::markdown::composer_spans`.
 //!
-//! - Enter emits `InputEvent::PressEnter { shift: false, secondary: false }`
-//!   and inserts nothing; Shift+Enter inserts a newline (`submit_on_enter`).
+//! - Enter (and Ctrl/Cmd+Enter, `secondary: true`) emits
+//!   `InputEvent::PressEnter { shift: false, .. }` and inserts nothing;
+//!   Shift+Enter inserts a newline (`submit_on_enter`). Subscribers send on
+//!   `shift: false`.
 //! - Text over the send cap stays in the box ([`too_long`]); the views show
 //!   [`too_long_note`] until it is short enough.
 //! - Tab and Shift+Tab move focus instead of indenting.
@@ -73,8 +75,8 @@ struct Composers(HashMap<EntityId, ComposerEntry>);
 
 impl Global for Composers {}
 
-/// A chat box: multi-line, Enter sends (`InputEvent::PressEnter { shift:
-/// false, secondary: false }`), Shift+Enter adds a newline, soft-wrapped, UI
+/// A chat box: multi-line, Enter or Ctrl/Cmd+Enter sends
+/// (`InputEvent::PressEnter { shift: false, .. }`), Shift+Enter adds a newline, soft-wrapped, UI
 /// font, no line numbers/folding/indent guides/auto-close/search, grows from 1
 /// up to `max_rows` visual rows and then scrolls, with live markdown
 /// highlighting.
