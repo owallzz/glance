@@ -3,6 +3,10 @@
 
 #[cfg(target_os = "linux")]
 mod h264_headers;
+#[cfg(target_os = "windows")]
+pub mod mediafoundation;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod nv12;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub mod nvenc;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -34,11 +38,14 @@ pub mod vaapi;
 #[cfg(target_os = "macos")]
 pub mod videotoolbox;
 
-/// `GLANCE_ENCODER=nvenc|vaapi|videotoolbox` limits hardware encoding to
-/// that one backend (testing aid).
+/// The hardware backends `GLANCE_ENCODER` can name.
+pub(crate) const BACKENDS: [&str; 4] = ["nvenc", "vaapi", "videotoolbox", "mediafoundation"];
+
+/// `GLANCE_ENCODER=nvenc|vaapi|videotoolbox|mediafoundation` limits
+/// hardware encoding to that one backend (testing aid).
 pub(crate) fn allowed(name: &str) -> bool {
     match std::env::var("GLANCE_ENCODER") {
-        Ok(v) if matches!(v.as_str(), "nvenc" | "vaapi" | "videotoolbox") => v == name,
+        Ok(v) if BACKENDS.contains(&v.as_str()) => v == name,
         _ => true,
     }
 }

@@ -61,6 +61,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # Shows which platform encoder the codec tests ran with (or why not).
+      - name: Platform encoder tests, verbose
+        run: cargo test --locked -p glance-media --lib -- media_foundation videotoolbox --nocapture
       - run: cargo build --release --locked -p glance-app
       - name: macOS app bundle builds
         if: runner.os == 'macOS'

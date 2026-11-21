@@ -66,7 +66,7 @@ pub fn fit_encoder(src: (u32, u32)) -> (u32, u32) {
 }
 
 /// The encoder a broadcast uses: a hardware encoder when the machine has
-/// one glance supports (NVENC today), otherwise OpenH264.
+/// one glance supports, otherwise OpenH264.
 pub struct VideoEncoder {
     backend: Backend,
     width: u32,
@@ -83,6 +83,8 @@ enum Backend {
     VideoToolbox(crate::hw::videotoolbox::VtEncoder),
     #[cfg(target_os = "linux")]
     Vaapi(crate::hw::vaapi::VaapiEncoder),
+    #[cfg(target_os = "windows")]
+    MediaFoundation(crate::hw::mediafoundation::MfEncoder),
 }
 
 /// Which encoders [`VideoEncoder::with_choice`] may use.
@@ -101,7 +103,9 @@ impl EncoderChoice {
     fn resolved(self) -> Self {
         match (self, std::env::var("GLANCE_ENCODER").as_deref()) {
             (Self::Auto, Ok("software")) => Self::Software,
-            (Self::Auto, Ok("hardware" | "nvenc" | "vaapi" | "videotoolbox")) => Self::Hardware,
+            (Self::Auto, Ok(v)) if v == "hardware" || crate::hw::BACKENDS.contains(&v) => {
+                Self::Hardware
+            }
             (c, _) => c,
         }
     }
@@ -125,6 +129,12 @@ pub fn hardware_encoder() -> Option<&'static str> {
         #[cfg(target_os = "macos")]
         if allowed("videotoolbox") && crate::hw::videotoolbox::available() {
             return Some("Apple VideoToolbox");
+        }
+        #[cfg(target_os = "windows")]
+        if allowed("mediafoundation")
+            && let Some(name) = crate::hw::mediafoundation::available()
+        {
+            return Some(name);
         }
         None
     })
@@ -181,6 +191,14 @@ impl VideoEncoder {
                     Err(e) => hw_error = Some(e),
                 }
             }
+            #[cfg(target_os = "windows")]
+            if allowed("mediafoundation") {
+                use crate::hw::mediafoundation::MfEncoder;
+                match MfEncoder::new(width, height, fps, bitrate_bps, true) {
+                    Ok(e) => return Ok(Self::wrap(Backend::MediaFoundation(e), width, height)),
+                    Err(e) => hw_error = Some(e),
+                }
+            }
             if choice == EncoderChoice::Hardware {
                 return Err(hw_error.unwrap_or_else(|| anyhow::anyhow!("no hardware encoder")));
             }
@@ -216,6 +234,8 @@ impl VideoEncoder {
             Backend::VideoToolbox(_) => "Apple VideoToolbox",
             #[cfg(target_os = "linux")]
             Backend::Vaapi(_) => "VA-API",
+            #[cfg(target_os = "windows")]
+            Backend::MediaFoundation(e) => e.name(),
         }
     }
 
@@ -228,6 +248,8 @@ impl VideoEncoder {
             Backend::VideoToolbox(e) => e.is_hardware(),
             #[cfg(target_os = "linux")]
             Backend::Vaapi(_) => true,
+            #[cfg(target_os = "windows")]
+            Backend::MediaFoundation(e) => e.is_hardware(),
         }
     }
 
@@ -249,6 +271,12 @@ impl VideoEncoder {
             }
             #[cfg(target_os = "linux")]
             Backend::Vaapi(e) => e.set_bitrate(bps),
+            #[cfg(target_os = "windows")]
+            Backend::MediaFoundation(e) => {
+                if let Err(e) = e.set_bitrate(bps) {
+                    tracing::warn!("{e:#}");
+                }
+            }
         }
     }
 
@@ -262,6 +290,8 @@ impl VideoEncoder {
             Backend::VideoToolbox(_) => self.keyframe = true,
             #[cfg(target_os = "linux")]
             Backend::Vaapi(_) => self.keyframe = true,
+            #[cfg(target_os = "windows")]
+            Backend::MediaFoundation(_) => self.keyframe = true,
         }
     }
 
@@ -294,6 +324,11 @@ impl VideoEncoder {
             Backend::Vaapi(e) => {
                 let key = std::mem::take(&mut self.keyframe);
                 Some(e.encode(&frame.bgra, key)?)
+            }
+            #[cfg(target_os = "windows")]
+            Backend::MediaFoundation(e) => {
+                let key = std::mem::take(&mut self.keyframe);
+                e.encode(&frame.bgra, ts_us, key)?
             }
         };
         Ok(out.map(|(keyframe, data)| EncodedPacket {
@@ -881,6 +916,57 @@ mod tests {
             }
             assert_eq!(decoded, Some((w, h)), "{}", enc.backend_name());
         }
+    }
+
+    /// Media Foundation with Microsoft's software encoder (so this runs on
+    /// CI machines without a GPU) must produce streams OpenH264 decodes,
+    /// including a forced keyframe on its own.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn media_foundation_stream_decodes_with_openh264() {
+        use crate::hw::mediafoundation::MfEncoder;
+        let (w, h) = (1280, 720);
+        let mut enc = match MfEncoder::new(w, h, 30, bitrate_for(w, h, 30), false) {
+            Ok(e) => e,
+            Err(e) if format!("{e:#}").contains("mfplat.dll") => {
+                eprintln!("no Media Foundation on this Windows; skipping: {e:#}");
+                return;
+            }
+            Err(e) => panic!("{e:#}"),
+        };
+        eprintln!("encoder: {}", enc.name());
+        let mut dec = VideoDecoder::new().unwrap();
+        let mut pattern = Pattern::new(w, h, 4);
+        let (mut keys, mut last) = (Vec::new(), None);
+        for i in 0..20u64 {
+            let frame = pattern.next_frame();
+            let Some((key, data)) = enc.encode(&frame.bgra, i * 33_333, i == 10).unwrap() else {
+                continue;
+            };
+            keys.push((i, key));
+            if key {
+                // A viewer joining at this keyframe can start from it.
+                let mut late = VideoDecoder::new().unwrap();
+                assert!(late.decode(&data, (0, 0)).unwrap().is_some(), "{keys:?}");
+            }
+            if let Some(out) = dec.decode(&data, (0, 0)).unwrap() {
+                last = Some((frame, out));
+            }
+        }
+        assert!(keys.len() >= 15, "most frames come out: {keys:?}");
+        assert_eq!(keys.first().map(|k| k.1), Some(true), "{keys:?}");
+        assert!(
+            keys.iter().filter(|k| k.1).count() >= 2,
+            "forced keyframe: {keys:?}"
+        );
+        let (input, out) = last.expect("decoded");
+        assert_eq!((out.width, out.height), (w, h));
+        let i = ((h / 2 * w + w / 2) * 4) as usize;
+        for c in 0..3 {
+            let d = (input.bgra[i + c] as i32 - out.bgra[i + c] as i32).abs();
+            assert!(d < 60, "channel {c} off by {d}");
+        }
+        enc.set_bitrate(2_000_000).unwrap();
     }
 
     /// VideoToolbox (Apple's software encoder is allowed, so this runs on CI
