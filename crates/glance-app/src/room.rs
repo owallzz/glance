@@ -3,7 +3,6 @@
 
 use glance_core::{ChatBody, ChatMessage, FileOffer, Participant, PeerId, Route, Transfer, format};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::SelectableText;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
@@ -1117,11 +1116,19 @@ impl GlanceApp {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .children(
+                    .children({
+                        // Selection order across the whole list.
+                        let mut order = 0;
+                        let scope = crate::markdown_view::ChatScope::room(
+                            self.room.as_ref().map_or("", |r| r.link.as_str()),
+                        );
                         groups
                             .into_iter()
-                            .map(|(author, msgs)| self.chat_group(p, author, msgs, cx)),
-                    ),
+                            .map(|(author, msgs)| {
+                                self.chat_group(p, scope, author, msgs, &mut order, cx)
+                            })
+                            .collect::<Vec<_>>()
+                    }),
             )
             .child(
                 div().p_4().child(
@@ -1163,8 +1170,10 @@ impl GlanceApp {
     fn chat_group(
         &mut self,
         p: &Palette,
+        scope: crate::markdown_view::ChatScope,
         author: PeerId,
         msgs: Vec<ChatMessage>,
+        order: &mut u64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let Some(ChatBody::System(text)) = msgs.first().map(|m| m.body.clone()) {
@@ -1188,6 +1197,27 @@ impl GlanceApp {
             .as_ref()
             .map(|p| crate::ui::color(p.color))
             .unwrap_or(p.text_header);
+        let mut bodies = Vec::with_capacity(msgs.len());
+        for m in msgs {
+            bodies.push(match m.body {
+                // Drag to select, then copy with the usual shortcut.
+                ChatBody::Text(t) => {
+                    let msg = self.md_cache.get(&t);
+                    let view = crate::markdown_view::MessageView {
+                        scope,
+                        msg_id: m.id,
+                        order: &mut *order,
+                        revealed: &self.revealed_spoilers,
+                    };
+                    div()
+                        .text_color(p.text_normal)
+                        .child(crate::markdown_view::render_message(&msg, view, cx))
+                        .into_any_element()
+                }
+                ChatBody::File(f) => self.file_card(p, m.id, f, cx).into_any_element(),
+                ChatBody::System(_) => div().into_any_element(),
+            });
+        }
         div()
             .px_4()
             .flex()
@@ -1206,17 +1236,7 @@ impl GlanceApp {
                             .text_color(color)
                             .child(name),
                     )
-                    .children(msgs.into_iter().map(|m| {
-                        match m.body {
-                            // Drag to select, then copy with the usual shortcut.
-                            ChatBody::Text(t) => div()
-                                .text_color(p.text_normal)
-                                .child(SelectableText::new(("chat-text", m.id), t))
-                                .into_any_element(),
-                            ChatBody::File(f) => self.file_card(p, m.id, f, cx).into_any_element(),
-                            ChatBody::System(_) => div().into_any_element(),
-                        }
-                    })),
+                    .children(bodies),
             )
             .into_any_element()
     }

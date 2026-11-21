@@ -13,7 +13,6 @@ use glance_core::{ContactState, PeerId, Presence, Profile, format};
 use glance_net::contacts::{ContactCommand, DmFailure};
 use glance_proto::{MAX_DM_LEN, WireDm, WireFile};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::SelectableText;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -523,11 +522,13 @@ impl GlanceApp {
         let me = self.me.clone();
         let mut them = contact.profile.clone();
         them.name = name.clone();
+        // Selection order across the whole list.
+        let mut order = 0;
         let rendered: Vec<AnyElement> = groups
             .into_iter()
             .map(|g| {
                 let who = if g[0].mine { &me } else { &them };
-                self.dm_group(p, who, &name, g, cx)
+                self.dm_group(p, peer, who, &name, g, &mut order, cx)
             })
             .collect();
 
@@ -697,15 +698,61 @@ impl GlanceApp {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dm_group(
         &mut self,
         p: &Palette,
+        peer: PeerId,
         who: &Profile,
         their_name: &str,
         msgs: Vec<glance_core::dms::DmMessage>,
+        order: &mut u64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let time = local_time(msgs[0].sent_at);
+        let mut rows = Vec::with_capacity(msgs.len());
+        for m in msgs {
+            let pending = m.state.is_pending();
+            let state_note = match m.state {
+                DmState::Queued => Some(format!("Waiting for {their_name}")),
+                DmState::Sending => Some("Sending…".to_string()),
+                _ => None,
+            };
+            let body = match m.body {
+                DmBody::Text(t) => {
+                    let msg = self.md_cache.get(&t);
+                    let view = crate::markdown_view::MessageView {
+                        scope: crate::markdown_view::ChatScope::Dm(peer),
+                        msg_id: m.id,
+                        order: &mut *order,
+                        revealed: &self.revealed_spoilers,
+                    };
+                    div()
+                        .text_color(p.text_normal)
+                        .when(pending, |d| d.opacity(0.6))
+                        .child(crate::markdown_view::render_message(&msg, view, cx))
+                        .into_any_element()
+                }
+                DmBody::File(f) => self.dm_file_card(p, m.mine, &f, cx),
+            };
+            rows.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(body)
+                    .children(state_note.map(|n| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(p.text_muted)
+                            .child(icon(IconName::Clock, 12., p.text_muted))
+                            .child(n)
+                    }))
+                    .into_any_element(),
+            );
+        }
         div()
             .px_4()
             .flex()
@@ -731,40 +778,7 @@ impl GlanceApp {
                             )
                             .child(div().text_xs().text_color(p.text_muted).child(time)),
                     )
-                    .children(msgs.into_iter().map(|m| {
-                        let pending = m.state.is_pending();
-                        let state_note = match m.state {
-                            DmState::Queued => Some(format!("Waiting for {their_name}")),
-                            DmState::Sending => Some("Sending…".to_string()),
-                            _ => None,
-                        };
-                        let body = match m.body {
-                            DmBody::Text(t) => div()
-                                .text_color(p.text_normal)
-                                .when(pending, |d| d.opacity(0.6))
-                                .child(SelectableText::new(
-                                    SharedString::from(format!("dm-{}", m.id)),
-                                    t,
-                                ))
-                                .into_any_element(),
-                            DmBody::File(f) => self.dm_file_card(p, m.mine, &f, cx),
-                        };
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(body)
-                            .children(state_note.map(|n| {
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .text_xs()
-                                    .text_color(p.text_muted)
-                                    .child(icon(IconName::Clock, 12., p.text_muted))
-                                    .child(n)
-                            }))
-                            .into_any_element()
-                    })),
+                    .children(rows),
             )
             .into_any_element()
     }

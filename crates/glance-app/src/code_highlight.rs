@@ -23,8 +23,6 @@
 //! Results are cached by (language, code), so a chat list that re-renders
 //! often parses each block once.
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -131,6 +129,11 @@ pub fn warm_up() {
         .name("code-highlight-load".into())
         .spawn(|| {
             SYNTAXES.get_or_init(load);
+            // Blocks rendered while loading came back plain: redraw them.
+            let callback = on_ready().lock().ok().and_then(|f| f.clone());
+            if let Some(callback) = callback {
+                callback();
+            }
         });
     if spawned.is_err() {
         // No thread: let the next highlight load synchronously instead.

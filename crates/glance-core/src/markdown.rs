@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Discord-style message markdown: a parser for chat text, a plain-text
 //! rendering for previews and notifications, and live style runs for the
 //! composer.

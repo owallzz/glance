@@ -12,6 +12,7 @@ mod files;
 mod home;
 mod idle;
 mod instance;
+mod markdown_view;
 mod net;
 mod overlays;
 mod person_menu;

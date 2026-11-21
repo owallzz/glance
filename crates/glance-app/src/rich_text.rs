@@ -7,7 +7,6 @@
 //! own font (monospace inline code) and background. Clicks, the cursor and
 //! tooltips are delegated to an inner `InteractiveText`; selection follows
 //! `SelectableText` through the public `gpui_kit::base` selection API.
-#![allow(dead_code)]
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -27,7 +26,7 @@ pub struct RichText {
     id: ElementId,
     text: SharedString,
     runs: Option<Vec<TextRun>>,
-    copy_text: Option<SharedString>,
+    masked: Rc<[Range<usize>]>,
     document_order: u64,
     click_ranges: Rc<[Range<usize>]>,
     on_click: Option<ClickFn>,
@@ -44,7 +43,7 @@ impl RichText {
             id: id.into(),
             text: text.into(),
             runs: None,
-            copy_text: None,
+            masked: Rc::from(Vec::new()),
             document_order: 0,
             click_ranges: Rc::from(Vec::new()),
             on_click: None,
@@ -75,10 +74,11 @@ impl RichText {
         self
     }
 
-    /// What copying the whole element yields (default: the text). A partial
-    /// selection copies that part of the text itself.
-    pub fn copy_text(mut self, text: impl Into<SharedString>) -> Self {
-        self.copy_text = Some(text.into());
+    /// Byte ranges whose text must never reach the clipboard (hidden
+    /// spoilers): copying a selection that touches one yields [`MASK`] in its
+    /// place, once per range, whether the selection is partial or whole.
+    pub fn masked_ranges(mut self, ranges: Vec<Range<usize>>) -> Self {
+        self.masked = Rc::from(ranges);
         self
     }
 
@@ -115,10 +115,14 @@ impl RichText {
     }
 }
 
+/// What a masked range copies as.
+pub const MASK: &str = glance_core::markdown::SPOILER_MASK;
+
 /// The text and copy text the copy callback reads.
 struct CopySource {
     text: SharedString,
     copy_text: SharedString,
+    masked: Rc<[Range<usize>]>,
 }
 
 /// Kept between frames for one element.
@@ -135,7 +139,6 @@ struct Retained {
 
 pub struct Frame {
     handle: TextSelectionHandle,
-    copy: Rc<RefCell<CopySource>>,
     projected: Rc<RefCell<Option<Range<usize>>>>,
     hovered: Rc<Cell<Option<usize>>>,
 }
@@ -144,10 +147,34 @@ pub struct Frame {
 fn copy_for(source: &CopySource, range: Option<Range<usize>>) -> String {
     match range {
         Some(r) if !(r.start == 0 && r.end >= source.text.len()) => {
-            source.text.get(r).unwrap_or_default().to_string()
+            masked_slice(&source.text, r, &source.masked)
         }
         _ => source.copy_text.to_string(),
     }
+}
+
+/// `text[range]` with every masked range it touches replaced by [`MASK`].
+fn masked_slice(text: &str, range: Range<usize>, masked: &[Range<usize>]) -> String {
+    let mut out = String::new();
+    let mut at = range.start;
+    let mut hidden: Vec<&Range<usize>> = masked
+        .iter()
+        .filter(|m| m.start < range.end && m.end > range.start && !m.is_empty())
+        .collect();
+    hidden.sort_by_key(|m| m.start);
+    for m in hidden {
+        if m.start > at {
+            out.push_str(text.get(at..m.start).unwrap_or_default());
+        }
+        if m.end > at {
+            out.push_str(MASK);
+            at = m.end;
+        }
+    }
+    if at < range.end {
+        out.push_str(text.get(at..range.end).unwrap_or_default());
+    }
+    out
 }
 
 /// Applies `style` to the bytes of `range` in `runs`, splitting runs at the
@@ -274,7 +301,12 @@ impl Element for RichText {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Frame) {
-        let copy_text = self.copy_text.clone().unwrap_or_else(|| self.text.clone());
+        let copy_text: SharedString = if self.masked.is_empty() {
+            self.text.clone()
+        } else {
+            masked_slice(&self.text, 0..self.text.len(), &self.masked).into()
+        };
+        let masked = self.masked.clone();
         let frame = window.with_element_state(
             global_id.expect("RichText has an element id"),
             |retained: Option<Retained>, window| {
@@ -283,6 +315,7 @@ impl Element for RichText {
                     let copy = Rc::new(RefCell::new(CopySource {
                         text: self.text.clone(),
                         copy_text: copy_text.clone(),
+                        masked: masked.clone(),
                     }));
                     let projected = Rc::new(RefCell::new(None));
                     handle.copy_with(
@@ -304,6 +337,7 @@ impl Element for RichText {
                 });
                 {
                     let mut copy = retained.copy.borrow_mut();
+                    copy.masked = masked;
                     if copy.text != self.text || copy.copy_text != copy_text {
                         copy.text = self.text.clone();
                         copy.copy_text = copy_text.clone();
@@ -314,7 +348,6 @@ impl Element for RichText {
                 }
                 let frame = Frame {
                     handle: retained.handle.clone(),
-                    copy: retained.copy.clone(),
                     projected: retained.projected.clone(),
                     hovered: retained.hovered.clone(),
                 };
@@ -437,7 +470,7 @@ impl Element for RichText {
 mod tests {
     use gpui_kit::{FontWeight, HighlightStyle, TextRun, font, red};
 
-    use super::{CopySource, copy_for, highlight_runs};
+    use super::{CopySource, MASK, copy_for, highlight_runs};
 
     fn run(len: usize) -> TextRun {
         TextRun {
@@ -476,9 +509,25 @@ mod tests {
         let src = CopySource {
             text: "see link".into(),
             copy_text: "see [link](https://a.b)".into(),
+            masked: Vec::new().into(),
         };
         assert_eq!(copy_for(&src, Some(0..8)), "see [link](https://a.b)");
         assert_eq!(copy_for(&src, None), "see [link](https://a.b)");
         assert_eq!(copy_for(&src, Some(4..8)), "link");
+    }
+
+    #[test]
+    fn partial_copies_mask_hidden_ranges() {
+        // "a secret b secret c" with both "secret"s hidden.
+        let src = CopySource {
+            text: "a secret b secret c".into(),
+            copy_text: "masked".into(),
+            masked: vec![2..8, 11..17].into(),
+        };
+        assert_eq!(copy_for(&src, Some(0..4)), format!("a {MASK}"));
+        assert_eq!(copy_for(&src, Some(4..12)), format!("{MASK} b {MASK}"));
+        assert_eq!(copy_for(&src, Some(17..19)), " c");
+        assert_eq!(copy_for(&src, Some(9..10)), "b");
+        assert_eq!(copy_for(&src, None), "masked");
     }
 }

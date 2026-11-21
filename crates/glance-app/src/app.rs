@@ -527,6 +527,10 @@ pub struct GlanceApp {
     pub output_volume_slider: Entity<SliderState>,
     /// Updates from GitHub Releases (`update_ui.rs`).
     pub update: crate::update_ui::UpdateState,
+    /// Parsed chat messages, so markdown isn't parsed every frame.
+    pub md_cache: crate::markdown_view::MarkdownCache,
+    /// Spoilers clicked open this session.
+    pub revealed_spoilers: std::collections::HashSet<crate::markdown_view::SpoilerKey>,
 }
 
 impl GlanceApp {
@@ -680,6 +684,8 @@ impl GlanceApp {
             autostart_synced: None,
             immersive: None,
             update: Default::default(),
+            md_cache: Default::default(),
+            revealed_spoilers: Default::default(),
         };
         // While the tray icon is up, closing the window minimizes it so calls
         // keep going and contacts can still ring you.
@@ -693,6 +699,7 @@ impl GlanceApp {
         });
         app.apply_theme(window, cx);
         app.watch_window_activation(window, cx);
+        crate::markdown_view::watch_highlights(cx);
         if let Some(url) = app.settings.relay_url.clone() {
             app.relay_input
                 .update(cx, |s, cx| s.set_value(url, window, cx));
