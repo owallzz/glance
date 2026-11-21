@@ -91,7 +91,35 @@ impl TileKind {
     }
 }
 
+/// Whether someone has video on (a screen stream or their camera).
+fn has_video(person: &Participant) -> bool {
+    person.stream.is_some() || person.camera
+}
+
+/// The stage's tiles: everyone's streams first, then a tile per person.
+/// With `hide_non_video`, people with neither a stream nor a camera on are
+/// left out (the participant list still shows them).
+fn stage_tiles(participants: &[Participant], hide_non_video: bool) -> Vec<TileKind> {
+    let shown = || {
+        participants
+            .iter()
+            .filter(move |p| !hide_non_video || has_video(p))
+    };
+    shown()
+        .filter(|p| p.stream.is_some())
+        .map(|p| TileKind::Stream(p.clone()))
+        .chain(shown().map(|p| TileKind::Person(p.clone())))
+        .collect()
+}
+
 impl GlanceApp {
+    /// Show or hide people without video on the stage, and remember it.
+    fn toggle_hide_non_video(&mut self, cx: &mut Context<Self>) {
+        self.settings.hide_non_video = !self.settings.hide_non_video;
+        self.save_settings();
+        cx.notify();
+    }
+
     /// Copy the room's invite link and say so for a couple of seconds.
     pub fn copy_invite_link(&mut self, cx: &mut Context<Self>) {
         let Some(link) = self.room.as_ref().map(|r| r.link.clone()) else {
@@ -504,15 +532,8 @@ impl GlanceApp {
         let chat_open = room.chat_open;
         let filmstrip_hidden = room.filmstrip_hidden;
         let name = room.name.clone();
-        let mut tiles: Vec<TileKind> = Vec::new();
-        for person in &room.participants {
-            if person.stream.is_some() {
-                tiles.push(TileKind::Stream(person.clone()));
-            }
-        }
-        for person in &room.participants {
-            tiles.push(TileKind::Person(person.clone()));
-        }
+        let hide_non_video = self.settings.hide_non_video;
+        let mut tiles = stage_tiles(&room.participants, hide_non_video);
         let focused = room.focused.and_then(|id| {
             tiles
                 .iter()
@@ -520,6 +541,9 @@ impl GlanceApp {
         });
 
         let body = match focused {
+            // Nobody has video and the rest are hidden: say so instead of
+            // showing an empty stage.
+            None if tiles.is_empty() => self.render_no_video(p, cx),
             Some(ix) => {
                 let main = tiles.remove(ix);
                 // Like Discord's focused stream: a toggle under the stream
@@ -578,6 +602,7 @@ impl GlanceApp {
                             }),
                         ))
                     })
+                    .into_any_element()
             }
             None => {
                 let n = tiles.len().max(1);
@@ -607,6 +632,7 @@ impl GlanceApp {
                                     .child(self.tile(p, t, false, cx))
                             }))
                     }))
+                    .into_any_element()
             }
         };
 
@@ -635,27 +661,100 @@ impl GlanceApp {
                             .child(name),
                     )
                     .child(
-                        icon_button(
-                            "toggle-chat",
-                            IconName::MessageSquare,
-                            if chat_open { "Hide chat" } else { "Show chat" },
-                            if chat_open {
-                                gpui_kit::white()
-                            } else {
-                                p.interactive
-                            },
-                            p,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(room) = this.room.as_mut() {
-                                room.chat_open = !room.chat_open;
-                            }
-                            cx.notify();
-                        })),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                icon_button(
+                                    "toggle-non-video",
+                                    IconName::Users,
+                                    if hide_non_video {
+                                        "Show non-video participants"
+                                    } else {
+                                        "Hide non-video participants"
+                                    },
+                                    if hide_non_video {
+                                        gpui_kit::white()
+                                    } else {
+                                        p.interactive
+                                    },
+                                    p,
+                                )
+                                .when(hide_non_video, |d| d.bg(p.bg_selected))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.toggle_hide_non_video(cx)),
+                                ),
+                            )
+                            .child(
+                                icon_button(
+                                    "toggle-chat",
+                                    IconName::MessageSquare,
+                                    if chat_open { "Hide chat" } else { "Show chat" },
+                                    if chat_open {
+                                        gpui_kit::white()
+                                    } else {
+                                        p.interactive
+                                    },
+                                    p,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        if let Some(room) = this.room.as_mut() {
+                                            room.chat_open = !room.chat_open;
+                                        }
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
                     ),
             )
             .child(body)
             .child(self.render_controls(p, cx))
+    }
+
+    /// The stage when nobody has video on and non-video people are hidden.
+    fn render_no_video(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let hover = p.bg_hover;
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .child(icon(IconName::VideoOff, 40., p.text_muted))
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.text_header)
+                    .child("No one has video on"),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(p.text_muted)
+                    .child("People without a stream or camera are hidden."),
+            )
+            .child(
+                div()
+                    .id("show-everyone")
+                    .mt_1()
+                    .px_4()
+                    .py_2()
+                    .rounded(px(4.))
+                    .bg(p.bg_selected)
+                    .hover(move |s| s.bg(hover))
+                    .cursor_pointer()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(p.text_header)
+                    .child("Show everyone")
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_hide_non_video(cx))),
+            )
+            .into_any_element()
     }
 
     fn tile(
@@ -1513,7 +1612,55 @@ fn muted_by_you_icon(p: &Palette, id: PeerId, size: f32) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{CHAT_DEFAULT_WIDTH, CHAT_MAX_WIDTH, CHAT_MIN_WIDTH, clamp_chat_width};
+    use super::{
+        CHAT_DEFAULT_WIDTH, CHAT_MAX_WIDTH, CHAT_MIN_WIDTH, TileKind, clamp_chat_width, stage_tiles,
+    };
+    use glance_core::Participant;
+
+    fn keys(tiles: &[TileKind]) -> Vec<String> {
+        tiles.iter().map(TileKind::key).collect()
+    }
+
+    #[test]
+    fn hiding_non_video_keeps_streams_and_cameras() {
+        let mut people: Vec<Participant> = glance_core::demo::participants();
+        assert!(people.len() >= 4, "demo room has enough people");
+        for p in &mut people {
+            p.camera = false;
+            p.stream = None;
+        }
+        let streamer = people[0].clone();
+        let mut sharing = streamer.clone();
+        sharing.stream = glance_core::demo::participants()
+            .into_iter()
+            .find_map(|p| p.stream);
+        assert!(sharing.stream.is_some(), "demo room has a stream");
+        people[0] = sharing;
+        people[1].camera = true;
+        let (s, c) = (people[0].profile.id.short(), people[1].profile.id.short());
+
+        // Everyone shows by default: the stream first, then a tile each.
+        let all = stage_tiles(&people, false);
+        assert_eq!(all.len(), people.len() + 1);
+        assert_eq!(all[0].key(), format!("stream-{s}"));
+
+        // Hidden: only the streamer (stream + their tile) and the camera.
+        let video = stage_tiles(&people, true);
+        assert_eq!(
+            keys(&video),
+            vec![
+                format!("stream-{s}"),
+                format!("person-{s}"),
+                format!("person-{c}"),
+            ]
+        );
+
+        // Nobody with video: nothing on the stage.
+        people[0].stream = None;
+        people[1].camera = false;
+        assert!(stage_tiles(&people, true).is_empty());
+        assert_eq!(stage_tiles(&people, false).len(), people.len());
+    }
 
     #[test]
     fn chat_width_stays_in_bounds() {
