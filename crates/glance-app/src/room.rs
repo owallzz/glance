@@ -1211,7 +1211,8 @@ impl GlanceApp {
                     let msg = self.md_cache.get(&t);
                     let view = crate::markdown_view::MessageView {
                         scope,
-                        msg_id: m.id,
+                        // Spoiler reveals must survive renumbering.
+                        msg_id: crate::markdown_view::room_message_key(m.author, m.sent_at, &t),
                         order: &mut *order,
                         revealed: &self.revealed_spoilers,
                     };

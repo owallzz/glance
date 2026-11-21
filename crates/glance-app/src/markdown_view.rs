@@ -61,6 +61,15 @@ impl ChatScope {
 /// One revealed spoiler: (chat, message id, spoiler id).
 pub type SpoilerKey = (ChatScope, u64, u32);
 
+/// A room chat message's id for [`MessageView`]: room chat ids are positions
+/// that get renumbered (saved chat, history), so this hashes what the room
+/// deduplicates messages by instead. DMs use their own (stable) ids.
+pub fn room_message_key(author: PeerId, sent_at: u64, text: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    (author, sent_at, text).hash(&mut h);
+    h.finish()
+}
+
 /// Parsed messages by text.
 ///
 /// Eviction is by render, not by insertion: [`MarkdownCache::begin_frame`]
@@ -678,7 +687,19 @@ impl GlanceApp {
 mod tests {
     use std::rc::Rc;
 
-    use super::{MarkdownCache, Parsed, web_domain};
+    use glance_core::PeerId;
+
+    use super::{MarkdownCache, Parsed, room_message_key, web_domain};
+
+    #[test]
+    fn room_message_keys_follow_the_message_not_its_position() {
+        let (a, b) = (PeerId([1; 32]), PeerId([2; 32]));
+        let k = room_message_key(a, 1000, "||x||");
+        assert_eq!(k, room_message_key(a, 1000, "||x||"));
+        assert_ne!(k, room_message_key(b, 1000, "||x||"));
+        assert_ne!(k, room_message_key(a, 1001, "||x||"));
+        assert_ne!(k, room_message_key(a, 1000, "||y||"));
+    }
 
     #[test]
     fn web_domains() {
