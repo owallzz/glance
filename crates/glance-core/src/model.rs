@@ -176,6 +176,8 @@ pub enum Transfer {
     Failed(String),
     /// You sent it.
     Sent,
+    /// From saved chat: nobody who has it is in the room right now.
+    Unavailable,
 }
 
 #[derive(Clone, Debug, PartialEq)]

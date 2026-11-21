@@ -8,6 +8,7 @@
 pub mod contacts;
 pub mod files;
 mod io;
+pub mod probe;
 pub mod room;
 
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,7 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayUrl, SecretKey, TransportAddr};
 
 pub use glance_proto::EndpointId;
+pub use probe::RoomStatus;
 pub use room::{Command, RoomEvent, RoomHandle, VideoFeed};
 
 /// Which relays the endpoint uses when a direct path isn't possible.
@@ -139,6 +141,10 @@ impl Node {
             .accept(glance_proto::CONTACTS_ALPN, ContactsProtocol(contacts_tx))
             .accept(ROOM_ALPN, RoomProtocol(room_slot.clone()))
             .accept(
+                glance_proto::ROOM_PROBE_ALPN,
+                probe::ProbeProtocol(room_slot.clone()),
+            )
+            .accept(
                 iroh_blobs::ALPN,
                 iroh_blobs::BlobsProtocol::new(files.store(), None),
             )
@@ -187,7 +193,21 @@ impl Node {
             secret: rand::random(),
             host: invite_addr(self.endpoint().addr()),
         };
-        Ok(self.start_room(ticket, profile, state, false))
+        Ok(self.start_room(ticket, profile, state, Vec::new()))
+    }
+
+    /// Start an existing room again, with us as its first member (everyone
+    /// else left). The room keeps its id and secret, so old links still work
+    /// for anyone who remembers us (a probe or rejoin finds us); the link it
+    /// hands out names us as the host, so people new to it can join too.
+    pub async fn host_room(
+        &self,
+        mut ticket: Ticket,
+        profile: WireProfile,
+        state: MemberState,
+    ) -> Result<RoomHandle> {
+        ticket.host = invite_addr(self.endpoint().addr());
+        Ok(self.start_room(ticket, profile, state, Vec::new()))
     }
 
     /// Join the room a ticket points to.
@@ -197,7 +217,68 @@ impl Node {
         profile: WireProfile,
         state: MemberState,
     ) -> Result<RoomHandle> {
-        Ok(self.start_room(ticket, profile, state, true))
+        let entry = vec![ticket.host.clone()];
+        Ok(self.start_room(ticket, profile, state, entry))
+    }
+
+    /// Join a room by dialing the given members in order (the next one if a
+    /// dial fails), then the ticket's host. For rejoining a room whose
+    /// creator may have left: pass the members a probe found in it.
+    pub async fn join_room_via(
+        &self,
+        ticket: Ticket,
+        members: Vec<EndpointAddr>,
+        profile: WireProfile,
+        state: MemberState,
+    ) -> Result<RoomHandle> {
+        let mut entry = members;
+        if !entry.iter().any(|a| a.id == ticket.host.id) {
+            entry.push(ticket.host.clone());
+        }
+        Ok(self.start_room(ticket, profile, state, entry))
+    }
+
+    /// "Start again" for a room that looked empty: check once more, and if
+    /// someone turned out to be in it after all, join them instead of
+    /// starting a second copy of the room next to theirs. Only when every
+    /// remembered member answers that they've left does it host the room.
+    pub async fn restart_room(
+        &self,
+        ticket: Ticket,
+        candidates: Vec<EndpointAddr>,
+        profile: WireProfile,
+        state: MemberState,
+        timeout: Duration,
+    ) -> Result<RoomHandle> {
+        match self.probe_room(&ticket, candidates.clone(), timeout).await {
+            probe::RoomStatus::Empty => self.host_room(ticket, profile, state).await,
+            status => {
+                let mut via: Vec<EndpointAddr> = match status {
+                    probe::RoomStatus::Alive(members) => {
+                        members.into_iter().map(|m| m.addr).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                for addr in candidates {
+                    if !via.iter().any(|a| a.id == addr.id) {
+                        via.push(addr);
+                    }
+                }
+                self.join_room_via(ticket, via, profile, state).await
+            }
+        }
+    }
+
+    /// Ask the given peers (and the ticket's host) whether the room is still
+    /// going and who's in it. Each probe gives up after `timeout`.
+    pub async fn probe_room(
+        &self,
+        ticket: &Ticket,
+        mut candidates: Vec<EndpointAddr>,
+        timeout: Duration,
+    ) -> RoomStatus {
+        candidates.push(ticket.host.clone());
+        probe::probe(self.endpoint(), ticket, candidates, timeout).await
     }
 
     fn start_room(
@@ -205,14 +286,14 @@ impl Node {
         ticket: Ticket,
         profile: WireProfile,
         state: MemberState,
-        dial_host: bool,
+        entry: Vec<EndpointAddr>,
     ) -> RoomHandle {
         let (handle, inbound_tx) = room::spawn(
             self.endpoint().clone(),
             ticket,
             profile,
             state,
-            dial_host,
+            entry,
             self.room_slot.clone(),
         );
         *self.room_slot.lock().expect("room slot") = Some(inbound_tx);

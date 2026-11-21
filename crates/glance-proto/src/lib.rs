@@ -18,3 +18,8 @@ pub use iroh_base::{EndpointAddr, EndpointId};
 
 /// ALPN for the room mesh (control stream per peer).
 pub const ROOM_ALPN: &[u8] = b"glance/room/1";
+
+/// ALPN for room liveness probes ([`ProbeRequest`] / [`ProbeReply`]). A
+/// separate protocol so peers that predate it simply refuse the connection,
+/// which reads as "unknown".
+pub const ROOM_PROBE_ALPN: &[u8] = b"glance/room-probe/1";

@@ -15,6 +15,25 @@ use crate::app::GlanceApp;
 use crate::theme::Palette;
 use crate::ui::{Avatar, icon, icon_button, live_badge, section_label};
 
+/// What's shown instead of the invite link until you ask to see it (the
+/// link is the key to the room, so it shouldn't sit on screen in a share).
+pub fn masked_link() -> String {
+    "glance://join/••••••••".into()
+}
+
+/// "Copy" that turns into "Copied" for a moment.
+pub fn copy_button(id: &'static str, copied: bool, cx: &mut Context<GlanceApp>) -> Button {
+    let button = Button::new(id)
+        .small()
+        .label(if copied { "Copied" } else { "Copy" })
+        .on_click(cx.listener(|this, _, _, cx| this.copy_invite_link(cx)));
+    if copied {
+        button.success()
+    } else {
+        button.primary()
+    }
+}
+
 /// What a stage tile shows.
 #[derive(Clone)]
 enum TileKind {
@@ -51,7 +70,7 @@ impl GlanceApp {
         let generation = self.link_copied_gen;
         cx.spawn(async move |this, cx| {
             cx.background_executor()
-                .timer(std::time::Duration::from_secs(2))
+                .timer(std::time::Duration::from_millis(1500))
                 .await;
             let _ = this.update(cx, |app, cx| {
                 // A later copy restarts the timer.
@@ -63,6 +82,142 @@ impl GlanceApp {
         })
         .detach();
         cx.notify();
+    }
+
+    /// A short message at the bottom of the window for a few seconds.
+    pub fn show_toast(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.toast = Some(text.into());
+        self.toast_gen = self.toast_gen.wrapping_add(1);
+        let generation = self.toast_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(3))
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                if app.toast_gen == generation {
+                    app.toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn render_toast(&self, p: &Palette) -> Option<AnyElement> {
+        let text = self.toast.clone()?;
+        Some(
+            div()
+                .absolute()
+                .bottom(px(24.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .rounded(px(8.))
+                        .bg(p.bg_rail)
+                        .border_1()
+                        .border_color(p.bg_selected)
+                        .shadow_lg()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(p.text_header)
+                        .child(icon(IconName::CopyCheck, 16., p.green))
+                        .child(text),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The invite link: hidden until you ask to see it, with a Copy button.
+    pub fn render_invite_card(
+        &mut self,
+        p: &Palette,
+        link: String,
+        copied: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let revealed = self.link_revealed;
+        let hover = p.bg_hover;
+        div()
+            .id("invite-link")
+            .mx_2()
+            .mb_2()
+            .p_3()
+            .rounded(px(8.))
+            .bg(p.bg_content)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(section_label(p, "INVITE LINK"))
+                    .child(
+                        icon_button(
+                            "invite-reveal",
+                            if revealed {
+                                IconName::EyeOff
+                            } else {
+                                IconName::Eye
+                            },
+                            if revealed {
+                                "Hide invite link"
+                            } else {
+                                "Show invite link"
+                            },
+                            p.interactive,
+                            p,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.link_revealed = !this.link_revealed;
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("invite-link-text")
+                            .flex_1()
+                            .min_w_0()
+                            .px_1()
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .text_xs()
+                            .text_color(if revealed {
+                                p.text_normal
+                            } else {
+                                p.text_muted
+                            })
+                            .truncate()
+                            .when(!revealed, |d| {
+                                d.tooltip(|window, cx| {
+                                    Tooltip::new("Show invite link").build(window, cx)
+                                })
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.link_revealed = !this.link_revealed;
+                                cx.notify();
+                            }))
+                            .child(if revealed { link } else { masked_link() }),
+                    )
+                    .child(copy_button("invite-copy-side", copied, cx)),
+            )
+            .into_any_element()
     }
 
     pub fn render_room(
@@ -157,58 +312,7 @@ impl GlanceApp {
                     ),
             )
             // Invite link card
-            .child({
-                let hover = p.bg_hover;
-                div()
-                    .id("invite-link")
-                    .mx_2()
-                    .mb_2()
-                    .p_3()
-                    .rounded(px(8.))
-                    .bg(p.bg_content)
-                    .hover(move |s| s.bg(hover))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .tooltip(|window, cx| Tooltip::new("Copy invite link").build(window, cx))
-                    .on_click(cx.listener(|this, _, _, cx| this.copy_invite_link(cx)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(if copied { p.green } else { p.text_muted })
-                                    .child(if copied {
-                                        "INVITE LINK COPIED"
-                                    } else {
-                                        "INVITE LINK"
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(p.text_normal)
-                                    .truncate()
-                                    .child(link),
-                            ),
-                    )
-                    .child(icon(
-                        if copied {
-                            IconName::CopyCheck
-                        } else {
-                            IconName::Copy
-                        },
-                        16.,
-                        if copied { p.green } else { p.interactive },
-                    ))
-            })
+            .child(self.render_invite_card(p, link, copied, cx))
             // Voice connected panel
             .child(
                 div()
@@ -1312,6 +1416,13 @@ impl GlanceApp {
                 None,
             ),
             Transfer::Failed(e) => (format!("Failed: {e}"), None),
+            Transfer::Unavailable => (
+                format!(
+                    "{} · unavailable (nobody here has it)",
+                    format::human_bytes(f.size)
+                ),
+                None,
+            ),
             Transfer::Downloading {
                 done,
                 bytes_per_sec,
@@ -1336,6 +1447,7 @@ impl GlanceApp {
         let action = match &f.transfer {
             Transfer::Available | Transfer::Failed(_) => Some((IconName::Download, "Download")),
             Transfer::Downloading { .. } => Some((IconName::X, "Cancel")),
+            Transfer::Unavailable => None,
             Transfer::Done => Some((IconName::FolderOpen, "Show in folder")),
             Transfer::Sent => path
                 .as_ref()

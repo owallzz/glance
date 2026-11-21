@@ -87,6 +87,10 @@ impl GlanceApp {
                         tracing::info!("room link: {link}");
                         app.attach_room(handle, "Your room".into(), cx);
                         app.copy_invite_link(cx);
+                        app.show_toast(
+                            "Invite link copied. Send it to whoever you want in the room.",
+                            cx,
+                        );
                         app.ring_pending();
                     }
                     Err(e) => app.join_error = Some(format!("Couldn't start a room: {e:#}")),
@@ -120,6 +124,18 @@ impl GlanceApp {
     }
 
     pub fn join(&mut self, ticket: Ticket, cx: &mut Context<Self>) {
+        self.join_with(ticket, None, "Room".into(), cx);
+    }
+
+    /// Join a room; with `via`, dial those members first (rejoining a room
+    /// whose creator may have left).
+    pub fn join_with(
+        &mut self,
+        ticket: Ticket,
+        via: Option<Vec<glance_proto::EndpointAddr>>,
+        name: String,
+        cx: &mut Context<Self>,
+    ) {
         let Some(net) = self.net.clone() else {
             return;
         };
@@ -129,7 +145,12 @@ impl GlanceApp {
         self.busy = true;
         self.join_error = None;
         let state = member_state(&self.self_participant());
-        let fut = net.join_room(ticket, wire_profile(&self.me), state);
+        let fut = match via {
+            Some(members) => {
+                futures_join(net.join_room_via(ticket, members, wire_profile(&self.me), state))
+            }
+            None => futures_join(net.join_room(ticket, wire_profile(&self.me), state)),
+        };
         cx.spawn(async move |this, cx| {
             let result = fut.await;
             this.update(cx, |app, cx| {
@@ -137,7 +158,7 @@ impl GlanceApp {
                 match result {
                     Ok(handle) => {
                         app.link_copied = false;
-                        app.attach_room(handle, "Room".into(), cx);
+                        app.attach_room(handle, name, cx);
                     }
                     Err(e) => app.join_error = Some(format!("Couldn't join: {e:#}")),
                 }
@@ -149,8 +170,9 @@ impl GlanceApp {
         cx.notify();
     }
 
-    fn attach_room(&mut self, handle: RoomHandle, name: String, cx: &mut Context<Self>) {
+    pub fn attach_room(&mut self, handle: RoomHandle, name: String, cx: &mut Context<Self>) {
         let events = handle.events.clone();
+        let memory = crate::recent::RoomMemory::new(&handle.ticket);
         let task = cx.spawn(async move |this, cx| {
             while let Ok(ev) = events.recv_async().await {
                 let closed = matches!(ev, RoomEvent::Closed);
@@ -189,8 +211,12 @@ impl GlanceApp {
             files: Default::default(),
             history_names: Default::default(),
             met: Default::default(),
+            memory,
         });
         self.screen = Screen::Room;
+        self.link_revealed = false;
+        self.load_saved_chat();
+        self.remember_room(false);
         self.start_voice(cx);
         self.push_presence();
         self.refresh_contacts();
@@ -213,6 +239,11 @@ impl GlanceApp {
     }
 
     fn apply_room_event(&mut self, ev: RoomEvent, cx: &mut Context<Self>) {
+        let joined = matches!(ev, RoomEvent::MemberJoined { .. });
+        let chatty = matches!(
+            ev,
+            RoomEvent::Chat { .. } | RoomEvent::History(_) | RoomEvent::FileOffered { .. }
+        );
         let sounds = self.settings.sounds;
         let Some(room) = self.room.as_mut() else {
             return;
@@ -232,8 +263,16 @@ impl GlanceApp {
             });
         };
         match ev {
-            RoomEvent::MemberJoined { id, profile, state } => {
-                let id = peer_id(id);
+            RoomEvent::MemberJoined {
+                id: endpoint,
+                profile,
+                state,
+                addr,
+            } => {
+                let id = peer_id(endpoint);
+                room.memory.addrs.insert(id, addr);
+                // They can serve the files they offered before (saved chat).
+                crate::recent::author_is_back(room, id, endpoint);
                 if room.participants.iter().any(|p| p.profile.id == id) {
                     return;
                 }
@@ -340,8 +379,12 @@ impl GlanceApp {
                 self.on_video_feed(peer_id(from), track, feed, cx);
             }
             RoomEvent::History(items) => self.on_history(items),
-            RoomEvent::FileOffered { from, file, .. } => {
-                self.on_file_offered(from, file, cx);
+            RoomEvent::FileOffered {
+                from,
+                sent_at,
+                file,
+            } => {
+                self.on_file_offered(from, sent_at, file, cx);
             }
             RoomEvent::FileProvider { from, hash } => self.on_file_provider(from, hash),
             RoomEvent::Watchers { track, count } => {
@@ -366,6 +409,12 @@ impl GlanceApp {
                 system(room, me, msg);
             }
             RoomEvent::Closed => {}
+        }
+        if joined {
+            self.remember_room(false);
+        }
+        if chatty {
+            self.persist_chat();
         }
         // Participant count changed or not: cheap to re-send.
         self.push_presence();
@@ -457,45 +506,9 @@ impl GlanceApp {
     }
 }
 
-impl GlanceApp {
-    /// Put chat/file history from before we joined at the top of the chat.
-    fn on_history(&mut self, items: Vec<glance_proto::HistoryItem>) {
-        let Some(room) = self.room.as_mut() else {
-            return;
-        };
-        let mut earlier = Vec::new();
-        for item in items {
-            let author = peer_id(item.author);
-            room.history_names
-                .entry(author)
-                .or_insert((item.author_name.clone(), item.author_color));
-            let body = match item.body {
-                glance_proto::HistoryBody::Text(t) => ChatBody::Text(t),
-                glance_proto::HistoryBody::File(f) => {
-                    let e = room.files.entry(f.hash).or_default();
-                    if !e.providers.contains(&item.author) {
-                        e.providers.push(item.author);
-                    }
-                    ChatBody::File(glance_core::FileOffer {
-                        hash: f.hash,
-                        name: f.name,
-                        size: f.size,
-                        mime: f.mime,
-                        transfer: glance_core::Transfer::Available,
-                    })
-                }
-            };
-            earlier.push(ChatMessage {
-                id: 0,
-                author,
-                sent_at: item.sent_at,
-                body,
-            });
-        }
-        earlier.append(&mut room.chat);
-        for (i, m) in earlier.iter_mut().enumerate() {
-            m.id = i as u64 + 1;
-        }
-        room.chat = earlier;
-    }
+/// Box the two join futures into one type.
+fn futures_join(
+    fut: impl std::future::Future<Output = anyhow::Result<RoomHandle>> + 'static,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<RoomHandle>>>> {
+    Box::pin(fut)
 }

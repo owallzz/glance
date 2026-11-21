@@ -966,6 +966,7 @@ impl GlanceApp {
             .map(|r| r.link.clone())
             .unwrap_or_default();
         let copied = self.link_copied;
+        let revealed = self.link_revealed;
         let in_room: Vec<glance_core::PeerId> = self
             .room
             .as_ref()
@@ -1023,27 +1024,37 @@ impl GlanceApp {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .on_click(cx.listener(|this, _, _, cx| this.copy_invite_link(cx)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.link_revealed = !this.link_revealed;
+                            cx.notify();
+                        }))
+                        .child(icon(
+                            if revealed {
+                                IconName::EyeOff
+                            } else {
+                                IconName::Eye
+                            },
+                            16.,
+                            p.interactive,
+                        ))
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
                                 .text_sm()
-                                .text_color(p.text_normal)
+                                .text_color(if revealed {
+                                    p.text_normal
+                                } else {
+                                    p.text_muted
+                                })
                                 .truncate()
-                                .child(link),
+                                .child(if revealed {
+                                    link
+                                } else {
+                                    format!("{}  (click to show)", crate::room::masked_link())
+                                }),
                         )
-                        .child({
-                            let copy = Button::new("invite-copy")
-                                .small()
-                                .label(if copied { "Copied" } else { "Copy" })
-                                .on_click(cx.listener(|this, _, _, cx| this.copy_invite_link(cx)));
-                            if copied {
-                                copy.success()
-                            } else {
-                                copy.primary()
-                            }
-                        }),
+                        .child(crate::room::copy_button("invite-copy", copied, cx)),
                 )
                 .when(live, |d| {
                     d.child(section_label(p, "RING A CONTACT")).child(

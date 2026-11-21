@@ -410,6 +410,8 @@ pub struct Room {
     /// Everyone who was in this call at some point (for call history and
     /// "add contact" afterwards).
     pub met: HashMap<PeerId, Profile>,
+    /// What's needed to remember this room and save its chat.
+    pub memory: crate::recent::RoomMemory,
     pub _events: Option<Task<()>>,
 }
 
@@ -506,6 +508,13 @@ pub struct GlanceApp {
     pub link_copied: bool,
     /// Bumped on every copy, so only the latest one clears `link_copied`.
     pub link_copied_gen: u32,
+    /// The invite link is masked until you click to show it.
+    pub link_revealed: bool,
+    /// Message at the bottom of the window ("Invite link copied").
+    pub toast: Option<SharedString>,
+    pub toast_gen: u32,
+    /// Rooms you were in, and whether they're still going.
+    pub recent: crate::recent::Recent,
     /// Mic and speaker volume sliders in the voice settings (0–200%).
     pub input_volume_slider: Entity<SliderState>,
     pub output_volume_slider: Entity<SliderState>,
@@ -632,6 +641,10 @@ impl GlanceApp {
             settings,
             link_copied: false,
             link_copied_gen: 0,
+            link_revealed: false,
+            toast: None,
+            toast_gen: 0,
+            recent: Default::default(),
             input_volume_slider,
             output_volume_slider,
             audio_devices: None,
@@ -673,6 +686,7 @@ impl GlanceApp {
             app.start_contacts(cx);
             app.watch_idle(cx);
             app.start_updater(cx);
+            app.load_recent(cx);
         }
         if demo_room {
             app.start_demo_room(cx);
@@ -695,16 +709,21 @@ impl GlanceApp {
             let me = self.me.id;
             if let Some(room) = self.room.as_mut() {
                 let id = room.chat.last().map_or(1, |m| m.id + 1);
+                let sent_at = now_ms();
                 if let Some(handle) = &room.handle {
-                    handle.send(glance_net::Command::Chat(text.clone()));
+                    handle.send(glance_net::Command::Post {
+                        sent_at,
+                        body: glance_proto::HistoryBody::Text(text.clone()),
+                    });
                 }
                 room.chat.push(ChatMessage {
                     id,
                     author: me,
-                    sent_at: now_ms(),
+                    sent_at,
                     body: ChatBody::Text(text),
                 });
             }
+            self.persist_chat();
             input.update(cx, |state, cx| state.set_value("", window, cx));
             cx.notify();
         }
@@ -729,6 +748,7 @@ impl GlanceApp {
             files: Default::default(),
             history_names: HashMap::new(),
             met: HashMap::new(),
+            memory: Default::default(),
             name: "Sam's room".into(),
             link: "glance://join/demo".into(),
             participants: demo::participants(),
@@ -746,6 +766,10 @@ impl GlanceApp {
     pub fn leave_room(&mut self, cx: &mut Context<Self>) {
         self.record_call_end();
         self.cancel_rings();
+        self.remember_room(true);
+        self.persist_chat();
+        // The home screen checks the rooms again (including this one).
+        self.recent.stale();
         self.invite_open = false;
         if let Some(room) = self.room.as_ref() {
             for b in [room.broadcast.as_ref(), room.camera_broadcast.as_ref()]
@@ -945,6 +969,9 @@ impl GlanceApp {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
+                        if this.screen != Screen::Home {
+                            this.recent.home_shown();
+                        }
                         this.screen = Screen::Home;
                         cx.notify();
                     }),
@@ -1198,6 +1225,9 @@ impl Render for GlanceApp {
         }
         if self.incoming_call.is_some() {
             content = content.child(self.render_incoming_call(&p, cx));
+        }
+        if let Some(toast) = self.render_toast(&p) {
+            content = content.child(toast);
         }
         root = root.child(content);
         root.into_any_element()

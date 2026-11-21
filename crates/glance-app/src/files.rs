@@ -122,10 +122,21 @@ impl GlanceApp {
                                 size,
                                 mime,
                             };
-                            app.post_file(app.me.id, file.clone(), Transfer::Sent, Some(path));
+                            let sent_at = now_ms();
+                            app.post_file(
+                                app.me.id,
+                                file.clone(),
+                                sent_at,
+                                Transfer::Sent,
+                                Some(path),
+                            );
                             if let Some(h) = app.room.as_ref().and_then(|r| r.handle.as_ref()) {
-                                h.send(Command::OfferFile(file));
+                                h.send(Command::Post {
+                                    sent_at,
+                                    body: glance_proto::HistoryBody::File(file),
+                                });
                             }
+                            app.persist_chat();
                         }
                         Err(e) => app.system_message(format!("Couldn't send {name}: {e:#}")),
                     }
@@ -140,6 +151,7 @@ impl GlanceApp {
         &mut self,
         author: PeerId,
         file: WireFile,
+        sent_at: u64,
         transfer: Transfer,
         path: Option<PathBuf>,
     ) {
@@ -154,7 +166,7 @@ impl GlanceApp {
         room.chat.push(ChatMessage {
             id,
             author,
-            sent_at: now_ms(),
+            sent_at,
             body: ChatBody::File(FileOffer {
                 hash: file.hash,
                 name: file.name,
@@ -165,28 +177,31 @@ impl GlanceApp {
         });
     }
 
-    pub fn on_file_offered(&mut self, from: EndpointId, file: WireFile, cx: &mut Context<Self>) {
+    pub fn on_file_offered(
+        &mut self,
+        from: EndpointId,
+        sent_at: u64,
+        file: WireFile,
+        cx: &mut Context<Self>,
+    ) {
         let auto = self.settings.auto_preview
             && file.mime.starts_with("image/")
             && file.size <= AUTO_PREVIEW_MAX;
         let hash = file.hash;
         if let Some(room) = self.room.as_mut() {
-            let e = room.files.entry(hash).or_default();
-            if !e.providers.contains(&from) {
-                e.providers.push(from);
-            }
+            crate::recent::add_provider(room, hash, from);
         }
-        self.post_file(peer_id(from), file, Transfer::Available, None);
+        self.post_file(peer_id(from), file, sent_at, Transfer::Available, None);
         if auto {
             self.start_download(hash, cx);
         }
     }
 
     pub fn on_file_provider(&mut self, from: EndpointId, hash: [u8; 32]) {
-        if let Some(e) = self.room.as_mut().and_then(|r| r.files.get_mut(&hash))
-            && !e.providers.contains(&from)
+        if let Some(room) = self.room.as_mut()
+            && room.files.contains_key(&hash)
         {
-            e.providers.push(from);
+            crate::recent::add_provider(room, hash, from);
         }
     }
 

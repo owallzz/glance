@@ -8,5 +8,6 @@ pub mod demo;
 pub mod format;
 pub mod model;
 pub mod voice;
+pub mod rooms;
 
 pub use model::*;

@@ -265,7 +265,9 @@ pub fn run(
             .recv(&room.events, |ev| {
                 let Ok(ev) = ev else { std::process::exit(0) };
                 match &ev {
-                    RoomEvent::MemberJoined { id, profile, state } => {
+                    RoomEvent::MemberJoined {
+                        id, profile, state, ..
+                    } => {
                         names.borrow_mut().insert(*id, profile.name.clone());
                         if mute.as_deref() == Some(profile.name.as_str()) {
                             engine.set_peer_muted(*id.as_bytes(), true);

@@ -298,7 +298,7 @@ impl GlanceApp {
             .map(|p| p.name)
             .unwrap_or_else(|| "someone".into());
         let (status, progress) = match &f.transfer {
-            Transfer::Available => (
+            Transfer::Available | Transfer::Unavailable => (
                 format!("From {who} · {}", format::human_bytes(f.size)),
                 None,
             ),
@@ -323,6 +323,7 @@ impl GlanceApp {
         let action = match &f.transfer {
             Transfer::Available | Transfer::Failed(_) => Some((IconName::Download, "Download")),
             Transfer::Downloading { .. } => Some((IconName::X, "Cancel")),
+            Transfer::Unavailable => None,
             Transfer::Done | Transfer::Sent => path
                 .as_ref()
                 .map(|_| (IconName::FolderOpen, "Show in folder")),
