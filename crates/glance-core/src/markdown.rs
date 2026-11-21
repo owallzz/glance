@@ -1166,44 +1166,47 @@ impl<'a> Parser<'a> {
         if self.href_dead.is_empty() {
             self.href_dead = vec![false; n + 1];
         }
+        // Depth-first in the regex's order of alternatives: the paren group
+        // first, then `(` as an ordinary character. Positions are marked
+        // while visited (each is expanded once, so this stays linear) and
+        // only stay marked when the whole scan fails.
         let mut visited = Vec::new();
-        let mut h = h0;
-        loop {
+        let mut stack = vec![h0];
+        while let Some(h) = stack.pop() {
             if h > n || self.href_dead[h] {
-                break;
+                continue;
             }
+            self.href_dead[h] = true;
+            visited.push(h);
             if let Some((title, end)) = self.href_rest(h) {
+                for v in visited {
+                    self.href_dead[v] = false;
+                }
                 return Some(Href {
                     url: h0..h,
                     title,
                     end,
                 });
             }
-            visited.push(h);
             if h >= n {
-                break;
+                continue;
             }
             match self.b[h] {
                 b'(' => {
+                    stack.push(h + 1);
                     let b = self.b;
-                    match Self::next_byte(&mut self.c.rpar, b, h + 1, b')') {
-                        Some(k) => h = k + 1,
-                        None => h += 1,
+                    if let Some(k) = Self::next_byte(&mut self.c.rpar, b, h + 1, b')') {
+                        stack.push(k + 1);
                     }
                 }
                 b'\\' => {
                     if h + 1 < n && !matches!(self.b[h + 1], b'\n' | b'\r') {
-                        h += 1 + self.clen(h + 1);
-                    } else {
-                        break;
+                        stack.push(h + 1 + self.clen(h + 1));
                     }
                 }
-                _ if self.ws(h) => break,
-                _ => h += self.clen(h),
+                _ if self.ws(h) => {}
+                _ => stack.push(h + self.clen(h)),
             }
-        }
-        for v in visited {
-            self.href_dead[v] = true;
         }
         None
     }
@@ -2372,6 +2375,17 @@ mod tests {
             "https://en.wikipedia.org/wiki/Rust_(lang)"
         );
         assert_eq!(parse("[a](HTTPS://X.IO)").links[0].url, "HTTPS://X.IO");
+        // An unbalanced `(` falls back to an ordinary URL character.
+        for src in ["[t](https://x.io/a(b)", "[t](https://x.io/a(b )"] {
+            let m = parse(src);
+            assert_eq!(m.links.len(), 1, "{src:?}");
+            assert!(m.links[0].masked, "{src:?}");
+            assert_eq!(m.links[0].url, "https://x.io/a(b", "{src:?}");
+        }
+        assert_eq!(
+            parse("[t](https://x.io/a(b)c)").links[0].url,
+            "https://x.io/a(b)c"
+        );
         assert_eq!(
             parse("[a](https://x.io/\\_y)").links[0].url,
             "https://x.io/_y"
