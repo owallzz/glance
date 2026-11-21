@@ -13,7 +13,7 @@
 //! under the next (no click at the loop point), and cached.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -109,17 +109,28 @@ fn render(notes: &[Note], peak: f32, fade_from: f32) -> Rendered {
     Rendered { first, looped }
 }
 
-static INCOMING: LazyLock<Rendered> =
-    LazyLock::new(|| render(&incoming_notes(), INCOMING_PEAK, 0.35));
-static OUTGOING: LazyLock<Rendered> =
-    LazyLock::new(|| render(&outgoing_notes(), OUTGOING_PEAK, 0.75));
+static INCOMING: OnceLock<Rendered> = OnceLock::new();
+static OUTGOING: OnceLock<Rendered> = OnceLock::new();
 
-/// The rendered tone (rendered on first use, a few ms).
-pub fn rendered(tone: Tone) -> &'static Rendered {
+fn cache(tone: Tone) -> &'static OnceLock<Rendered> {
     match tone {
         Tone::Incoming => &INCOMING,
         Tone::Outgoing => &OUTGOING,
     }
+}
+
+/// The rendered tone (rendered on first use: a few ms in release, longer
+/// in dev builds, so real-time code uses [`ready`] instead).
+pub fn rendered(tone: Tone) -> &'static Rendered {
+    cache(tone).get_or_init(|| match tone {
+        Tone::Incoming => render(&incoming_notes(), INCOMING_PEAK, 0.35),
+        Tone::Outgoing => render(&outgoing_notes(), OUTGOING_PEAK, 0.75),
+    })
+}
+
+/// The rendered tone if it's already cached; never blocks or renders.
+pub fn ready(tone: Tone) -> Option<&'static Rendered> {
+    cache(tone).get()
 }
 
 /// Sample `i` of a tone from its start (48 kHz mono).

@@ -3,7 +3,7 @@
 //! (`ringtone.rs`), in the same key, so all of glance's sounds are one
 //! family: rising intervals for "on/in", falling for "off/out".
 
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 
 use super::SAMPLE_RATE;
 use super::synth::{self, Note, PLUCK, SMALL_ROOM, SOFT, pitch};
@@ -70,13 +70,38 @@ fn render(sound: Sound) -> Vec<f32> {
     out
 }
 
-static RENDERED: LazyLock<Vec<Vec<f32>>> =
-    LazyLock::new(|| ALL.iter().map(|&s| render(s)).collect());
+static RENDERED: OnceLock<Vec<Vec<f32>>> = OnceLock::new();
 
-/// The sound's samples (48 kHz mono, peak about 0.32).
+fn index(sound: Sound) -> usize {
+    ALL.iter().position(|&s| s == sound).expect("listed")
+}
+
+/// The sound's samples (48 kHz mono, peak about 0.32). Renders every
+/// chime on first use, so callers on the UI or audio thread use
+/// [`ready`] instead (after [`prewarm`]).
 pub fn samples(sound: Sound) -> Vec<f32> {
-    let ix = ALL.iter().position(|&s| s == sound).expect("listed");
-    RENDERED[ix].clone()
+    RENDERED.get_or_init(|| ALL.iter().map(|&s| render(s)).collect())[index(sound)].clone()
+}
+
+/// The sound's samples if the chimes are already rendered; never blocks.
+pub fn ready(sound: Sound) -> Option<Vec<f32>> {
+    RENDERED.get().map(|all| all[index(sound)].clone())
+}
+
+/// Render the chimes and both call tones on a background thread, so the
+/// UI and audio threads never render them inline. Cheap to call again.
+pub fn prewarm() {
+    if RENDERED.get().is_some() && super::ringtone::ready(super::ringtone::Tone::Outgoing).is_some()
+    {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("sound-prewarm".into())
+        .spawn(|| {
+            samples(Sound::Join);
+            super::ringtone::rendered(super::ringtone::Tone::Outgoing);
+            super::ringtone::rendered(super::ringtone::Tone::Incoming);
+        });
 }
 
 #[cfg(test)]

@@ -46,6 +46,13 @@ pub struct Live {
     pub last_presence: Option<Option<PresenceInfo>>,
 }
 
+/// The ringback plays while a ring we sent is unanswered and we're still
+/// alone in the room: once anyone is here (someone answered, or we rang
+/// from a call already going) it would only talk over the conversation.
+pub fn ringback_wanted(pending_rings: usize, participants: usize) -> bool {
+    pending_rings > 0 && participants <= 1
+}
+
 fn eid(p: PeerId) -> Option<EndpointId> {
     EndpointId::from_bytes(&p.0).ok()
 }
@@ -339,6 +346,12 @@ impl GlanceApp {
         let Some(room) = self.room.as_ref() else {
             return;
         };
+        // Already ringing them (Ring clicked twice, or from Home and the
+        // Invite overlay): their side ignores a second ring while the first
+        // is up, so it would never be answered.
+        if self.live.ringing_out.values().any(|r| r.peer == peer) {
+            return;
+        }
         let call_id: u64 = rand::random();
         let members = room
             .participants
@@ -366,10 +379,16 @@ impl GlanceApp {
         self.system_message(format!("Calling {name}…"));
     }
 
-    /// Play the ringback while any ring we sent is unanswered.
+    /// Play the ringback while a ring we sent is unanswered and nobody else
+    /// is in the room (see [`ringback_wanted`]).
     pub fn sync_ringback(&self) {
-        if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
-            engine.set_ringback(!self.live.ringing_out.is_empty());
+        if let Some(room) = self.room.as_ref()
+            && let Some(engine) = room.audio.as_ref()
+        {
+            engine.set_ringback(ringback_wanted(
+                self.live.ringing_out.len(),
+                room.participants.len(),
+            ));
         }
     }
 
@@ -572,6 +591,8 @@ impl GlanceApp {
                 accepted,
             } => {
                 self.live.ringing_out.remove(&call_id);
+                // Any other ring to the same peer is answered by this too.
+                self.stop_ringing(peer_id(from));
                 self.sync_ringback();
                 if !accepted {
                     let name = self
@@ -663,4 +684,18 @@ pub fn notify(summary: &str, body: &str) {
             .body(&body)
             .show();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ringback_wanted;
+
+    #[test]
+    fn ringback_only_while_alone_and_ringing() {
+        assert!(ringback_wanted(1, 1), "ringing, alone");
+        assert!(ringback_wanted(2, 0), "ringing, room still opening");
+        assert!(!ringback_wanted(0, 1), "nobody to ring");
+        assert!(!ringback_wanted(1, 2), "someone answered and joined");
+        assert!(!ringback_wanted(1, 4), "ringing from a call already going");
+    }
 }

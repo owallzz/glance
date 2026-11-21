@@ -78,6 +78,8 @@ impl AudioEngine {
         config: EngineConfig,
         outgoing: impl FnMut(EncodedAudio) + Send + 'static,
     ) -> Result<Self> {
+        // Render the chimes and ringback off the real-time and UI threads.
+        super::sounds::prewarm();
         let shared = Arc::new(Shared {
             input_gain: AtomicU32::new(1.0f32.to_bits()),
             output_gain: AtomicU32::new(1.0f32.to_bits()),
@@ -111,7 +113,11 @@ impl AudioEngine {
 
     /// Play a UI sound through the speakers (mixed with voices).
     pub fn play(&self, sound: super::sounds::Sound) {
-        let samples = super::sounds::samples(sound);
+        // Not rendered yet (the engine just started): skip the chime rather
+        // than render it on the caller's (UI) thread.
+        let Some(samples) = super::sounds::ready(sound) else {
+            return;
+        };
         let mut q = self.shared.effects.lock().unwrap();
         // Overlap with anything still playing rather than queueing behind it.
         for (i, s) in samples.into_iter().enumerate() {
@@ -426,6 +432,10 @@ struct Ringback {
 
 impl Ringback {
     fn mix(&mut self, on: bool, out: &mut [f32]) {
+        // Rendered by `sounds::prewarm`; never render on the audio thread.
+        let Some(tone) = super::ringtone::ready(super::ringtone::Tone::Outgoing) else {
+            return;
+        };
         if self.gain == 0.0 {
             if !on {
                 return;
@@ -439,7 +449,7 @@ impl Ringback {
             } else {
                 (self.gain - step).max(0.0)
             };
-            let s = super::ringtone::sample(super::ringtone::Tone::Outgoing, self.pos);
+            let s = tone.sample(self.pos);
             *m = (*m + s * self.gain).clamp(-1.0, 1.0);
             self.pos += 1;
         }
@@ -452,6 +462,8 @@ mod tests {
 
     #[test]
     fn ringback_starts_from_the_top_and_fades_out() {
+        // The engine prewarms this; the mixer itself never renders.
+        super::super::ringtone::rendered(super::super::ringtone::Tone::Outgoing);
         let mut rb = Ringback::default();
         let mut out = vec![0.0f32; FRAME];
         rb.mix(false, &mut out);
