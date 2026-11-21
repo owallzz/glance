@@ -31,6 +31,13 @@ pub const LEFT_PANELS_WIDTH: f32 = 312.;
 /// Keep at least this much for the stage: its control bar at full size
 /// with every button (sharing adds stream settings), plus margins.
 const STAGE_MIN_WIDTH: f32 = ControlSize::FULL.row_width(7) + 2. * CONTROLS_MARGIN;
+/// The stage never gets narrower than this, even if chat has to shrink below
+/// its minimum: the compact control bar with every button on one line.
+const STAGE_COMPACT_MIN_WIDTH: f32 = ControlSize::COMPACT.row_width(7) + 2. * CONTROLS_MARGIN;
+/// The main window's minimum size. Wide enough for the rail, sidebar,
+/// chat and the compact control bar (it also fits half of a 1080p screen).
+pub const WINDOW_MIN_WIDTH: f32 = 960.;
+pub const WINDOW_MIN_HEIGHT: f32 = 480.;
 /// Space left and right of the stage's control bar.
 const CONTROLS_MARGIN: f32 = 16.;
 
@@ -93,18 +100,22 @@ pub fn content_width(window: &Window) -> f32 {
     right - left
 }
 
-/// The chat panel width to use in a window this wide: at least the minimum,
-/// and at most the maximum, half the window, or what leaves the stage its
-/// minimum, whichever is smallest.
+/// The chat panel width to use in a window this wide: at most the maximum,
+/// half the window, or what leaves the stage room for the full-size control
+/// bar, whichever is smallest; at least the chat minimum, unless that would
+/// squeeze the stage below the compact control bar (then the stage wins).
 pub fn clamp_chat_width(width: f32, window_width: f32) -> f32 {
+    let min = CHAT_MIN_WIDTH
+        .min(window_width - LEFT_PANELS_WIDTH - STAGE_COMPACT_MIN_WIDTH)
+        .max(0.);
     let max = CHAT_MAX_WIDTH
         .min(window_width * 0.5)
         .min(window_width - LEFT_PANELS_WIDTH - STAGE_MIN_WIDTH)
-        .max(CHAT_MIN_WIDTH);
+        .max(min);
     if width.is_finite() {
-        width.clamp(CHAT_MIN_WIDTH, max)
+        width.clamp(min, max)
     } else {
-        CHAT_DEFAULT_WIDTH.clamp(CHAT_MIN_WIDTH, max)
+        CHAT_DEFAULT_WIDTH.clamp(min, max)
     }
 }
 
@@ -1581,8 +1592,12 @@ fn muted_by_you_icon(p: &Palette, id: PeerId, size: f32) -> AnyElement {
 mod tests {
     use super::{
         CHAT_DEFAULT_WIDTH, CHAT_MAX_WIDTH, CHAT_MIN_WIDTH, CONTROLS_MARGIN, ControlSize,
-        LEFT_PANELS_WIDTH, STAGE_MIN_WIDTH, clamp_chat_width,
+        LEFT_PANELS_WIDTH, STAGE_MIN_WIDTH, WINDOW_MIN_WIDTH, clamp_chat_width,
     };
+
+    /// Shadow plus border on each side of a floating client-decorated
+    /// window on Linux (gpui-kit's frame); zero elsewhere.
+    const FRAME_INSET: f32 = if cfg!(target_os = "linux") { 21. } else { 0. };
 
     #[test]
     fn chat_width_stays_in_bounds() {
@@ -1594,8 +1609,11 @@ mod tests {
         assert_eq!(STAGE_MIN_WIDTH, 504.);
         assert_eq!(clamp_chat_width(600., 1200.), 384.);
         assert_eq!(clamp_chat_width(900., 1100.), 284.);
-        // A tiny window still gets the minimum.
-        assert_eq!(clamp_chat_width(500., 400.), CHAT_MIN_WIDTH);
+        // A narrow window shrinks chat below its minimum before the stage
+        // drops below the compact bar: 918 - 312 - 396.
+        assert_eq!(clamp_chat_width(500., 918.), 210.);
+        // A tiny window: nothing left for chat.
+        assert_eq!(clamp_chat_width(500., 400.), 0.);
         // Garbage from a hand-edited settings file.
         assert_eq!(clamp_chat_width(f32::NAN, 1920.), CHAT_DEFAULT_WIDTH);
     }
@@ -1612,12 +1630,32 @@ mod tests {
                 "{window}"
             );
         }
-        // The smallest window with chat open shrinks the buttons.
-        let stage = 720. - LEFT_PANELS_WIDTH - clamp_chat_width(CHAT_MAX_WIDTH, 720.);
+        // Any window at least the minimum size, floating (inside the
+        // frame) or tiled, chat open at any width or closed: the bar never
+        // wraps, whether sharing (7 buttons) or not (6).
+        let smallest = WINDOW_MIN_WIDTH - 2. * FRAME_INSET;
+        let mut content = smallest;
+        while content <= 2000. {
+            for chat in [
+                None,
+                Some(0.),
+                Some(CHAT_DEFAULT_WIDTH),
+                Some(CHAT_MAX_WIDTH),
+            ] {
+                let chat_width = chat.map_or(0., |w| clamp_chat_width(w, content));
+                let stage = content - LEFT_PANELS_WIDTH - chat_width;
+                for buttons in [6, 7] {
+                    let size = ControlSize::for_stage(stage, buttons);
+                    assert!(
+                        size.row_width(buttons) + 2. * CONTROLS_MARGIN <= stage,
+                        "content {content}, chat {chat:?}, {buttons} buttons"
+                    );
+                }
+            }
+            content += 1.;
+        }
+        // The smallest floating window with chat open shrinks the buttons.
+        let stage = smallest - LEFT_PANELS_WIDTH - clamp_chat_width(CHAT_MAX_WIDTH, smallest);
         assert_eq!(ControlSize::for_stage(stage, 6), ControlSize::COMPACT);
-        // Without chat the compact bar fits even the smallest window.
-        assert!(
-            ControlSize::COMPACT.row_width(7) + 2. * CONTROLS_MARGIN <= 720. - LEFT_PANELS_WIDTH
-        );
     }
 }
