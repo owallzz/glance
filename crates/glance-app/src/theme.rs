@@ -93,6 +93,30 @@ pub struct Palette {
     pub bg_menu: Hsla,
     /// Context menu outline and separators.
     pub menu_border: Hsla,
+    /// Links in chat.
+    pub link: Hsla,
+    /// Inline code and code block fill.
+    pub code_bg: Hsla,
+    /// Code block outline.
+    pub code_border: Hsla,
+    /// The bar left of a block quote.
+    pub quote_bar: Hsla,
+    /// A hidden spoiler, and the same while hovered.
+    pub spoiler_hidden: Hsla,
+    pub spoiler_hidden_hover: Hsla,
+    /// The tint behind a revealed spoiler.
+    pub spoiler_revealed: Hsla,
+    /// Code block syntax colours.
+    pub syn_keyword: Hsla,
+    pub syn_string: Hsla,
+    pub syn_comment: Hsla,
+    pub syn_number: Hsla,
+    pub syn_function: Hsla,
+    pub syn_type: Hsla,
+    pub syn_constant: Hsla,
+    pub syn_attribute: Hsla,
+    pub syn_inserted: Hsla,
+    pub syn_deleted: Hsla,
 }
 
 impl Palette {
@@ -121,6 +145,23 @@ impl Palette {
             gray: rgb(0x80848e).into(),
             bg_menu: rgb(0x111214).into(),
             menu_border: rgb(0x2b2d31).into(),
+            link: rgb(0x00a8fc).into(),
+            code_bg: rgb(0x2b2d31).into(),
+            code_border: rgb(0x1e1f22).into(),
+            quote_bar: rgb(0x4e5058).into(),
+            spoiler_hidden: rgb(0x1e1f22).into(),
+            spoiler_hidden_hover: rgb(0x26282c).into(),
+            spoiler_revealed: gpui_kit::white().opacity(0.1),
+            syn_keyword: rgb(0xc678dd).into(),
+            syn_string: rgb(0x98c379).into(),
+            syn_comment: rgb(0x7f848e).into(),
+            syn_number: rgb(0xd19a66).into(),
+            syn_function: rgb(0x61afef).into(),
+            syn_type: rgb(0xe5c07b).into(),
+            syn_constant: rgb(0xd19a66).into(),
+            syn_attribute: rgb(0xe06c75).into(),
+            syn_inserted: rgb(0x98c379).into(),
+            syn_deleted: rgb(0xe06c75).into(),
         }
     }
 
@@ -149,6 +190,23 @@ impl Palette {
             gray: rgb(0x80848e).into(),
             bg_menu: rgb(0xffffff).into(),
             menu_border: rgb(0xe3e5e8).into(),
+            link: rgb(0x006ce7).into(),
+            code_bg: rgb(0xf2f3f5).into(),
+            code_border: rgb(0xe3e5e8).into(),
+            quote_bar: rgb(0xc4c9ce).into(),
+            spoiler_hidden: rgb(0xc4c9ce).into(),
+            spoiler_hidden_hover: rgb(0xb5bac1).into(),
+            spoiler_revealed: gpui_kit::black().opacity(0.1),
+            syn_keyword: rgb(0xa626a4).into(),
+            syn_string: rgb(0x50a14f).into(),
+            syn_comment: rgb(0x80848e).into(),
+            syn_number: rgb(0x986801).into(),
+            syn_function: rgb(0x4078f2).into(),
+            syn_type: rgb(0xc18401).into(),
+            syn_constant: rgb(0x986801).into(),
+            syn_attribute: rgb(0xe45649).into(),
+            syn_inserted: rgb(0x50a14f).into(),
+            syn_deleted: rgb(0xe45649).into(),
         }
     }
 
