@@ -1373,10 +1373,13 @@ impl Render for GlanceApp {
             .font_family(font)
             .text_color(p.text_normal)
             .bg(p.bg_rail)
+            .rounded_tl(self.corners.top_left)
+            .rounded_tr(self.corners.top_right)
             .rounded_bl(self.corners.bottom_left)
             .rounded_br(self.corners.bottom_right)
             .child(render_title_bar(
                 &p,
+                self.corners,
                 self.render_update_pill(&p, cx),
                 cx.entity().downgrade(),
             ));
@@ -1439,34 +1442,48 @@ fn close_to_tray(this: &WeakEntity<GlanceApp>, window: &mut Window, cx: &mut App
 /// the window menu, and the minimize/maximize/close buttons per platform.
 fn render_title_bar(
     p: &Palette,
+    corners: Corners<Pixels>,
     update_pill: Option<AnyElement>,
     this: WeakEntity<GlanceApp>,
 ) -> impl IntoElement {
-    gpui_kit::component::TitleBar::new()
-        // Linux close button (other platforms use on_window_should_close).
-        .on_close_window(move |_, window, cx| {
-            if crate::tray::active() {
-                close_to_tray(&this, window, cx);
-            } else {
-                window.remove_window();
-            }
-        })
-        .h(px(32.))
+    // gpui doesn't clip children to the window's rounded frame, and the
+    // close button's red hover fills its box up to the bar's edge. The bar
+    // ignores padding, so a wrapper in the same colour insets it by the
+    // corner radius: the hover stops where the curve starts (zero when
+    // maximized, so the button stays at the edge).
+    div()
+        .flex_shrink_0()
+        .pr(corners.top_right)
         .bg(p.bg_rail)
-        .border_b_0()
+        .rounded_tl(corners.top_left)
+        .rounded_tr(corners.top_right)
         .child(
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(p.text_muted)
-                .child(icon(IconName::Monitor, 14., p.text_muted))
-                .child("glance")
-                .children(update_pill),
+            gpui_kit::component::TitleBar::new()
+                // Linux close button (other platforms use on_window_should_close).
+                .on_close_window(move |_, window, cx| {
+                    if crate::tray::active() {
+                        close_to_tray(&this, window, cx);
+                    } else {
+                        window.remove_window();
+                    }
+                })
+                .h(px(32.))
+                .bg(p.bg_rail)
+                .border_b_0()
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.text_muted)
+                        .child(icon(IconName::Monitor, 14., p.text_muted))
+                        .child("glance")
+                        .children(update_pill),
+                ),
         )
 }
 
