@@ -7,6 +7,7 @@ pub mod contacts;
 pub mod demo;
 pub mod dms;
 pub mod format;
+pub mod markdown;
 pub mod model;
 pub mod rooms;
 pub mod voice;

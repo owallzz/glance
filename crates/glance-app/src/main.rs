@@ -3,6 +3,7 @@
 mod app;
 mod bot;
 mod camera;
+mod composer;
 mod contacts;
 mod direct;
 mod dms;
