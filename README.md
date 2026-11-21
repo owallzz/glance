@@ -21,7 +21,7 @@ Start a room, send the link, and everyone in it can go live at the same time. Th
 
 - **Rooms:** start one and the invite link is on your clipboard. Clicking a `glance://` link opens glance (or hands the link to the copy already running) and joins.
 - **Screen sharing:** anyone can go live at once, up to 4K60 with a hardware encoder (1440p60 in software), with an optional app or system audio track. Watch in a grid, focus, fullscreen or a pop-out window, with per-stream volume and stats.
-- **Voice and webcams:** echo cancellation, noise suppression, automatic gain, per-person volume, speaking rings, mute/deafen.
+- **Voice and webcams:** echo cancellation, noise suppression, automatic gain, per-person volume, speaking rings, mute/deafen, and a mic test in **Settings → Voice & Video** that plays you back to yourself.
 - **Chat and files:** room chat; drop, attach or paste files and screenshots. Files go peer to peer, and anyone who downloaded one helps serve it.
 - **Contacts:** add people you've called, see when they're online or in a call, ring them, send them files outside calls. glance waits in the tray and can start on login.
 - **Updates itself:** glance checks for new releases, downloads them in the background and asks before restarting.

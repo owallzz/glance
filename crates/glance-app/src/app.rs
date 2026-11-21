@@ -480,6 +480,10 @@ pub struct GlanceApp {
     pub go_live: Option<GoLive>,
     pub settings_open: bool,
     pub settings: Settings,
+    /// Settings → Voice: the running mic test, if any.
+    pub mic_test: Option<crate::voice::MicTest>,
+    /// Why the last mic test couldn't start or lost a device.
+    pub mic_test_error: Option<String>,
     pub book: glance_core::contacts::ContactBook,
     pub live: crate::contacts::Live,
     pub incoming_call: Option<crate::contacts::IncomingCall>,
@@ -658,6 +662,8 @@ impl GlanceApp {
             go_live: None,
             settings_open: false,
             settings,
+            mic_test: None,
+            mic_test_error: None,
             link_copied: false,
             link_copied_gen: 0,
             link_revealed: false,
@@ -1223,7 +1229,7 @@ impl Render for GlanceApp {
                 } else if this.immersive.is_some() {
                     this.exit_fullscreen(window, cx);
                 } else if this.settings_open {
-                    this.settings_open = false;
+                    this.close_settings();
                 } else {
                     this.go_live = None;
                 }
