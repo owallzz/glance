@@ -1,0 +1,65 @@
+# Flatpak manifest for glance.
+#   scripts/flatpak-cargo-sources.sh      # offline crate sources from Cargo.lock
+#   flatpak-builder --user --install-deps-from=flathub --force-clean --install \
+#     build-dir packaging/flatpak/io.github.owallzz.glance.yml
+#   flatpak run io.github.owallzz.glance
+# For Flathub, replace the `dir` source with a `git` source (url, tag, commit)
+# and commit cargo-sources.json next to the manifest in the Flathub repo.
+id: io.github.owallzz.glance
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  # libclang for bindgen (PipeWire, speexdsp bindings)
+  - org.freedesktop.Sdk.Extension.llvm20
+command: glance
+finish-args:
+  - --share=ipc
+  - --share=network
+  # Wayland first, X11 only where there's no Wayland.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Voice and stream audio: cpal talks to PipeWire directly (and lists the
+  # apps whose audio can be shared); PulseAudio is the fallback.
+  - --socket=pulseaudio
+  - --filesystem=xdg-run/pipewire-0
+  # Webcams, and the GPU for rendering and NVENC/VA-API video encoding.
+  - --device=all
+  # Received files go to Downloads.
+  - --filesystem=xdg-download
+  - --talk-name=org.freedesktop.Notifications
+  # Tray icon (StatusNotifierItem).
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # Idle detection for the automatic "Idle" status.
+  - --talk-name=org.gnome.Mutter.IdleMonitor
+  - --talk-name=org.freedesktop.ScreenSaver
+modules:
+  - name: glance
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm20/bin
+      env:
+        CARGO_HOME: /run/build/glance/cargo
+        CARGO_NET_OFFLINE: 'true'
+        LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
+    build-commands:
+      - cargo --offline build --release --locked -p glance-app
+      - install -Dm755 target/release/glance /app/bin/glance
+      - install -Dm644 packaging/linux/io.github.owallzz.glance.desktop /app/share/applications/io.github.owallzz.glance.desktop
+      - install -Dm644 packaging/linux/io.github.owallzz.glance.metainfo.xml /app/share/metainfo/io.github.owallzz.glance.metainfo.xml
+      - target/release/glance --export-icons icons
+      - |
+        for s in 16 32 48 64 128 256 512; do
+          install -Dm644 icons/icon_$s.png /app/share/icons/hicolor/${s}x${s}/apps/io.github.owallzz.glance.png
+        done
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - .git
+          - .claude
+          - packaging/flatpak/build-dir
+          - packaging/flatpak/.flatpak-builder
+      - cargo-sources.json
