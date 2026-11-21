@@ -5,6 +5,7 @@
 
 pub mod contacts;
 pub mod demo;
+pub mod dms;
 pub mod format;
 pub mod model;
 
