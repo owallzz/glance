@@ -13,6 +13,9 @@ use crate::net::Net;
 /// `stream`: share a test pattern of this size and frame rate.
 /// `tone`: speak a sine tone so others see/hear us talking.
 /// `file`: offer this file to the room after joining.
+/// `switch`: while streaming, change to this size and frame rate after this
+/// many seconds, without stopping (tests live stream settings).
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     link: &str,
     name: &str,
@@ -21,6 +24,7 @@ pub fn run(
     file: Option<std::path::PathBuf>,
     ring_back: bool,
     camera: bool,
+    switch: Option<((u32, u32, u32), u64)>,
 ) -> Result<()> {
     // A fresh identity each run, so a bot never collides with your app.
     let net = Net::start_ephemeral()?;
@@ -35,8 +39,9 @@ pub fn run(
         has_audio: true,
         source: "Test pattern".into(),
     });
+    let live = std::cell::RefCell::new(live);
     let initial = MemberState {
-        stream: live.clone(),
+        stream: live.borrow().clone(),
         camera,
         ..Default::default()
     };
@@ -233,7 +238,7 @@ pub fn run(
     let dl_dir = std::env::temp_dir().join(format!("glance-bot-{}", std::process::id()));
     let mut heard: Vec<[u8; 32]> = Vec::new();
     let names = std::cell::RefCell::new(std::collections::HashMap::new());
-    let mut muted = false;
+    let muted = std::cell::Cell::new(false);
     // Testing aid: GLANCE_AUTOWATCH=1 makes the bot watch every screen share
     // (frames are discarded; it reports stream audio it hears).
     // GLANCE_AUTOWATCH=decode also decodes them at 1080p tile size and
@@ -241,6 +246,14 @@ pub fn run(
     let autowatch = std::env::var_os("GLANCE_AUTOWATCH").is_some();
     let decode = std::env::var("GLANCE_AUTOWATCH").is_ok_and(|v| v == "decode");
     let tick = ticker(Duration::from_secs(if tone { 1 } else { 5 }));
+    // --switch: one quality/source change while live.
+    let (switch_tx, switch_rx) = flume::bounded(1);
+    if let (Some((spec, after)), Some(_)) = (switch, &broadcast) {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(after));
+            let _ = switch_tx.send(spec);
+        });
+    }
     loop {
         flume::Selector::new()
             .recv(&room.events, |ev| {
@@ -267,8 +280,21 @@ pub fn run(
                         let rx = feed.0.clone();
                         let target = glance_media::TargetSize::default();
                         target.set(1920, 1080);
+                        // The stream's own size, from the packets.
+                        let mut size = (0, 0);
                         let frames = glance_media::pipeline::spawn_decoder(
-                            move || rx.recv().ok().map(|p| p.data),
+                            move || {
+                                rx.recv().ok().map(|p| {
+                                    if (p.width, p.height) != size {
+                                        size = (p.width, p.height);
+                                        println!(
+                                            "stream is {}x{} (keyframe: {})",
+                                            p.width, p.height, p.keyframe
+                                        );
+                                    }
+                                    p.data
+                                })
+                            },
                             target,
                             || {},
                         );
@@ -407,6 +433,28 @@ pub fn run(
                     other => println!("contacts: {other:?}"),
                 }
             })
+            .recv(&switch_rx, |spec| {
+                let (Ok((w, h, fps)), Some(b)) = (spec, &broadcast) else {
+                    return;
+                };
+                // A new source of the new size, at the new frame rate: the
+                // encoder is remade and watchers get a keyframe, no rejoin.
+                b.reconfigure(None, fps);
+                b.replace_capture(
+                    glance_media::capture::test_pattern(w, h, fps),
+                    "Test pattern",
+                );
+                if let Some(s) = live.borrow_mut().as_mut() {
+                    (s.width, s.height, s.fps) = (w, h, fps);
+                }
+                println!("switched stream to {w}x{h}@{fps}");
+                room.send(Command::SetState(MemberState {
+                    muted: muted.get(),
+                    stream: live.borrow().clone(),
+                    camera,
+                    ..Default::default()
+                }));
+            })
             .recv(&tick, |_| {
                 let now = engine.speaking_peers();
                 if now != heard {
@@ -430,10 +478,10 @@ pub fn run(
                 if tone {
                     return;
                 }
-                muted = !muted;
+                muted.set(!muted.get());
                 room.send(Command::SetState(MemberState {
-                    muted,
-                    stream: live.clone(),
+                    muted: muted.get(),
+                    stream: live.borrow().clone(),
                     camera,
                     ..Default::default()
                 }));

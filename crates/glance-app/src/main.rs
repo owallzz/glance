@@ -48,7 +48,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("bot") {
         let Some(link) = args.get(1) else {
             eprintln!(
-                "usage: glance bot <link|new> [name] [--stream WxH@FPS] [--tone] [--file PATH] [--ring-back] [--camera]"
+                "usage: glance bot <link|new> [name] [--stream WxH@FPS] [--switch WxH@FPS] [--switch-after SECS] [--tone] [--file PATH] [--ring-back] [--camera]"
             );
             std::process::exit(2);
         };
@@ -57,15 +57,22 @@ fn main() {
             .filter(|a| !a.starts_with("--"))
             .map(String::as_str)
             .unwrap_or("Bot");
+        let spec = |spec: &String| -> Option<(u32, u32, u32)> {
+            let (size, fps) = spec.split_once('@')?;
+            let (w, h) = size.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?, fps.parse().ok()?))
+        };
+        let flag = |name: &str| args.iter().position(|a| a == name).map(|i| args.get(i + 1));
         // --stream [WxH@FPS], default 1280x720@30
-        let stream = args.iter().position(|a| a == "--stream").map(|i| {
-            args.get(i + 1)
-                .and_then(|spec| {
-                    let (size, fps) = spec.split_once('@')?;
-                    let (w, h) = size.split_once('x')?;
-                    Some((w.parse().ok()?, h.parse().ok()?, fps.parse().ok()?))
-                })
-                .unwrap_or((1280, 720, 30))
+        let stream = flag("--stream").map(|v| v.and_then(spec).unwrap_or((1280, 720, 30)));
+        // --switch WxH@FPS [--switch-after SECS (default 10)]: change the
+        // stream's size and frame rate while live.
+        let switch = flag("--switch").flatten().and_then(spec).map(|s| {
+            let after = flag("--switch-after")
+                .flatten()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10);
+            (s, after)
         });
         let tone = args.iter().any(|a| a == "--tone");
         let file = args
@@ -75,7 +82,7 @@ fn main() {
             .map(std::path::PathBuf::from);
         let ring_back = args.iter().any(|a| a == "--ring-back");
         let camera = args.iter().any(|a| a == "--camera");
-        if let Err(e) = bot::run(link, name, stream, tone, file, ring_back, camera) {
+        if let Err(e) = bot::run(link, name, stream, tone, file, ring_back, camera, switch) {
             eprintln!("glance bot: {e:#}");
             std::process::exit(1);
         }
