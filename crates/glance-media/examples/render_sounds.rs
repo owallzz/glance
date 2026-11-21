@@ -2,15 +2,27 @@
 //! (peak, loudness, DC, spectrum, loop seams).
 //!
 //! cargo run -p glance-media --example render_sounds -- [out_dir]
+//!
+//! `--play <output device>` instead plays both call tones through the real
+//! playback path (`Ringtone`) for a few seconds each. It refuses unless that
+//! exact device exists, so point it at a null sink (see AGENTS.md) rather
+//! than your speakers.
 
 use glance_media::audio::SAMPLE_RATE;
-use glance_media::audio::ringtone::{self, Tone};
+use glance_media::audio::ringtone::{self, Ringtone, Tone};
 use glance_media::audio::sounds;
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(ix) = args.iter().position(|a| a == "--play") {
+        let device = args
+            .get(ix + 1)
+            .ok_or_else(|| anyhow::anyhow!("--play needs a device name"))?;
+        return play(device);
+    }
     let dir = std::path::PathBuf::from(
-        std::env::args()
-            .nth(1)
+        args.first()
+            .cloned()
             .unwrap_or_else(|| "glance-sounds".into()),
     );
     std::fs::create_dir_all(&dir)?;
@@ -23,7 +35,7 @@ fn main() -> anyhow::Result<()> {
         // First ring plus three loops, as you'd hear it.
         let n = r.first.len() + 3 * r.looped.len();
         let x: Vec<f32> = (0..n).map(|i| r.sample(i)).collect();
-        report(&format!("{name}"), &x);
+        report(name, &x);
         report(&format!("{name} (loop)"), &r.looped);
         write_wav(&dir.join(format!("{name}.wav")), &x)?;
         let l = r.looped.len();
@@ -43,6 +55,26 @@ fn main() -> anyhow::Result<()> {
         write_wav(&dir.join(format!("{name}.wav")), &x)?;
     }
     println!("wrote {}", dir.display());
+    Ok(())
+}
+
+fn play(device: &str) -> anyhow::Result<()> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    let host = cpal::default_host();
+    let exists = host.output_devices()?.any(|d| {
+        d.description()
+            .map(|desc| desc.name() == device)
+            .unwrap_or(false)
+    });
+    anyhow::ensure!(exists, "no output device named {device:?}; not playing");
+    for tone in [Tone::Incoming, Tone::Outgoing] {
+        println!("playing {tone:?} on {device} for 4 s");
+        let ring = Ringtone::start_tone(tone, Some(device.to_string()))?;
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        drop(ring);
+        // Let the fade-out and drain finish.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
     Ok(())
 }
 
@@ -96,10 +128,10 @@ fn spectrum(x: &[f32]) -> (f32, f32, f32) {
     while start < x.len() {
         let mut re = [0.0f64; N];
         let mut im = [0.0f64; N];
-        for i in 0..N {
+        for (i, r) in re.iter_mut().enumerate() {
             let s = x.get(start + i).copied().unwrap_or(0.0) as f64;
             let w = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / N as f64).cos();
-            re[i] = s * w;
+            *r = s * w;
         }
         fft(&mut re, &mut im);
         for k in 1..N / 2 {
