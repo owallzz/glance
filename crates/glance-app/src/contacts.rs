@@ -27,17 +27,30 @@ pub struct IncomingCall {
     pub _ringtone: Option<glance_media::audio::ringtone::Ringtone>,
 }
 
+/// A call we're ringing out, not answered yet.
+pub struct OutgoingRing {
+    pub peer: PeerId,
+    pub since: Instant,
+}
+
 /// Contact state that isn't persisted: who's online and their status.
 #[derive(Default)]
 pub struct Live {
     pub presence: HashMap<PeerId, PresenceInfo>,
     pub online: HashSet<PeerId>,
-    /// Calls we're ringing out: call id -> who.
-    pub ringing_out: HashMap<u64, Vec<PeerId>>,
+    /// Calls we're ringing out (the caller hears the ringback meanwhile).
+    pub ringing_out: HashMap<u64, OutgoingRing>,
     /// Ring these contacts once the room we're creating is ready.
     pub ring_when_ready: Vec<PeerId>,
     /// What we last told contacts (to skip duplicate updates).
     pub last_presence: Option<Option<PresenceInfo>>,
+}
+
+/// The ringback plays while a ring we sent is unanswered and we're still
+/// alone in the room: once anyone is here (someone answered, or we rang
+/// from a call already going) it would only talk over the conversation.
+pub fn ringback_wanted(pending_rings: usize, participants: usize) -> bool {
+    pending_rings > 0 && participants <= 1
 }
 
 fn eid(p: PeerId) -> Option<EndpointId> {
@@ -333,6 +346,12 @@ impl GlanceApp {
         let Some(room) = self.room.as_ref() else {
             return;
         };
+        // Already ringing them (Ring clicked twice, or from Home and the
+        // Invite overlay): their side ignores a second ring while the first
+        // is up, so it would never be answered.
+        if self.live.ringing_out.values().any(|r| r.peer == peer) {
+            return;
+        }
         let call_id: u64 = rand::random();
         let members = room
             .participants
@@ -345,12 +364,52 @@ impl GlanceApp {
             link: room.link.clone(),
             members,
         });
-        self.live.ringing_out.insert(call_id, vec![peer]);
+        self.live.ringing_out.insert(
+            call_id,
+            OutgoingRing {
+                peer,
+                since: Instant::now(),
+            },
+        );
+        self.sync_ringback();
         let name = self
             .profile_of(peer)
             .map(|p| p.name)
             .unwrap_or_else(|| "them".into());
         self.system_message(format!("Calling {name}…"));
+    }
+
+    /// Play the ringback while a ring we sent is unanswered and nobody else
+    /// is in the room (see [`ringback_wanted`]).
+    pub fn sync_ringback(&self) {
+        if let Some(room) = self.room.as_ref()
+            && let Some(engine) = room.audio.as_ref()
+        {
+            engine.set_ringback(ringback_wanted(
+                self.live.ringing_out.len(),
+                room.participants.len(),
+            ));
+        }
+    }
+
+    /// Stop ringing `peer` (they joined, or can't be reached).
+    pub fn stop_ringing(&mut self, peer: PeerId) {
+        let before = self.live.ringing_out.len();
+        self.live.ringing_out.retain(|_, r| r.peer != peer);
+        if self.live.ringing_out.len() != before {
+            self.sync_ringback();
+        }
+    }
+
+    /// Hang up every unanswered ring (we're leaving the room).
+    pub fn cancel_rings(&mut self) {
+        for (call_id, ring) in std::mem::take(&mut self.live.ringing_out) {
+            if let Some(to) = eid(ring.peer) {
+                self.contacts_cmd(ContactCommand::CancelRing { to, call_id });
+            }
+        }
+        self.live.ring_when_ready.clear();
+        self.sync_ringback();
     }
 
     /// Join button on a contact who lets contacts join their call.
@@ -381,6 +440,26 @@ impl GlanceApp {
     }
 
     fn expire_ring(&mut self, cx: &mut Context<Self>) {
+        let expired: Vec<u64> = self
+            .live
+            .ringing_out
+            .iter()
+            .filter(|(_, r)| r.since.elapsed() > RING_TIMEOUT)
+            .map(|(id, _)| *id)
+            .collect();
+        for call_id in expired {
+            let ring = self.live.ringing_out.remove(&call_id).expect("listed");
+            if let Some(to) = eid(ring.peer) {
+                self.contacts_cmd(ContactCommand::CancelRing { to, call_id });
+            }
+            let name = self
+                .profile_of(ring.peer)
+                .map(|p| p.name)
+                .unwrap_or_else(|| "They".into());
+            self.system_message(format!("{name} didn't answer."));
+            self.sync_ringback();
+            cx.notify();
+        }
         if self
             .incoming_call
             .as_ref()
@@ -512,6 +591,9 @@ impl GlanceApp {
                 accepted,
             } => {
                 self.live.ringing_out.remove(&call_id);
+                // Any other ring to the same peer is answered by this too.
+                self.stop_ringing(peer_id(from));
+                self.sync_ringback();
                 if !accepted {
                     let name = self
                         .profile_of(peer_id(from))
@@ -540,6 +622,9 @@ impl GlanceApp {
             },
             ContactEvent::FileReceived { from, file } => self.on_contact_file(from, file),
             ContactEvent::Undeliverable { to, what } => {
+                if what == "call" {
+                    self.stop_ringing(peer_id(to));
+                }
                 let name = self
                     .profile_of(peer_id(to))
                     .map(|p| p.name)
@@ -599,4 +684,18 @@ pub fn notify(summary: &str, body: &str) {
             .body(&body)
             .show();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ringback_wanted;
+
+    #[test]
+    fn ringback_only_while_alone_and_ringing() {
+        assert!(ringback_wanted(1, 1), "ringing, alone");
+        assert!(ringback_wanted(2, 0), "ringing, room still opening");
+        assert!(!ringback_wanted(0, 1), "nobody to ring");
+        assert!(!ringback_wanted(1, 2), "someone answered and joined");
+        assert!(!ringback_wanted(1, 4), "ringing from a call already going");
+    }
 }

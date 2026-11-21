@@ -61,6 +61,8 @@ struct Shared {
     output_gain: AtomicU32,
     /// UI sounds waiting to be mixed in (played even when deafened).
     effects: Mutex<std::collections::VecDeque<f32>>,
+    /// Loop the outgoing ringback (we're calling someone).
+    ringback: AtomicBool,
 }
 
 pub struct AudioEngine {
@@ -76,6 +78,8 @@ impl AudioEngine {
         config: EngineConfig,
         outgoing: impl FnMut(EncodedAudio) + Send + 'static,
     ) -> Result<Self> {
+        // Render the chimes and ringback off the real-time and UI threads.
+        super::sounds::prewarm();
         let shared = Arc::new(Shared {
             input_gain: AtomicU32::new(1.0f32.to_bits()),
             output_gain: AtomicU32::new(1.0f32.to_bits()),
@@ -109,7 +113,11 @@ impl AudioEngine {
 
     /// Play a UI sound through the speakers (mixed with voices).
     pub fn play(&self, sound: super::sounds::Sound) {
-        let samples = super::sounds::samples(sound);
+        // Not rendered yet (the engine just started): skip the chime rather
+        // than render it on the caller's (UI) thread.
+        let Some(samples) = super::sounds::ready(sound) else {
+            return;
+        };
         let mut q = self.shared.effects.lock().unwrap();
         // Overlap with anything still playing rather than queueing behind it.
         for (i, s) in samples.into_iter().enumerate() {
@@ -118,6 +126,12 @@ impl AudioEngine {
                 None => q.push_back(s),
             }
         }
+    }
+
+    /// Loop the outgoing ringback tone (mixed like UI sounds, so the echo
+    /// canceller keeps it out of the mic) until turned off.
+    pub fn set_ringback(&self, on: bool) {
+        self.shared.ringback.store(on, Ordering::Relaxed);
     }
 
     pub fn set_deafened(&self, deafened: bool) {
@@ -256,6 +270,7 @@ fn run(
     let mut decoded = vec![0.0f32; FRAME];
     let mut seq: u32 = 0;
     let mut tone_t: usize = 0;
+    let mut ringback = Ringback::default();
     let frame_dur = Duration::from_millis(20);
     let mut next_tick = Instant::now();
 
@@ -380,6 +395,7 @@ fn run(
                 }
             }
         }
+        ringback.mix(shared.ringback.load(Ordering::Relaxed), &mut mix);
         // (Sounds are in the echo canceller's reference, so the mic doesn't
         // send them back.)
         far_end.copy_from_slice(&mix);
@@ -405,9 +421,86 @@ fn run(
     }
 }
 
+/// The ringback loop's playback position. It starts from the top when
+/// turned on and fades in/out over 20 ms (no click, even when toggled
+/// mid-note).
+#[derive(Default)]
+struct Ringback {
+    pos: usize,
+    gain: f32,
+}
+
+impl Ringback {
+    fn mix(&mut self, on: bool, out: &mut [f32]) {
+        // Rendered by `sounds::prewarm`; never render on the audio thread.
+        let Some(tone) = super::ringtone::ready(super::ringtone::Tone::Outgoing) else {
+            return;
+        };
+        if self.gain == 0.0 {
+            if !on {
+                return;
+            }
+            self.pos = 0;
+        }
+        let step = 1.0 / FRAME as f32;
+        for m in out.iter_mut() {
+            self.gain = if on {
+                (self.gain + step).min(1.0)
+            } else {
+                (self.gain - step).max(0.0)
+            };
+            let s = tone.sample(self.pos);
+            *m = (*m + s * self.gain).clamp(-1.0, 1.0);
+            self.pos += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ringback_starts_from_the_top_and_fades_out() {
+        // The engine prewarms this; the mixer itself never renders.
+        super::super::ringtone::rendered(super::super::ringtone::Tone::Outgoing);
+        let mut rb = Ringback::default();
+        let mut out = vec![0.0f32; FRAME];
+        rb.mix(false, &mut out);
+        assert!(out.iter().all(|&s| s == 0.0), "silent while off");
+        let mut heard = Vec::new();
+        for _ in 0..10 {
+            out.fill(0.0);
+            rb.mix(true, &mut out);
+            heard.extend_from_slice(&out);
+        }
+        let tone = super::super::ringtone::Tone::Outgoing;
+        // Full level after the 20 ms fade-in, in step with the tone.
+        assert_eq!(
+            heard[FRAME + 123],
+            super::super::ringtone::sample(tone, FRAME + 123)
+        );
+        assert!(heard.iter().any(|s| s.abs() > 0.05), "audible");
+        // Off mid-note: one frame of fade, then silence, no jumps.
+        let last = *heard.last().unwrap();
+        out.fill(0.0);
+        rb.mix(false, &mut out);
+        let mut prev = last;
+        for &s in &out {
+            assert!((s - prev).abs() < 0.05, "click: {prev} -> {s}");
+            prev = s;
+        }
+        assert!(out[FRAME - 1].abs() < 1e-3);
+        out.fill(0.0);
+        rb.mix(false, &mut out);
+        assert!(out.iter().all(|&s| s == 0.0), "silent after the fade");
+        // On again: from the top.
+        out.fill(0.0);
+        rb.mix(true, &mut out);
+        out.fill(0.0);
+        rb.mix(true, &mut out);
+        assert_eq!(out[10], super::super::ringtone::sample(tone, FRAME + 10));
+    }
 
     /// Two engines with synthetic I/O talk to each other through channels.
     #[test]

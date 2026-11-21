@@ -196,6 +196,22 @@ impl GlanceApp {
     }
 
     fn on_room_event(&mut self, ev: RoomEvent, cx: &mut Context<Self>) {
+        // Someone we're ringing joined (maybe from the link): stop ringing.
+        if let RoomEvent::MemberJoined { id, .. } = &ev {
+            self.stop_ringing(peer_id(*id));
+        }
+        let membership = matches!(
+            ev,
+            RoomEvent::MemberJoined { .. } | RoomEvent::MemberLeft { .. }
+        );
+        self.apply_room_event(ev, cx);
+        // The ringback plays only while we're alone in the room.
+        if membership {
+            self.sync_ringback();
+        }
+    }
+
+    fn apply_room_event(&mut self, ev: RoomEvent, cx: &mut Context<Self>) {
         let sounds = self.settings.sounds;
         let Some(room) = self.room.as_mut() else {
             return;

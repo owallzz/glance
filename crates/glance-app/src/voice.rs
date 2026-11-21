@@ -87,6 +87,7 @@ impl GlanceApp {
         }
         let problems = engine.problems.clone();
         room.audio = Some(engine);
+        self.sync_ringback();
 
         // Poll speaking state (and device problems) ~10x a second; only
         // re-render when something changed.

@@ -12,6 +12,7 @@ pub mod jitter;
 pub mod resample;
 pub mod ringtone;
 pub mod sounds;
+pub mod synth;
 
 pub use engine::{AudioEngine, EngineConfig, InputKind, OutputKind, PeerKey};
 
