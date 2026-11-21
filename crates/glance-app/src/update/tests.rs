@@ -176,7 +176,7 @@ fn downloads_verifies_stages_and_replaces_a_binary() {
 
     // Restart: the dummy binary is replaced and stays executable.
     assert_eq!(
-        apply::apply(&staged).unwrap(),
+        apply::apply(&staged, true).unwrap(),
         apply::Next::Launch(target.clone())
     );
     assert_eq!(std::fs::read(&target).unwrap(), new_build);
@@ -444,7 +444,7 @@ fn replaces_an_app_bundle() {
         kind: InstallKind::MacApp(bundle.clone()),
     };
     assert_eq!(
-        apply::apply(&staged).unwrap(),
+        apply::apply(&staged, true).unwrap(),
         apply::Next::Launch(bundle.join("Contents/MacOS/glance"))
     );
     assert_eq!(

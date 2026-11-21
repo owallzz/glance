@@ -7,8 +7,9 @@
 //!   `tar` (keeps symlinks, modes and the code signature), then swap the
 //!   bundles by renaming. Files downloaded by our own HTTP client get no
 //!   quarantine attribute, so Gatekeeper doesn't stop the relaunch.
-//! - Windows installed: run the new setup.exe silently; its `[Run]` entry
-//!   (`Check: WizardSilent`) starts glance again once it's done.
+//! - Windows installed: run the new setup.exe silently. With `/LAUNCH=1` its
+//!   `[Run]` entry (`Check: LaunchAfterSilentInstall`) starts glance again
+//!   once it's done; without it the installer only updates.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,13 +23,26 @@ use super::{InstallKind, Staged};
 /// before taking over the single-instance hand-off.
 pub const AFTER_UPDATE: &str = "--after-update";
 
-/// Arguments for the silent Inno Setup upgrade.
-pub const SETUP_ARGS: [&str; 4] = [
+/// Tells the installer to start glance again after a silent upgrade
+/// (`LaunchAfterSilentInstall` in `packaging/windows/glance.iss`).
+pub const SETUP_LAUNCH: &str = "/LAUNCH=1";
+
+/// Arguments for the silent Inno Setup upgrade that relaunches glance.
+pub const SETUP_ARGS: [&str; 5] = [
     "/VERYSILENT",
     "/SUPPRESSMSGBOXES",
     "/NORESTART",
     "/CLOSEAPPLICATIONS",
+    SETUP_LAUNCH,
 ];
+
+/// The installer's arguments, with or without the relaunch.
+pub fn setup_args(relaunch: bool) -> Vec<&'static str> {
+    SETUP_ARGS
+        .into_iter()
+        .filter(|a| relaunch || *a != SETUP_LAUNCH)
+        .collect()
+}
 
 /// Can we create files next to `target` (needed to replace it)?
 pub fn check_writable(target: &Path) -> io::Result<()> {
@@ -47,12 +61,14 @@ pub fn check_writable(target: &Path) -> io::Result<()> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Next {
     Launch(PathBuf),
-    /// The installer starts glance itself when it's done.
+    /// The installer finishes the update on its own (and starts glance
+    /// again if `apply` was asked to relaunch).
     InstallerRelaunches,
 }
 
-/// Put the staged update in place. Nothing is relaunched yet.
-pub fn apply(staged: &Staged) -> Result<Next> {
+/// Put the staged update in place. Nothing is relaunched yet, except by
+/// the Windows installer, which starts glance afterwards when `relaunch`.
+pub fn apply(staged: &Staged, relaunch: bool) -> Result<Next> {
     let next = match &staged.kind {
         InstallKind::Binary(p) | InstallKind::WindowsPortable(p) | InstallKind::AppImage(p) => {
             replace_file(&staged.path, p)?;
@@ -63,7 +79,8 @@ pub fn apply(staged: &Staged) -> Result<Next> {
             Next::Launch(bundle.join("Contents").join("MacOS").join("glance"))
         }
         InstallKind::WindowsInstalled(_) => {
-            spawn_detached(&staged.path, &SETUP_ARGS).context("couldn't start the installer")?;
+            spawn_detached(&staged.path, &setup_args(relaunch))
+                .context("couldn't start the installer")?;
             // setup.exe runs from the staging dir; it's cleaned on next start.
             return Ok(Next::InstallerRelaunches);
         }
@@ -214,5 +231,21 @@ pub fn cleanup(kind: &InstallKind, stage_dir: &Path, current: &semver::Version) 
         if stale {
             let _ = std::fs::remove_file(e.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::{SETUP_ARGS, SETUP_LAUNCH, setup_args};
+
+    #[test]
+    fn silent_upgrade_asks_the_installer_to_relaunch() {
+        assert!(SETUP_ARGS.contains(&"/LAUNCH=1"));
+        assert!(setup_args(true).contains(&SETUP_LAUNCH));
+        assert!(!setup_args(false).contains(&SETUP_LAUNCH));
+        assert!(setup_args(false).contains(&"/VERYSILENT"));
+        // The installer only relaunches when it reads that parameter.
+        let iss = include_str!("../../../../packaging/windows/glance.iss");
+        assert!(iss.contains("param:LAUNCH"));
     }
 }

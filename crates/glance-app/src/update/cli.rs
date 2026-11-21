@@ -2,7 +2,9 @@
 //! terminal (headless setups, and testing the updater end to end).
 //! Without `--apply` it only checks and downloads; `--apply` installs the
 //! staged update; `--restart` then starts the new version with
-//! `--after-update --version` (it prints its version and exits).
+//! `--after-update --version` (it prints its version and exits). The
+//! Windows installer instead starts glance itself, and only with
+//! `--restart`.
 
 use super::{Config, Status, apply};
 
@@ -64,7 +66,7 @@ pub fn run(args: &[String]) -> i32 {
     if !apply_it {
         return 0;
     }
-    match apply::apply(&staged) {
+    match apply::apply(&staged, restart) {
         Ok(apply::Next::Launch(exe)) => {
             println!("updated to v{}", staged.version);
             if restart && let Err(e) = apply::relaunch(&exe, &[apply::AFTER_UPDATE, "--version"]) {
@@ -74,7 +76,14 @@ pub fn run(args: &[String]) -> i32 {
             0
         }
         Ok(apply::Next::InstallerRelaunches) => {
-            println!("the installer is updating glance to v{}", staged.version);
+            if restart {
+                println!(
+                    "the installer is updating glance to v{} and will start it again",
+                    staged.version
+                );
+            } else {
+                println!("the installer is updating glance to v{}", staged.version);
+            }
             0
         }
         Err(e) => {
