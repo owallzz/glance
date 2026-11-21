@@ -919,6 +919,19 @@ impl GlanceApp {
                     cx.notify();
                 })),
             )
+            // While live: change quality, sound or source without stopping.
+            .when(live, |d| {
+                d.child(
+                    ctrl(
+                        "ctrl-stream-settings",
+                        IconName::SlidersHorizontal,
+                        "Stream settings",
+                        false,
+                        false,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.open_stream_settings(cx))),
+                )
+            })
             .child(
                 ctrl(
                     "ctrl-mute",

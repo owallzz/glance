@@ -89,6 +89,20 @@ pub struct GoLive {
     pub audio_sources: Vec<glance_media::stream_audio::AudioSource>,
     /// Chosen audio source; `None` shares no audio.
     pub audio: Option<glance_media::stream_audio::AudioSource>,
+    /// Changing a running stream ("Apply") instead of starting one.
+    pub editing: bool,
+}
+
+/// What our running screen share uses, so "Stream settings" can show it
+/// and change only what differs.
+#[derive(Clone, Debug)]
+pub struct LiveSettings {
+    pub selection: glance_media::capture::Selection,
+    /// A source we asked to switch to that hasn't sent a frame yet.
+    pub pending_selection: Option<glance_media::capture::Selection>,
+    pub resolution: Resolution,
+    pub fps: u32,
+    pub audio: Option<glance_media::stream_audio::AudioSource>,
 }
 
 /// User settings, saved as settings.json in the data dir.
@@ -328,6 +342,8 @@ pub struct Room {
     pub _broadcast_task: Option<Task<()>>,
     /// Audio shared with our screen, if any.
     pub stream_audio: Option<glance_media::stream_audio::StreamAudio>,
+    /// Settings of our running screen share.
+    pub live_settings: Option<LiveSettings>,
     /// Voice engine (None in the demo room or if audio failed).
     pub audio: Option<glance_media::audio::AudioEngine>,
     pub _voice_task: Option<Task<()>>,
@@ -655,6 +671,7 @@ impl GlanceApp {
             broadcast: None,
             _broadcast_task: None,
             stream_audio: None,
+            live_settings: None,
             audio: None,
             _voice_task: None,
             volume_open: None,
