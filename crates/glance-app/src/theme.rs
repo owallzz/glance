@@ -59,8 +59,10 @@ pub struct Palette {
     pub bg_rail: Hsla,
     /// Channel/contacts sidebar.
     pub bg_sidebar: Hsla,
-    /// User panel at the bottom of the sidebar.
+    /// Floating user panel over the bottom of the rail and sidebar.
     pub bg_user_panel: Hsla,
+    /// Outline of the floating user panel and its separators.
+    pub panel_border: Hsla,
     /// Main content area.
     pub bg_content: Hsla,
     /// Video stage behind tiles.
@@ -103,6 +105,7 @@ impl Palette {
             bg_rail: rgb(0x1e1f22).into(),
             bg_sidebar: rgb(0x2b2d31).into(),
             bg_user_panel: rgb(0x232428).into(),
+            panel_border: rgb(0x393b41).into(),
             bg_content: rgb(0x313338).into(),
             bg_stage: rgb(0x000000).into(),
             bg_hover: rgb(0x35373c).into(),
@@ -132,6 +135,7 @@ impl Palette {
             bg_rail: rgb(0xe3e5e8).into(),
             bg_sidebar: rgb(0xf2f3f5).into(),
             bg_user_panel: rgb(0xebedef).into(),
+            panel_border: rgb(0xd4d7dc).into(),
             bg_content: rgb(0xffffff).into(),
             bg_stage: rgb(0x000000).into(),
             bg_hover: rgb(0xe0e1e5).into(),

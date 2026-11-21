@@ -1073,8 +1073,104 @@ impl GlanceApp {
         )
     }
 
-    /// Bottom-left panel: your avatar, status, mute/deafen/settings.
-    pub fn render_user_panel(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Height the floating panel takes at the bottom of the rail and the
+    /// sidebar, with its margins: sidebars keep this much free at the bottom
+    /// so their last rows can scroll out from under it.
+    pub fn floating_panel_reserve(&self) -> f32 {
+        let voice = if self.room.is_some() {
+            VOICE_PANEL_HEIGHT
+        } else {
+            0.
+        };
+        COMPOSER_HEIGHT + voice + 2. * PANEL_MARGIN
+    }
+
+    /// Discord-style card floating over the bottom of the rail and the
+    /// sidebar: "Voice Connected" while in a room, then your own row. Its
+    /// bottom edge lines up with the message box's, and its own row is as
+    /// tall as a one-line message box.
+    fn render_floating_panel(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let voice = self.room.as_ref().map(|room| {
+            let elapsed = glance_core::format::duration(room.started.elapsed().as_secs());
+            let in_room = self.screen == Screen::Room;
+            let hover = p.bg_hover;
+            div()
+                .h(px(VOICE_PANEL_HEIGHT))
+                .flex_shrink_0()
+                .px_2()
+                .flex()
+                .items_center()
+                .gap_2()
+                .border_b_1()
+                .border_color(p.panel_border)
+                .child(
+                    div()
+                        .id("voice-connected")
+                        .flex_1()
+                        .min_w_0()
+                        .px_1()
+                        .rounded(px(4.))
+                        .flex()
+                        .flex_col()
+                        .when(!in_room, |d| {
+                            d.cursor_pointer()
+                                .hover(move |s| s.bg(hover))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.screen = Screen::Room;
+                                    cx.notify();
+                                }))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.green)
+                                .child(icon(IconName::Signal, 16., p.green))
+                                .child("Voice Connected"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.text_muted)
+                                .truncate()
+                                .child(format!("{} · {elapsed}", room.name)),
+                        ),
+                )
+                .child(
+                    icon_button(
+                        "disconnect",
+                        IconName::PhoneOff,
+                        "Disconnect",
+                        p.interactive,
+                        p,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.leave_room(cx))),
+                )
+        });
+        div()
+            .id("floating-panel")
+            .occlude()
+            .absolute()
+            .left(px(PANEL_MARGIN))
+            .bottom(px(PANEL_MARGIN))
+            .w(px(crate::room::LEFT_PANELS_WIDTH - 2. * PANEL_MARGIN))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .rounded(px(8.))
+            .bg(p.bg_user_panel)
+            .border_1()
+            .border_color(p.panel_border)
+            .shadow_md()
+            .children(voice)
+            .child(self.render_user_panel(p, cx))
+    }
+
+    /// Your avatar, status, mute/deafen/settings (the floating panel's row).
+    fn render_user_panel(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let mic_icon = if self.voice.muted {
             IconName::MicOff
         } else {
@@ -1096,12 +1192,13 @@ impl GlanceApp {
             p.interactive
         };
         div()
-            .h(px(52.))
+            // The card's 1 px border makes up the rest of the message box height.
+            .h(px(COMPOSER_HEIGHT - 2.))
+            .flex_shrink_0()
             .px_2()
             .flex()
             .items_center()
             .gap_2()
-            .bg(p.bg_user_panel)
             .child(
                 div()
                     .id("my-avatar")
@@ -1270,9 +1367,12 @@ impl Render for GlanceApp {
             .flex_1()
             .min_h_0()
             .flex()
-            .bg(p.bg_content)
+            .bg(p.bg_rail)
+            .rounded_bl(self.corners.bottom_left)
+            .rounded_br(self.corners.bottom_right)
             .child(self.render_rail(&p, cx))
-            .child(main);
+            .child(main)
+            .child(self.render_floating_panel(&p, cx));
         if self.go_live.is_some() {
             content = content.child(self.render_go_live(&p, cx));
         }

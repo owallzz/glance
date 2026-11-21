@@ -11,7 +11,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::GlanceApp;
+use crate::app::{COMPOSER_HEIGHT, GlanceApp, PANEL_MARGIN};
+use crate::home::SIDEBAR_RADIUS;
 use crate::theme::Palette;
 use crate::ui::{Avatar, icon, icon_button, live_badge, section_label};
 
@@ -300,14 +301,15 @@ impl GlanceApp {
         let name = room.name.clone();
         let link = room.link.clone();
         let people = room.participants.clone();
-        let elapsed = format::duration(room.started.elapsed().as_secs());
         let copied = self.link_copied;
+        let reserve = self.floating_panel_reserve();
         div()
             .w(px(240.))
             .h_full()
             .flex()
             .flex_col()
             .bg(p.bg_sidebar)
+            .rounded_tl(px(SIDEBAR_RADIUS))
             .child(
                 div()
                     .h(px(48.))
@@ -366,52 +368,8 @@ impl GlanceApp {
             )
             // Invite link card
             .child(self.render_invite_card(p, link, copied, cx))
-            // Voice connected panel
-            .child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(p.bg_rail)
-                    .bg(p.bg_user_panel)
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.green)
-                                    .child(icon(IconName::Signal, 16., p.green))
-                                    .child("Voice Connected"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(p.text_muted)
-                                    .child(format!("Direct · {elapsed}")),
-                            ),
-                    )
-                    .child(
-                        icon_button(
-                            "disconnect",
-                            IconName::PhoneOff,
-                            "Disconnect",
-                            p.interactive,
-                            p,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.leave_room(cx))),
-                    ),
-            )
-            .child(self.render_user_panel(p, cx))
+            // Room for the floating panel (voice + your own row).
+            .child(div().h(px(reserve)).flex_shrink_0())
     }
 
     fn person_row(
@@ -1204,8 +1162,9 @@ impl GlanceApp {
                     ),
             )
             .child(
-                div().p_4().child(
+                div().px_4().pt_2().pb(px(PANEL_MARGIN)).child(
                     div()
+                        .h(px(COMPOSER_HEIGHT))
                         .rounded(px(8.))
                         .bg(p.bg_hover)
                         .flex()

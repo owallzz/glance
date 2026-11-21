@@ -18,7 +18,7 @@ use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{GlanceApp, Screen, now_ms};
+use crate::app::{COMPOSER_HEIGHT, GlanceApp, PANEL_MARGIN, Screen, now_ms};
 use crate::theme::Palette;
 use crate::ui::{Avatar, icon, icon_button, presence_color};
 
@@ -669,7 +669,7 @@ impl GlanceApp {
 
         let composer = div()
             .px_4()
-            .pb_4()
+            .pb(px(PANEL_MARGIN))
             .flex()
             .flex_col()
             .gap_1()
@@ -680,17 +680,16 @@ impl GlanceApp {
                     .bg(p.bg_hover)
                     .flex()
                     // The + sits level with a one-line message and stays by
-                    // the last line as the message grows.
+                    // the last line as the message grows (upwards: the box
+                    // keeps its bottom edge level with the floating panel's).
                     .items_end()
                     .gap_2()
                     .px_2()
-                    .py(px(6.))
                     .when(online && mutual, |d| {
-                        // As tall as the one-line message box (its 40 px plus
-                        // the 6 px padding above and below), so the + is
+                        // As tall as the one-line message box, so the + is
                         // centred on that line.
                         d.child(
-                            div().h(px(52.)).flex().items_center().child(
+                            div().h(px(COMPOSER_HEIGHT)).flex().items_center().child(
                                 icon_button(
                                     "dm-attach",
                                     IconName::CirclePlus,
@@ -708,7 +707,8 @@ impl GlanceApp {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .py(px(6.))
+                            // A one-line textarea is 40 px tall.
+                            .py(px((COMPOSER_HEIGHT - 40.) / 2.))
                             .child(Textarea::new(&self.dm_input)),
                     ),
             );
@@ -719,7 +719,6 @@ impl GlanceApp {
             .h_full()
             .flex()
             .flex_col()
-            .bg(p.bg_content)
             .child(header)
             .child(list)
             .when(mutual, |d| d.child(composer))

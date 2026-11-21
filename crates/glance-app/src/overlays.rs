@@ -1245,8 +1245,9 @@ impl GlanceApp {
                     .id("presence-menu")
                     .occlude()
                     .absolute()
-                    .left(px(80.))
-                    .bottom(px(60.))
+                    // Just above the floating panel, by your avatar.
+                    .left(px(crate::app::PANEL_MARGIN))
+                    .bottom(px(self.floating_panel_reserve()))
                     .w(px(240.))
                     .p_2()
                     .rounded(px(8.))

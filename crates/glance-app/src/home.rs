@@ -14,6 +14,9 @@ use crate::dms::unread_badge;
 use crate::theme::Palette;
 use crate::ui::{Avatar, icon, icon_button, presence_color, section_label};
 
+/// Top-left corner of the home and room sidebars.
+pub const SIDEBAR_RADIUS: f32 = 8.;
+
 impl GlanceApp {
     pub fn render_home(
         &mut self,
@@ -41,7 +44,17 @@ impl GlanceApp {
             .h_full()
             .flex()
             .child(self.render_home_sidebar(p, cx))
-            .child(page)
+            .child(
+                // The page owns the window's bottom-right corner.
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .bg(p.bg_content)
+                    .rounded_br(self.corners.bottom_right)
+                    .child(page),
+            )
     }
 
     fn render_home_sidebar(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -58,12 +71,15 @@ impl GlanceApp {
         // stands in while the conversation has no row there yet (no messages).
         let open_in_dms = open.is_some_and(|o| conversations.iter().any(|(pr, _, _)| pr.id == o));
         let contact_selected = move |pid| open == Some(pid) && !open_in_dms;
+        let reserve = self.floating_panel_reserve();
         div()
             .w(px(240.))
             .h_full()
             .flex()
             .flex_col()
             .bg(p.bg_sidebar)
+            // Rounded where it meets the rail and the title bar, like Discord.
+            .rounded_tl(px(SIDEBAR_RADIUS))
             .child(
                 div()
                     .h(px(48.))
@@ -92,6 +108,8 @@ impl GlanceApp {
                     .flex_1()
                     .overflow_y_scroll()
                     .p_2()
+                    // The last rows scroll out from under the floating panel.
+                    .pb(px(reserve))
                     .flex()
                     .flex_col()
                     .gap(px(2.))
@@ -214,7 +232,6 @@ impl GlanceApp {
                             .when(unread > 0, |d| d.child(unread_badge(p, unread)))
                     })),
             )
-            .child(self.render_user_panel(p, cx))
     }
 
     fn render_contacts_page(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
