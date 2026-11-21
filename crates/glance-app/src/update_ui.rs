@@ -41,10 +41,7 @@ impl GlanceApp {
         let cleanup = cfg.clone();
         std::thread::Builder::new()
             .name("update-cleanup".into())
-            .spawn(move || {
-                let exe = std::env::current_exe().ok();
-                apply::cleanup(exe.as_deref(), &cleanup.stage_dir, &cleanup.current);
-            })
+            .spawn(move || apply::cleanup(&cleanup.kind, &cleanup.stage_dir, &cleanup.current))
             .ok();
         self.update.status = cfg
             .unavailable
@@ -82,7 +79,8 @@ impl GlanceApp {
         }));
     }
 
-    /// Check (and download) now. The task resolves to false on errors.
+    /// Check (and download) now. The task resolves to false on errors and
+    /// on releases still being published (the timer then retries soon).
     /// `None` when a check is already running or updates are unavailable.
     pub fn check_for_updates(&mut self, cx: &mut Context<Self>) -> Option<Task<bool>> {
         let net = self.net.clone()?;
@@ -104,7 +102,7 @@ impl GlanceApp {
         });
         Some(cx.spawn(async move |this, cx| {
             while let Ok((done, status)) = rx.recv_async().await {
-                let ok = !matches!(status, Status::Error(_));
+                let ok = !status.retry_soon();
                 if this
                     .update(cx, |app, cx| app.set_update_status(status, cx))
                     .is_err()
@@ -123,19 +121,20 @@ impl GlanceApp {
         if let Status::Error(e) = &status {
             tracing::warn!("update check failed: {e}");
         }
-        let ready = match &status {
-            Status::Ready(s) => Some(format!("Restart to update to v{}", s.version)),
-            _ => None,
-        };
-        if let Some(tray) = &self._tray {
-            tray.set_update_ready(ready);
+        // Only touch the tray when its item changes, not on every download
+        // percent (each update re-sends the menu over D-Bus on Linux).
+        let label = status.tray_label();
+        if label != self.update.status.tray_label()
+            && let Some(tray) = &self._tray
+        {
+            tray.set_update_ready(label);
         }
         self.update.status = status;
         cx.notify();
     }
 
     /// Install the staged update, start the new version and quit. Never
-    /// during a call.
+    /// during a call. The copy (or the macOS `tar`) runs off the UI thread.
     pub fn restart_to_update(&mut self, cx: &mut Context<Self>) {
         if self.room.is_some() {
             return;
@@ -143,14 +142,21 @@ impl GlanceApp {
         let Status::Ready(staged) = self.update.status.clone() else {
             return;
         };
-        let result = apply::apply(&staged).and_then(|next| match next {
-            apply::Next::Launch(exe) => apply::relaunch(&exe, &[apply::AFTER_UPDATE]),
-            apply::Next::InstallerRelaunches => Ok(()),
+        self.set_update_status(Status::Installing(staged.version.clone()), cx);
+        let install = cx.background_spawn(async move {
+            apply::apply(&staged).and_then(|next| match next {
+                apply::Next::Launch(exe) => apply::relaunch(&exe, &[apply::AFTER_UPDATE]),
+                apply::Next::InstallerRelaunches => Ok(()),
+            })
         });
-        match result {
-            Ok(()) => cx.quit(),
-            Err(e) => self.set_update_status(Status::Error(format!("{e:#}")), cx),
-        }
+        cx.spawn(async move |this, cx| {
+            let result = install.await;
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(()) => cx.quit(),
+                Err(e) => app.set_update_status(Status::Error(format!("{e:#}")), cx),
+            });
+        })
+        .detach();
     }
 
     /// "Update ready — vX.Y.Z · Restart" in the title bar.
@@ -164,8 +170,14 @@ impl GlanceApp {
         };
         let in_call = self.room.is_some();
         let label = format!("Update ready · v{}", staged.version);
+        // The pill sits in the title bar's drag area. `occlude` keeps the
+        // Windows caption hit test from answering "drag" over the button, and
+        // preventing the default stops the title bar from turning the press
+        // into a window move on Linux.
         let restart = div()
             .id("update-restart")
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .px_2()
             .rounded_full()
             .bg(gpui_kit::white().opacity(0.2))

@@ -137,8 +137,13 @@ pub enum Status {
     UpToDate,
     /// Newer, but it can't be installed from here (why).
     Available(Version, String),
+    /// Newer, but the build for this system (or its signature) isn't on the
+    /// release yet. Checked again soon, not in 6 hours.
+    NotPublished(Version),
     Downloading(Version, u8),
     Ready(Staged),
+    /// Putting the staged update in place before the restart.
+    Installing(Version),
     Error(String),
 }
 
@@ -150,14 +155,35 @@ impl Status {
             Status::Checking => "Checking…".into(),
             Status::UpToDate => "Up to date".into(),
             Status::Available(v, why) => format!("v{v} is available: {why}"),
+            Status::NotPublished(v) => {
+                format!("v{v} is out, but its build for this system isn't published yet")
+            }
             Status::Downloading(v, pct) => format!("Downloading v{v} · {pct}%"),
             Status::Ready(s) => format!("v{} is ready: restart to update", s.version),
+            Status::Installing(v) => format!("Installing v{v}…"),
             Status::Error(e) => format!("Error: {e}"),
         }
     }
 
     pub fn busy(&self) -> bool {
-        matches!(self, Status::Checking | Status::Downloading(..))
+        matches!(
+            self,
+            Status::Checking | Status::Downloading(..) | Status::Installing(_)
+        )
+    }
+
+    /// Whether the next automatic check should come soon (with backoff)
+    /// rather than in 6 hours: errors, and releases still being published.
+    pub fn retry_soon(&self) -> bool {
+        matches!(self, Status::Error(_) | Status::NotPublished(_))
+    }
+
+    /// The tray's "Restart to update" item for this status.
+    pub fn tray_label(&self) -> Option<String> {
+        match self {
+            Status::Ready(s) => Some(format!("Restart to update to v{}", s.version)),
+            _ => None,
+        }
     }
 }
 
@@ -205,6 +231,7 @@ pub async fn check_and_stage(cfg: &Config, progress: impl Fn(Status)) -> Result<
                     "there's no build for this system".into(),
                 ));
             }
+            Plan::NotPublished(v) => return Ok(Status::NotPublished(v)),
             Plan::Download {
                 version,
                 asset,

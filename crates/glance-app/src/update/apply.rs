@@ -183,15 +183,23 @@ fn spawn_detached(exe: &Path, args: &[&str]) -> io::Result<()> {
     cmd.spawn().map(drop)
 }
 
-/// After an update: remove the old Windows exe and staged downloads for
-/// versions we've already reached.
-pub fn cleanup(current_exe: Option<&Path>, stage_dir: &Path, current: &semver::Version) {
-    if let Some(exe) = current_exe
-        && let Some(name) = exe.file_name()
+/// After an update (or one that was interrupted): remove what `apply` leaves
+/// beside the install (the old Windows exe, a half-copied `.<name>.update`,
+/// the macOS work and backup dirs) and staged downloads for versions we've
+/// already reached.
+pub fn cleanup(kind: &InstallKind, stage_dir: &Path, current: &semver::Version) {
+    if let Some(target) = kind.target()
+        && target.exists()
+        && let (Some(dir), Some(name)) = (target.parent(), target.file_name())
     {
-        let mut old = name.to_os_string();
-        old.push(".old");
-        let _ = std::fs::remove_file(exe.with_file_name(old));
+        let name = name.to_string_lossy();
+        if matches!(kind, InstallKind::MacApp(_)) {
+            let _ = std::fs::remove_dir_all(dir.join(".glance-update"));
+            let _ = std::fs::remove_dir_all(dir.join(".glance.app.old"));
+        } else {
+            let _ = std::fs::remove_file(dir.join(format!("{name}.old")));
+            let _ = std::fs::remove_file(dir.join(format!(".{name}.update")));
+        }
     }
     let Ok(entries) = std::fs::read_dir(stage_dir) else {
         return;

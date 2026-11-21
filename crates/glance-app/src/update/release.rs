@@ -186,8 +186,11 @@ pub fn tag_version(tag: &str) -> Option<Version> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Plan {
     UpToDate,
-    /// Newer, but there's no build (or signature) for this install.
+    /// Newer, but this install kind has no build at all.
     NoAsset(Version),
+    /// Newer, but the build for this install or its signature isn't on the
+    /// release (yet: assets are uploaded one job at a time, signatures last).
+    NotPublished(Version),
     Download {
         version: Version,
         asset: Asset,
@@ -218,7 +221,7 @@ pub fn plan(
             asset,
             signature,
         },
-        _ => Plan::NoAsset(version),
+        _ => Plan::NotPublished(version),
     }
 }
 
@@ -427,7 +430,7 @@ mod tests {
         assert_eq!(pick(InstallKind::Binary(p()), "macos", "aarch64"), None);
         assert_eq!(
             plan(&r, &v, &InstallKind::Binary(p()), "macos", "aarch64"),
-            Plan::NoAsset(Version::new(0, 2, 0))
+            Plan::NotPublished(Version::new(0, 2, 0))
         );
         // No build for this platform.
         assert_eq!(pick(InstallKind::Binary(p()), "linux", "aarch64"), None);

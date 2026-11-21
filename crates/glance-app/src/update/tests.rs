@@ -257,12 +257,16 @@ fn reports_without_downloading() {
         Status::Unavailable("Updates come from Flatpak".into())
     );
     assert_eq!(server.hits("/repos/owallzz/glance/releases/latest"), 1);
-    // A newer release without a build for this install.
+    // A newer release whose build for this install isn't uploaded yet: a
+    // transient state the timer retries soon.
     server.put(
         "/repos/owallzz/glance/releases/latest",
         r#"{"tag_name":"v9.0.0","assets":[]}"#,
     );
-    assert!(matches!(run(&cfg).0.unwrap(), Status::Available(v, _) if v == Version::new(9, 0, 0)));
+    let status = run(&cfg).0.unwrap();
+    assert_eq!(status, Status::NotPublished(Version::new(9, 0, 0)));
+    assert!(status.retry_soon());
+    assert!(!Status::UpToDate.retry_soon());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -346,7 +350,12 @@ fn cleanup_removes_reached_versions() {
     let exe = dir.join("glance.exe");
     std::fs::write(&exe, b"new").unwrap();
     std::fs::write(dir.join("glance.exe.old"), b"old").unwrap();
-    apply::cleanup(Some(&exe), &stage, &Version::new(0, 2, 0));
+    std::fs::write(dir.join(".glance.exe.update"), b"half").unwrap();
+    apply::cleanup(
+        &InstallKind::WindowsPortable(exe.clone()),
+        &stage,
+        &Version::new(0, 2, 0),
+    );
     let mut left: Vec<String> = std::fs::read_dir(&stage)
         .unwrap()
         .flatten()
@@ -355,8 +364,51 @@ fn cleanup_removes_reached_versions() {
     left.sort();
     assert_eq!(left, ["glance-v0.3.0-linux-x86_64.AppImage"]);
     assert!(!dir.join("glance.exe.old").exists());
+    assert!(!dir.join(".glance.exe.update").exists());
     assert!(exe.exists());
+
+    // An interrupted macOS swap leaves work and backup dirs beside the app.
+    let apps = dir.join("Applications");
+    let bundle = apps.join("glance.app");
+    for d in [
+        &bundle,
+        &apps.join(".glance-update/glance.app"),
+        &apps.join(".glance.app.old"),
+    ] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    apply::cleanup(
+        &InstallKind::MacApp(bundle.clone()),
+        &stage,
+        &Version::new(0, 2, 0),
+    );
+    let left: Vec<_> = std::fs::read_dir(&apps)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(left, [std::ffi::OsString::from("glance.app")]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tray_item_only_while_ready() {
+    let staged = super::Staged {
+        version: Version::new(1, 2, 3),
+        path: PathBuf::from("x"),
+        kind: InstallKind::Dev,
+    };
+    assert_eq!(
+        Status::Ready(staged).tray_label().as_deref(),
+        Some("Restart to update to v1.2.3")
+    );
+    // Download progress doesn't change the tray item.
+    assert_eq!(
+        Status::Downloading(Version::new(1, 2, 3), 5).tray_label(),
+        Status::Downloading(Version::new(1, 2, 3), 6).tray_label()
+    );
+    assert_eq!(Status::Installing(Version::new(1, 2, 3)).tray_label(), None);
+    assert!(Status::Installing(Version::new(1, 2, 3)).busy());
 }
 
 #[cfg(unix)]

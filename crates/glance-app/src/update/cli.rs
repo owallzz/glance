@@ -53,7 +53,10 @@ pub fn run(args: &[String]) -> i32 {
     println!("{}", status.text());
     let Status::Ready(staged) = status else {
         return match status {
-            Status::UpToDate | Status::Available(..) | Status::Unavailable(_) => 0,
+            Status::UpToDate
+            | Status::Available(..)
+            | Status::NotPublished(_)
+            | Status::Unavailable(_) => 0,
             _ => 1,
         };
     };

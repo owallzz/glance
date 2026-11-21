@@ -193,8 +193,10 @@ impl GlanceApp {
         let Some(net) = self.net.clone() else { return };
         let (tx, rx) = flume::unbounded();
         self._tray = crate::tray::start(&net, tx);
-        if self._tray.is_none() {
-            return;
+        let Some(tray) = &self._tray else { return };
+        // A rebuilt tray starts without the update item.
+        if let Some(label) = self.update.status.tray_label() {
+            tray.set_update_ready(Some(label));
         }
         self._tray_task = Some(cx.spawn_in(window, async move |this, cx| {
             while let Ok(ev) = rx.recv_async().await {
