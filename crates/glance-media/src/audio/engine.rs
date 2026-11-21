@@ -438,21 +438,31 @@ mod tests {
         )
         .unwrap();
         let fwd = b.incoming();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pump_stop = stop.clone();
         let pump = std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
+            while !pump_stop.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Ok(m) = b_in_rx.recv_timeout(Duration::from_millis(50)) {
                     let _ = fwd.send(m);
                 }
             }
         });
-        std::thread::sleep(Duration::from_millis(600));
+        // Poll instead of sleeping a fixed time: slow CI machines (shared macOS
+        // VMs) run the engine threads late.
+        let wait_until = |cond: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !cond() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        wait_until(&|| a.frames_sent() >= 20 && b.speaking_peers() == vec![[1; 32]]);
         assert!(a.frames_sent() >= 20, "sent {}", a.frames_sent());
         assert_eq!(b.speaking_peers(), vec![[1; 32]]);
         assert!(!b.me_speaking());
         a.set_muted(true);
-        std::thread::sleep(Duration::from_millis(500));
+        wait_until(&|| b.speaking_peers().is_empty());
         assert!(b.speaking_peers().is_empty(), "muted peer still speaking");
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
         pump.join().unwrap();
     }
 }
