@@ -176,16 +176,6 @@ pub fn popout_size(stream: Option<(u32, u32)>) -> (f32, f32) {
     }
 }
 
-/// New stream volume and the remembered "unmuted" volume after pressing mute.
-/// Unmuting goes back to the last audible volume.
-pub fn toggle_mute(volume: f32, restore: f32) -> (f32, f32) {
-    if volume > 0.0 {
-        (0.0, volume)
-    } else {
-        (if restore > 0.0 { restore } else { 1.0 }, restore)
-    }
-}
-
 /// Width of the extra resize band inside the window edge, and the size of
 /// the corner squares.
 const RESIZE_BAND: f32 = 6.;
@@ -272,6 +262,8 @@ pub struct PopoutInfo {
     pub has_audio: bool,
     /// Stream audio volume, 0.0–2.0.
     pub volume: f32,
+    /// Stream audio muted (the same setting as the room's stream mute).
+    pub muted: bool,
 }
 
 impl GlanceApp {
@@ -288,6 +280,7 @@ impl GlanceApp {
             source: stream.source.clone().into(),
             has_audio: stream.has_audio,
             volume: self.stream_volume(peer),
+            muted: self.stream_muted(peer),
         })
     }
 }
@@ -306,8 +299,6 @@ pub struct PopoutView {
     /// window move (a plain click or double-click doesn't).
     press: Option<Point<Pixels>>,
     volume_slider: Entity<SliderState>,
-    /// Volume to go back to when unmuting.
-    restore_volume: f32,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -335,7 +326,9 @@ impl PopoutView {
         let subscriptions = vec![
             cx.subscribe(&volume_slider, |this, _, ev: &SliderEvent, cx| {
                 let (SliderEvent::Change(v) | SliderEvent::Release(v)) = ev;
-                this.set_volume((v.start() / 100.).clamp(0., 2.), cx);
+                // Applied live while dragging, saved when let go.
+                let persist = matches!(ev, SliderEvent::Release(_));
+                this.set_volume((v.start() / 100.).clamp(0., 2.), persist, cx);
             }),
             cx.observe_in(app, window, |this, app, window, cx| {
                 this.sync(&app, window, cx)
@@ -358,7 +351,6 @@ impl PopoutView {
         });
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let restore_volume = if info.volume > 0. { info.volume } else { 1. };
         let mut view = Self {
             peer,
             app: app.downgrade(),
@@ -370,7 +362,6 @@ impl PopoutView {
             hide_timer: None,
             press: None,
             volume_slider,
-            restore_volume,
             _subscriptions: subscriptions,
         };
         // Show the controls once so people see what's there.
@@ -404,34 +395,37 @@ impl PopoutView {
             self.volume_slider
                 .update(cx, |s, cx| s.set_value(value, window, cx));
         }
-        if info.volume > 0. {
-            self.restore_volume = info.volume;
-        }
         self.info = info;
         cx.notify();
     }
 
-    fn set_volume(&mut self, volume: f32, cx: &mut Context<Self>) {
+    fn set_volume(&mut self, volume: f32, persist: bool, cx: &mut Context<Self>) {
         let peer = self.peer;
         self.info.volume = volume;
         if let Some(app) = self.app.upgrade() {
             app.update(cx, |app, cx| {
-                app.set_stream_volume(peer, volume);
+                app.set_stream_volume(peer, volume, persist);
                 cx.notify();
             });
         }
         cx.notify();
     }
 
-    fn toggle_mute(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Mute or unmute the stream audio (the room's own stream mute, so the
+    /// tile's button and this one always agree).
+    fn toggle_mute(&mut self, cx: &mut Context<Self>) {
         if !self.info.has_audio {
             return;
         }
-        let (volume, restore) = toggle_mute(self.info.volume, self.restore_volume);
-        self.restore_volume = restore;
-        self.volume_slider
-            .update(cx, |s, cx| s.set_value(volume * 100., window, cx));
-        self.set_volume(volume, cx);
+        let (peer, muted) = (self.peer, !self.info.muted);
+        self.info.muted = muted;
+        if let Some(app) = self.app.upgrade() {
+            app.update(cx, |app, cx| {
+                app.set_stream_muted(peer, muted);
+                cx.notify();
+            });
+        }
+        cx.notify();
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -672,7 +666,7 @@ impl PopoutView {
 
     fn render_info_bar(&self, p: &Palette, cx: &mut Context<Self>) -> Stateful<Div> {
         let info = &self.info;
-        let muted = info.volume <= 0.;
+        let muted = info.muted;
         div()
             .id("popout-info")
             .absolute()
@@ -726,7 +720,7 @@ impl PopoutView {
                             "Mute stream (M)"
                         },
                     )
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_mute(window, cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))),
                 )
                 .child(
                     div().w(px(96.)).flex_shrink_0().child(
@@ -833,9 +827,7 @@ impl Render for PopoutView {
                 cx.listener(|_, _: &PopoutToggleFullscreen, window, _| window.toggle_fullscreen()),
             )
             .on_action(cx.listener(|this, _: &PopoutEscape, window, _| this.escape(window)))
-            .on_action(
-                cx.listener(|this, _: &PopoutToggleMute, window, cx| this.toggle_mute(window, cx)),
-            )
+            .on_action(cx.listener(|this, _: &PopoutToggleMute, _, cx| this.toggle_mute(cx)))
             .on_action(cx.listener(|this, _: &PopoutClose, window, cx| this.close(window, cx)))
             .relative()
             .size_full()
@@ -1002,9 +994,7 @@ impl GlanceApp {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: the gpui_kit glob would shadow `#[test]` with GPUI's test macro.
-    use super::{
-        AutoHide, KEYS, TimerOutcome, popout_size, resize_cursor, resize_zones, toggle_mute,
-    };
+    use super::{AutoHide, KEYS, TimerOutcome, popout_size, resize_cursor, resize_zones};
     use gpui_kit::{CursorStyle, ResizeEdge, Tiling};
     use std::time::{Duration, Instant};
 
@@ -1102,14 +1092,6 @@ mod tests {
         // Super-ultrawide is width-limited; absurd ratios are clamped.
         assert_eq!(popout_size(Some((5120, 1440))), (960., 270.));
         assert_eq!(popout_size(Some((10000, 10))), (960., 240.));
-    }
-
-    #[test]
-    fn mute_toggles_back_to_the_last_volume() {
-        assert_eq!(toggle_mute(0.7, 1.0), (0.0, 0.7));
-        assert_eq!(toggle_mute(0.0, 0.7), (0.7, 0.7));
-        // Muted with nothing to restore: back to 100%.
-        assert_eq!(toggle_mute(0.0, 0.0), (1.0, 0.0));
     }
 
     #[test]

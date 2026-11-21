@@ -201,7 +201,7 @@ impl GlanceApp {
             _broadcast_task: None,
             audio: None,
             _voice_task: None,
-            volume_open: None,
+            menu: None,
             popouts: Default::default(),
             cameras: Default::default(),
             camera_broadcast: None,
@@ -268,6 +268,7 @@ impl GlanceApp {
                 profile,
                 state,
                 addr,
+                existing,
             } => {
                 let id = peer_id(endpoint);
                 room.memory.addrs.insert(id, addr);
@@ -301,8 +302,12 @@ impl GlanceApp {
                 if room.name == "Room" && room.participants.len() == 2 {
                     room.name = format!("{}'s room", profile.name);
                 }
-                system(room, id, format!("{} joined", profile.name));
-                chime(room, glance_media::audio::sounds::Sound::Join);
+                // Only newcomers get a "joined" line and chime, not the
+                // people who were already here when we arrived.
+                if !existing {
+                    system(room, id, format!("{} joined", profile.name));
+                    chime(room, glance_media::audio::sounds::Sound::Join);
+                }
             }
             RoomEvent::MemberUpdated { id, state } => {
                 let id = peer_id(id);

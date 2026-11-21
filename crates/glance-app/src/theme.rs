@@ -89,6 +89,10 @@ pub struct Palette {
     pub muted_by_you: Hsla,
     /// Offline/invisible status.
     pub gray: Hsla,
+    /// Context menus (floating, darker than everything under them).
+    pub bg_menu: Hsla,
+    /// Context menu outline and separators.
+    pub menu_border: Hsla,
 }
 
 impl Palette {
@@ -115,6 +119,8 @@ impl Palette {
             yellow: rgb(0xf0b232).into(),
             muted_by_you: rgb(0xe8732c).into(),
             gray: rgb(0x80848e).into(),
+            bg_menu: rgb(0x111214).into(),
+            menu_border: rgb(0x2b2d31).into(),
         }
     }
 
@@ -141,6 +147,8 @@ impl Palette {
             yellow: rgb(0xf0b232).into(),
             muted_by_you: rgb(0xe8732c).into(),
             gray: rgb(0x80848e).into(),
+            bg_menu: rgb(0xffffff).into(),
+            menu_border: rgb(0xe3e5e8).into(),
         }
     }
 

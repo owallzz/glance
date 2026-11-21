@@ -53,6 +53,10 @@ impl GlanceApp {
         favorites.sort_by_key(|c| (!c.favorite, !c.presence.is_online()));
         let conversations = self.dm_list();
         let open = self.dm_open;
+        // The open DM is highlighted in DIRECT MESSAGES; its contact row only
+        // stands in while the conversation has no row there yet (no messages).
+        let open_in_dms = open.is_some_and(|o| conversations.iter().any(|(pr, _, _)| pr.id == o));
+        let contact_selected = move |pid| open == Some(pid) && !open_in_dms;
         div()
             .w(px(240.))
             .h_full()
@@ -180,7 +184,7 @@ impl GlanceApp {
                             .items_center()
                             .gap_3()
                             .cursor_pointer()
-                            .when(open == Some(pid), |d| d.bg(p.bg_selected))
+                            .when(contact_selected(pid), |d| d.bg(p.bg_selected))
                             .hover(move |s| s.bg(hover))
                             .on_click(
                                 cx.listener(move |this, _, window, cx| {

@@ -12,6 +12,7 @@ mod idle;
 mod instance;
 mod net;
 mod overlays;
+mod person_menu;
 mod popout;
 mod recent;
 mod room;

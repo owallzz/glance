@@ -394,8 +394,8 @@ pub struct Room {
     /// Voice engine (None in the demo room or if audio failed).
     pub audio: Option<glance_media::audio::AudioEngine>,
     pub _voice_task: Option<Task<()>>,
-    /// Participant whose volume control is open in the sidebar.
-    pub volume_open: Option<PeerId>,
+    /// The right-click menu for someone, while it's open.
+    pub menu: Option<crate::person_menu::PersonMenu>,
     /// Streams shown in their own windows.
     pub popouts: HashMap<PeerId, crate::popout::Popout>,
     /// Camera tiles (everyone's camera is shown automatically, ours too).
@@ -757,7 +757,7 @@ impl GlanceApp {
             live_settings: None,
             audio: None,
             _voice_task: None,
-            volume_open: None,
+            menu: None,
             popouts: HashMap::new(),
             cameras: HashMap::new(),
             camera_broadcast: None,
@@ -1209,7 +1209,9 @@ impl Render for GlanceApp {
             .key_context("GlanceApp")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {
-                if this.immersive.is_some() {
+                if this.close_person_menu() {
+                    // Just the menu.
+                } else if this.immersive.is_some() {
                     this.exit_fullscreen(window, cx);
                 } else if this.settings_open {
                     this.settings_open = false;

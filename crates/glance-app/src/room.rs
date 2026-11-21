@@ -240,6 +240,7 @@ impl GlanceApp {
             .child(self.render_room_sidebar(p, cx))
             .child(self.render_stage(p, cx))
             .when(chat_open, |d| d.child(self.render_chat(p, cx)))
+            .children(self.render_person_menu(p, cx))
     }
 
     fn render_room_sidebar(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -380,7 +381,7 @@ impl GlanceApp {
             Route::Direct => format!("Direct · {} ms", c.rtt_ms),
             Route::Relayed => format!("Relayed · {} ms", c.rtt_ms),
         });
-        let row = div()
+        div()
             .id(SharedString::from(format!("person-{}", id.short())))
             .h(px(34.))
             .pl(px(20.))
@@ -430,201 +431,10 @@ impl GlanceApp {
             })
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, _, _, cx| {
-                    if let Some(room) = this.room.as_mut() {
-                        room.volume_open = if room.volume_open == Some(id) {
-                            None
-                        } else {
-                            Some(id)
-                        };
-                    }
-                    cx.notify();
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    this.open_person_menu(id, ev.position, window, cx)
                 }),
-            );
-        let volume_open = self
-            .room
-            .as_ref()
-            .is_some_and(|r| r.volume_open == Some(id))
-            && id != self.me.id;
-        // "Add contact" for people you aren't connected with yet.
-        let contact_state = self.book.state(&id.0);
-        let in_live_room = self.room.as_ref().is_some_and(|r| r.handle.is_some());
-        let person_profile = person.profile.clone();
-        let contact_action = div().ml(px(20.)).mr_2().mb_1().when(in_live_room, |d| {
-            d.child(match contact_state {
-                None => Button::new(SharedString::from(format!("addc-{}", id.short())))
-                    .small()
-                    .primary()
-                    .label("Add contact")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.add_contact(person_profile.clone(), cx)
-                    }))
-                    .into_any_element(),
-                Some(glance_core::contacts::StoredState::Outgoing) => div()
-                    .text_xs()
-                    .text_color(p.text_muted)
-                    .child("Contact request sent")
-                    .into_any_element(),
-                Some(glance_core::contacts::StoredState::Incoming) => {
-                    Button::new(SharedString::from(format!("acceptc-{}", id.short())))
-                        .small()
-                        .success()
-                        .label("Accept contact request")
-                        .on_click(cx.listener(move |this, _, _, cx| this.accept_contact(id, cx)))
-                        .into_any_element()
-                }
-                Some(glance_core::contacts::StoredState::Mutual) => {
-                    Button::new(SharedString::from(format!("msgc-{}", id.short())))
-                        .small()
-                        .label("Message")
-                        .on_click(
-                            cx.listener(move |this, _, window, cx| this.open_dm(id, window, cx)),
-                        )
-                        .into_any_element()
-                }
-                Some(glance_core::contacts::StoredState::Blocked) => div()
-                    .text_xs()
-                    .text_color(p.red)
-                    .child("Blocked")
-                    .into_any_element(),
-            })
-        });
-        let vol = self.user_volume(id);
-        let stream_vol = self.stream_volume(id);
-        let stream_muted = self.stream_muted(id);
-        let has_stream_audio = person.stream.as_ref().is_some_and(|s| s.has_audio);
-        let step = |delta: f32, label: &'static str, key: &str, stream: bool| {
-            div()
-                .id(SharedString::from(format!("{key}-{}", id.short())))
-                .size(px(24.))
-                .rounded(px(4.))
-                .bg(p.bg_selected)
-                .hover(|s| s.opacity(0.8))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(p.text_header)
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if stream {
-                        let v = this.stream_volume(id);
-                        this.set_stream_volume(id, ((v + delta) * 10.0).round() / 10.0);
-                    } else {
-                        let v = this.user_volume(id);
-                        this.set_user_volume(id, ((v + delta) * 10.0).round() / 10.0);
-                    }
-                    cx.notify();
-                }))
-        };
-        // A "Mute"/"Unmute" line with a check box, like a context menu item.
-        let check_item = |key: &str, label: &'static str, checked: bool, stream: bool| {
-            div()
-                .id(SharedString::from(format!("{key}-{}", id.short())))
-                .ml(px(20.))
-                .mr_2()
-                .mb_1()
-                .px_2()
-                .py_1()
-                .rounded(px(4.))
-                .bg(p.bg_rail)
-                .hover(|s| s.bg(p.bg_hover))
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .text_xs()
-                        .text_color(if checked {
-                            p.muted_by_you
-                        } else {
-                            p.text_normal
-                        })
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .size(px(16.))
-                        .rounded(px(3.))
-                        .border_1()
-                        .border_color(if checked { p.brand } else { p.interactive })
-                        .when(checked, |d| d.bg(p.brand))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(checked, |d| {
-                            d.child(icon(IconName::Check, 12., gpui_kit::white()))
-                        }),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if stream {
-                        this.set_stream_muted(id, !checked);
-                    } else {
-                        this.set_user_muted(id, !checked);
-                    }
-                    cx.notify();
-                }))
-        };
-        div()
-            .flex()
-            .flex_col()
-            .child(row)
-            .when(volume_open, |d| {
-                d.child(check_item("mute-user", "Mute", muted_by_you, false))
-                    .child(
-                        div()
-                            .ml(px(20.))
-                            .mr_2()
-                            .mb_1()
-                            .p_2()
-                            .rounded(px(4.))
-                            .bg(p.bg_rail)
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_xs()
-                                    .text_color(p.text_muted)
-                                    .child(format!("User volume {:.0}%", vol * 100.0)),
-                            )
-                            .child(step(-0.1, "−", "vol-down", false))
-                            .child(step(0.1, "+", "vol-up", false)),
-                    )
-                    .when(has_stream_audio, |d| {
-                        d.child(check_item(
-                            "mute-stream",
-                            "Mute stream audio",
-                            stream_muted,
-                            true,
-                        ))
-                        .child(
-                            div()
-                                .ml(px(20.))
-                                .mr_2()
-                                .mb_1()
-                                .p_2()
-                                .rounded(px(4.))
-                                .bg(p.bg_rail)
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .text_xs()
-                                        .text_color(p.text_muted)
-                                        .child(format!("Stream volume {:.0}%", stream_vol * 100.0)),
-                                )
-                                .child(step(-0.1, "−", "svol-down", true))
-                                .child(step(0.1, "+", "svol-up", true)),
-                        )
-                    })
-                    .child(contact_action)
-            })
+            )
             .into_any_element()
     }
 
@@ -805,7 +615,14 @@ impl GlanceApp {
             .relative()
             .size_full()
             .rounded(px(8.))
-            .overflow_hidden();
+            .overflow_hidden()
+            // The same menu as right-clicking them in the member list.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    this.open_person_menu(peer, ev.position, window, cx)
+                }),
+            );
         match kind {
             TileKind::Person(person) => {
                 let speaking = person.speaking;

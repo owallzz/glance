@@ -179,19 +179,28 @@ impl GlanceApp {
         cx.notify();
     }
 
-    /// Change what you chose for one person, apply it live and save it
-    /// (it's remembered by peer id across rooms and restarts).
-    fn update_peer_audio(&mut self, peer: PeerId, f: impl FnOnce(&mut PeerAudioPrefs)) {
+    /// Change what you chose for one person and apply it live. With
+    /// `persist` it's also saved (it's remembered by peer id across rooms
+    /// and restarts); a slider passes false while dragging and true on
+    /// release, so settings.json isn't rewritten on every tick.
+    fn update_peer_audio(
+        &mut self,
+        peer: PeerId,
+        persist: bool,
+        f: impl FnOnce(&mut PeerAudioPrefs),
+    ) {
         let prefs = self.settings.peer_audio.update(peer, f);
         if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
             apply_peer_audio(engine, peer, prefs);
         }
-        self.save_settings();
+        if persist {
+            self.save_settings();
+        }
     }
 
-    /// Per-user volume, 0–200%.
-    pub fn set_user_volume(&mut self, peer: PeerId, volume: f32) {
-        self.update_peer_audio(peer, |p| p.volume = volume);
+    /// Per-user volume, 0–200% (`persist`: see `update_peer_audio`).
+    pub fn set_user_volume(&mut self, peer: PeerId, volume: f32, persist: bool) {
+        self.update_peer_audio(peer, persist, |p| p.volume = volume);
     }
 
     pub fn user_volume(&self, peer: PeerId) -> f32 {
@@ -200,16 +209,23 @@ impl GlanceApp {
 
     /// Mute someone for you only (the room isn't told).
     pub fn set_user_muted(&mut self, peer: PeerId, muted: bool) {
-        self.update_peer_audio(peer, |p| p.muted = muted);
+        self.update_peer_audio(peer, true, |p| p.muted = muted);
     }
 
     pub fn user_muted(&self, peer: PeerId) -> bool {
         self.settings.peer_audio.get(peer).muted
     }
 
-    /// Volume of the audio shared with someone's screen, 0–200%.
-    pub fn set_stream_volume(&mut self, peer: PeerId, volume: f32) {
-        self.update_peer_audio(peer, |p| p.stream_volume = volume);
+    /// Volume of the audio shared with someone's screen, 0–200%
+    /// (`persist`: see `update_peer_audio`). Turning it up from silent
+    /// also unmutes the stream.
+    pub fn set_stream_volume(&mut self, peer: PeerId, volume: f32, persist: bool) {
+        self.update_peer_audio(peer, persist, |p| {
+            p.stream_volume = volume;
+            if volume > 0. {
+                p.stream_muted = false;
+            }
+        });
     }
 
     pub fn stream_volume(&self, peer: PeerId) -> f32 {
@@ -218,7 +234,7 @@ impl GlanceApp {
 
     /// Silence the audio shared with someone's screen (their voice stays).
     pub fn set_stream_muted(&mut self, peer: PeerId, muted: bool) {
-        self.update_peer_audio(peer, |p| p.stream_muted = muted);
+        self.update_peer_audio(peer, true, |p| p.stream_muted = muted);
     }
 
     pub fn stream_muted(&self, peer: PeerId) -> bool {
