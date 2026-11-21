@@ -1,3 +1,2 @@
-# Placeholder: the minisign public key that release assets are signed with
-# goes here (the two-line file `minisign -G -W` writes). Until then the app
-# treats updates as disabled ("no signing key").
+untrusted comment: minisign public key 416BCE8C656DB282
+RWSCsm1ljM5rQeBu80PjMp5Xa7jSdH5JDyeJ3xjpxysIyDJ5t68yaoV/
