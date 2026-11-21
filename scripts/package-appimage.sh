@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build glance.AppImage from a release binary (run on Linux x86_64).
 #   scripts/package-appimage.sh <glance-binary> <out.AppImage>
-# Uses linuxdeploy ($LINUXDEPLOY, or downloaded into a temp dir). Core
+# Uses linuxdeploy ($LINUXDEPLOY, or a pinned release downloaded into a
+# temp dir and checked against its sha256). Core
 # system libraries stay on the host: glibc, GL/Vulkan, fontconfig and
 # friends via linuxdeploy's excludelist, plus PipeWire, ALSA, D-Bus and the
 # C++ runtime, which must match the host. Without FUSE, set
@@ -14,10 +15,15 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+# A fixed linuxdeploy release, checked against its hash before it runs
+# (it runs in the release job). To upgrade, pick a new tag and update both.
+ld_tag=1-alpha-20251107-1
+ld_sha256=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
 ld=${LINUXDEPLOY:-}
 if [ -z "$ld" ]; then
   ld="$work/linuxdeploy-x86_64.AppImage"
-  curl -fsSLo "$ld" https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+  curl -fsSLo "$ld" "https://github.com/linuxdeploy/linuxdeploy/releases/download/$ld_tag/linuxdeploy-x86_64.AppImage"
+  echo "$ld_sha256  $ld" | sha256sum -c --quiet -
   chmod +x "$ld"
 fi
 

@@ -9,6 +9,16 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+; VersionInfoVersion only takes numbers: drop a "-beta.1" / "+build" suffix.
+#define SuffixPos Pos("-", AppVersion)
+#if SuffixPos == 0
+  #define SuffixPos Pos("+", AppVersion)
+#endif
+#if SuffixPos > 0
+  #define NumericVersion Copy(AppVersion, 1, SuffixPos - 1)
+#else
+  #define NumericVersion AppVersion
+#endif
 #ifndef SourceExe
   #define SourceExe "..\..\target\release\glance.exe"
 #endif
@@ -29,7 +39,7 @@ AppPublisher=glance contributors
 AppPublisherURL=https://github.com/owallzz/glance
 AppSupportURL=https://github.com/owallzz/glance/issues
 AppUpdatesURL=https://github.com/owallzz/glance/releases
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#NumericVersion}
 VersionInfoProductName=glance
 VersionInfoDescription=glance installer
 VersionInfoCompany=glance contributors
