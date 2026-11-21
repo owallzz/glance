@@ -3,14 +3,15 @@
 //! once per path and size, then kept as `RenderImage`s; nothing is decoded
 //! while painting.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::*;
-use image::{DynamicImage, Frame, ImageDecoder, ImageReader};
+use image::metadata::Orientation;
+use image::{DynamicImage, Frame, ImageDecoder, ImageReader, Limits};
 
 use crate::app::GlanceApp;
 use crate::theme::Palette;
@@ -25,9 +26,36 @@ pub const THUMB_MAX_H: f32 = 300.;
 const THUMB_DECODE: (u32, u32) = (800, 600);
 /// How big the lightbox copy is decoded, in physical px.
 const LARGE_DECODE: (u32, u32) = (2560, 1600);
-/// Decoded thumbnails kept; older ones are dropped (and decoded again if
-/// they scroll back into view).
+/// Decoded thumbnails kept; beyond that, the least recently shown ones are
+/// dropped (and decoded again if they scroll back into view). Ones on screen
+/// are never dropped, so this is a soft limit.
 const KEEP: usize = 64;
+/// Thumbnail decodes running at once (each can briefly need ~100 MB).
+const MAX_DECODES: usize = 2;
+/// Largest image we decode at all, per side, and the most memory the
+/// decoder may use. Images come from peers: a tiny compressed file can
+/// claim huge dimensions.
+const MAX_SIDE: u32 = 12_000;
+const MAX_ALLOC: u64 = 192 << 20;
+
+/// The thumbnails to drop so at most `keep` remain: the least recently used
+/// first, never one used in `frame` (the render that just happened).
+fn evictions(last_used: &HashMap<PathBuf, u64>, frame: u64, keep: usize) -> Vec<PathBuf> {
+    let excess = last_used.len().saturating_sub(keep);
+    if excess == 0 {
+        return Vec::new();
+    }
+    let mut old: Vec<(&PathBuf, u64)> = last_used
+        .iter()
+        .filter(|(_, at)| **at < frame)
+        .map(|(p, at)| (p, *at))
+        .collect();
+    old.sort_by_key(|(_, at)| *at);
+    old.into_iter()
+        .take(excess)
+        .map(|(p, _)| p.clone())
+        .collect()
+}
 
 /// `width`×`height` scaled down (never up) to fit in `max_w`×`max_h`,
 /// keeping the aspect ratio.
@@ -66,8 +94,12 @@ enum Size {
 #[derive(Default)]
 pub struct ImageCache {
     slots: HashMap<(PathBuf, Size), Slot>,
-    /// Ready thumbnails, oldest first (for eviction).
-    order: VecDeque<PathBuf>,
+    /// Ready thumbnails and the render they were last shown in.
+    last_used: HashMap<PathBuf, u64>,
+    /// Renders so far.
+    frame: u64,
+    /// Thumbnail decodes running.
+    decoding: usize,
     /// Images no longer shown, removed from the GPU atlas on the next paint.
     stale: Vec<Arc<RenderImage>>,
 }
@@ -80,16 +112,36 @@ pub struct Lightbox {
 
 /// Decode `path` and scale it to fit `max` (physical px), as BGRA.
 fn decode(path: &Path, max: (u32, u32)) -> anyhow::Result<Decoded> {
-    let mut decoder = ImageReader::open(path)?
-        .with_guessed_format()?
-        .into_decoder()?;
+    let mut reader = ImageReader::open(path)?.with_guessed_format()?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_SIDE);
+    limits.max_image_height = Some(MAX_SIDE);
+    limits.max_alloc = Some(MAX_ALLOC);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder()?;
+    let (w, h) = decoder.dimensions();
+    anyhow::ensure!(w <= MAX_SIDE && h <= MAX_SIDE, "image too large ({w}x{h})");
     let orientation = decoder.orientation()?;
     let mut img = DynamicImage::from_decoder(decoder)?;
-    img.apply_orientation(orientation);
-    let (width, height) = (img.width(), img.height());
-    if width > max.0 || height > max.1 {
-        img = img.resize(max.0, max.1, image::imageops::FilterType::Triangle);
+    // Scale before rotating, so the full-size picture isn't copied.
+    let turned = matches!(
+        orientation,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    );
+    let (mw, mh) = if turned { (max.1, max.0) } else { max };
+    if w > mw || h > mh {
+        img = if w >= mw * 2 || h >= mh * 2 {
+            // Far bigger: the box filter needs no big intermediate buffer.
+            img.thumbnail(mw, mh)
+        } else {
+            img.resize(mw, mh, image::imageops::FilterType::Triangle)
+        };
     }
+    img.apply_orientation(orientation);
+    let (width, height) = if turned { (h, w) } else { (w, h) };
     let mut data = img.into_rgba8();
     for px in data.pixels_mut() {
         px.0.swap(0, 2);
@@ -111,9 +163,22 @@ impl GlanceApp {
     fn decoded(&mut self, path: &Path, size: Size, cx: &mut Context<Self>) -> Option<Decoded> {
         let key = (path.to_path_buf(), size);
         match self.images.slots.get(&key) {
-            Some(Slot::Ready(d)) => return Some(d.clone()),
+            Some(Slot::Ready(d)) => {
+                let d = d.clone();
+                if size == Size::Thumb {
+                    self.images.last_used.insert(key.0, self.images.frame);
+                }
+                return Some(d);
+            }
             Some(_) => return None,
             None => {}
+        }
+        if size == Size::Thumb {
+            // Busy: asked again on the render after one finishes.
+            if self.images.decoding >= MAX_DECODES {
+                return None;
+            }
+            self.images.decoding += 1;
         }
         self.images.slots.insert(key.clone(), Slot::Loading);
         let max = match size {
@@ -127,7 +192,10 @@ impl GlanceApp {
         cx.spawn(async move |this, cx| {
             let result = job.await;
             let _ = this.update(cx, |app, cx| {
-                // Closed or evicted meanwhile: don't keep it.
+                if key.1 == Size::Thumb {
+                    app.images.decoding -= 1;
+                }
+                // Closed meanwhile: don't keep it.
                 if !app.images.slots.contains_key(&key) {
                     return;
                 }
@@ -139,15 +207,8 @@ impl GlanceApp {
                     }
                 };
                 if matches!(slot, Slot::Ready(_)) && key.1 == Size::Thumb {
-                    app.images.order.push_back(key.0.clone());
-                    while app.images.order.len() > KEEP {
-                        if let Some(old) = app.images.order.pop_front()
-                            && let Some(Slot::Ready(d)) =
-                                app.images.slots.remove(&(old, Size::Thumb))
-                        {
-                            app.images.stale.push(d.image);
-                        }
-                    }
+                    // Counts as shown now: it's drawn on the next render.
+                    app.images.last_used.insert(key.0.clone(), app.images.frame);
                 }
                 app.images.slots.insert(key, slot);
                 cx.notify();
@@ -197,8 +258,18 @@ impl GlanceApp {
         )
     }
 
-    /// Remove images we no longer show from the GPU atlas.
+    /// At the end of a render: drop the thumbnails over the limit that
+    /// weren't shown in it, and remove images we no longer show from the
+    /// GPU atlas.
     pub fn drop_stale_images(&mut self, window: &mut Window, cx: &mut App) {
+        let images = &mut self.images;
+        for path in evictions(&images.last_used, images.frame, KEEP) {
+            images.last_used.remove(&path);
+            if let Some(Slot::Ready(d)) = images.slots.remove(&(path, Size::Thumb)) {
+                images.stale.push(d.image);
+            }
+        }
+        images.frame += 1;
         for image in self.images.stale.drain(..) {
             let _ = window.drop_image(image);
         }
@@ -345,7 +416,47 @@ impl GlanceApp {
 
 #[cfg(test)]
 mod tests {
-    use super::fit_within;
+    use super::{MAX_SIDE, decode, evictions, fit_within};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn decode_scales_down_and_refuses_huge_images() {
+        let dir = std::env::temp_dir().join(format!("glance-images-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A photo-sized picture comes back fitted, with its real size.
+        let ok = dir.join("ok.png");
+        image::GrayImage::new(3000, 1000).save(&ok).unwrap();
+        let d = decode(&ok, (800, 600)).unwrap();
+        assert_eq!((d.width, d.height), (3000, 1000));
+        assert_eq!(d.image.size(0).width.0, 800);
+        // A tiny file claiming enormous dimensions isn't decoded.
+        let huge = dir.join("huge.png");
+        image::GrayImage::new(MAX_SIDE + 1, 1).save(&huge).unwrap();
+        assert!(decode(&huge, (800, 600)).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eviction_keeps_what_is_on_screen() {
+        let used: HashMap<PathBuf, u64> = [("a", 1), ("b", 5), ("c", 3), ("d", 9), ("e", 9)]
+            .into_iter()
+            .map(|(p, f)| (PathBuf::from(p), f))
+            .collect();
+        // Under the limit: nothing goes.
+        assert!(evictions(&used, 9, 5).is_empty());
+        // Over: least recently shown first.
+        let mut out = evictions(&used, 9, 3);
+        out.sort();
+        assert_eq!(out, [PathBuf::from("a"), PathBuf::from("c")]);
+        // Everything shown in this render stays, even over the limit.
+        let mut out = evictions(&used, 9, 0);
+        out.sort();
+        assert_eq!(
+            out,
+            [PathBuf::from("a"), PathBuf::from("b"), PathBuf::from("c")]
+        );
+    }
 
     #[test]
     fn thumbnails_fit_and_keep_their_shape() {
