@@ -13,6 +13,9 @@ use crate::net::Net;
 /// `stream`: share a test pattern of this size and frame rate.
 /// `tone`: speak a sine tone so others see/hear us talking.
 /// `file`: offer this file to the room after joining.
+/// `mute`: mute whoever joins with this name for us only; `audible:` lines
+/// then show we stop hearing them while `speaking:` still lists them.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     link: &str,
     name: &str,
@@ -21,6 +24,7 @@ pub fn run(
     file: Option<std::path::PathBuf>,
     ring_back: bool,
     camera: bool,
+    mute: Option<String>,
 ) -> Result<()> {
     // A fresh identity each run, so a bot never collides with your app.
     let net = Net::start_ephemeral()?;
@@ -232,6 +236,7 @@ pub fn run(
     // Bots fetch every file offered to them (into a temp dir) and say so.
     let dl_dir = std::env::temp_dir().join(format!("glance-bot-{}", std::process::id()));
     let mut heard: Vec<[u8; 32]> = Vec::new();
+    let mut audible: Vec<[u8; 32]> = Vec::new();
     let names = std::cell::RefCell::new(std::collections::HashMap::new());
     let mut muted = false;
     // Testing aid: GLANCE_AUTOWATCH=1 makes the bot watch every screen share
@@ -248,6 +253,10 @@ pub fn run(
                 match &ev {
                     RoomEvent::MemberJoined { id, profile, state } => {
                         names.borrow_mut().insert(*id, profile.name.clone());
+                        if mute.as_deref() == Some(profile.name.as_str()) {
+                            engine.set_peer_muted(*id.as_bytes(), true);
+                            println!("muted {} for us", profile.name);
+                        }
                         room.send(Command::Chat(format!("hi {}!", profile.name)));
                         if autowatch && state.stream.is_some() {
                             room.send(Command::Watch(*id, glance_proto::Track::Screen));
@@ -408,10 +417,8 @@ pub fn run(
                 }
             })
             .recv(&tick, |_| {
-                let now = engine.speaking_peers();
-                if now != heard {
-                    let who: Vec<String> = now
-                        .iter()
+                let who = |keys: &[[u8; 32]]| -> Vec<String> {
+                    keys.iter()
                         .map(|k| {
                             names
                                 .borrow()
@@ -422,9 +429,18 @@ pub fn run(
                                 .map(|(_, n)| n.clone())
                                 .unwrap_or_else(|| "?".into())
                         })
-                        .collect();
-                    println!("speaking: {who:?}");
+                        .collect()
+                };
+                let now = engine.speaking_peers();
+                if now != heard {
+                    println!("speaking: {:?}", who(&now));
                     heard = now;
+                }
+                // Who actually reaches our (discarded) speakers.
+                let now = engine.audible_peers();
+                if now != audible {
+                    println!("audible: {:?}", who(&now));
+                    audible = now;
                 }
                 // Toggling mute would cut the tone; only bots without a tone flap.
                 if tone {
