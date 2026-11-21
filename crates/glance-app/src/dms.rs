@@ -663,22 +663,29 @@ impl GlanceApp {
                     .rounded(px(8.))
                     .bg(p.bg_hover)
                     .flex()
-                    .items_start()
+                    // The + sits level with a one-line message and stays by
+                    // the last line as the message grows.
+                    .items_end()
                     .gap_2()
                     .px_2()
                     .py(px(6.))
                     .when(online && mutual, |d| {
+                        // As tall as the one-line message box (its 40 px plus
+                        // the 6 px padding above and below), so the + is
+                        // centred on that line.
                         d.child(
-                            icon_button(
-                                "dm-attach",
-                                IconName::CirclePlus,
-                                "Send a file",
-                                p.interactive,
-                                p,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.send_file_to_contact(peer, cx),
-                            )),
+                            div().h(px(52.)).flex().items_center().child(
+                                icon_button(
+                                    "dm-attach",
+                                    IconName::CirclePlus,
+                                    "Send a file",
+                                    p.interactive,
+                                    p,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| this.send_file_to_contact(peer, cx),
+                                )),
+                            ),
                         )
                     })
                     .child(
