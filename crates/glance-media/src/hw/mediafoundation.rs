@@ -32,17 +32,19 @@ type EnumFn = unsafe extern "system" fn(
 ) -> HRESULT;
 type CreateFn = unsafe extern "system" fn(*mut *mut c_void) -> HRESULT;
 type CreateBufferFn = unsafe extern "system" fn(u32, *mut *mut c_void) -> HRESULT;
+type CreateManagerFn = unsafe extern "system" fn(*mut u32, *mut *mut c_void) -> HRESULT;
 
-struct Mf {
+pub(super) struct Mf {
     _lib: Library,
     enum_ex: EnumFn,
     create_media_type: CreateFn,
     create_sample: CreateFn,
     create_memory_buffer: CreateBufferFn,
+    create_dxgi_manager: Option<CreateManagerFn>,
 }
 
 /// mfplat.dll, loaded and started once.
-fn mf() -> Result<&'static Mf> {
+pub(super) fn mf() -> Result<&'static Mf> {
     static MF: OnceLock<Result<Mf, String>> = OnceLock::new();
     MF.get_or_init(|| unsafe {
         let load = || -> Result<Mf> {
@@ -53,6 +55,7 @@ fn mf() -> Result<&'static Mf> {
                 create_media_type: *lib.get(b"MFCreateMediaType\0")?,
                 create_sample: *lib.get(b"MFCreateSample\0")?,
                 create_memory_buffer: *lib.get(b"MFCreateMemoryBuffer\0")?,
+                create_dxgi_manager: lib.get(b"MFCreateDXGIDeviceManager\0").ok().map(|f| *f),
                 _lib: lib,
             };
             startup(MF_VERSION, MFSTARTUP_NOSOCKET)
@@ -67,7 +70,7 @@ fn mf() -> Result<&'static Mf> {
 }
 
 impl Mf {
-    fn media_type(&self) -> Result<IMFMediaType> {
+    pub(super) fn media_type(&self) -> Result<IMFMediaType> {
         let mut p = std::ptr::null_mut();
         unsafe {
             (self.create_media_type)(&mut p).ok()?;
@@ -75,7 +78,7 @@ impl Mf {
         }
     }
 
-    fn sample(&self) -> Result<IMFSample> {
+    pub(super) fn sample(&self) -> Result<IMFSample> {
         let mut p = std::ptr::null_mut();
         unsafe {
             (self.create_sample)(&mut p).ok()?;
@@ -83,7 +86,7 @@ impl Mf {
         }
     }
 
-    fn buffer(&self, len: u32) -> Result<IMFMediaBuffer> {
+    pub(super) fn buffer(&self, len: u32) -> Result<IMFMediaBuffer> {
         let mut p = std::ptr::null_mut();
         unsafe {
             (self.create_memory_buffer)(len, &mut p).ok()?;
@@ -91,35 +94,56 @@ impl Mf {
         }
     }
 
+    /// A DXGI device manager, for handing a D3D11 device to an MFT.
+    pub(super) fn dxgi_manager(&self) -> Result<(IMFDXGIDeviceManager, u32)> {
+        let create = self
+            .create_dxgi_manager
+            .context("no MFCreateDXGIDeviceManager")?;
+        let (mut token, mut p) = (0u32, std::ptr::null_mut());
+        unsafe {
+            create(&mut token, &mut p).ok()?;
+            Ok((IMFDXGIDeviceManager::from_raw(p), token))
+        }
+    }
+
     /// H.264 encoders that take NV12: hardware ones, or (for tests) the
     /// synchronous software ones, best first.
     fn encoders(&self, hardware: bool) -> Result<Vec<IMFActivate>> {
-        let input = MFT_REGISTER_TYPE_INFO {
-            guidMajorType: MFMediaType_Video,
-            guidSubtype: MFVideoFormat_NV12,
-        };
-        let output = MFT_REGISTER_TYPE_INFO {
-            guidMajorType: MFMediaType_Video,
-            guidSubtype: MFVideoFormat_H264,
-        };
         let kind = if hardware {
             MFT_ENUM_FLAG_HARDWARE
         } else {
             MFT_ENUM_FLAG_SYNCMFT
         };
+        self.transforms(
+            MFT_CATEGORY_VIDEO_ENCODER,
+            MFVideoFormat_NV12,
+            MFVideoFormat_H264,
+            kind,
+        )
+    }
+
+    /// Video transforms of a category from `input` to `output`, best first.
+    pub(super) fn transforms(
+        &self,
+        category: GUID,
+        input: GUID,
+        output: GUID,
+        kind: MFT_ENUM_FLAG,
+    ) -> Result<Vec<IMFActivate>> {
+        let input = MFT_REGISTER_TYPE_INFO {
+            guidMajorType: MFMediaType_Video,
+            guidSubtype: input,
+        };
+        let output = MFT_REGISTER_TYPE_INFO {
+            guidMajorType: MFMediaType_Video,
+            guidSubtype: output,
+        };
         let flags = (kind.0 | MFT_ENUM_FLAG_SORTANDFILTER.0) as u32;
         let (mut list, mut count) = (std::ptr::null_mut(), 0u32);
         unsafe {
-            (self.enum_ex)(
-                MFT_CATEGORY_VIDEO_ENCODER,
-                flags,
-                &input,
-                &output,
-                &mut list,
-                &mut count,
-            )
-            .ok()
-            .context("MFTEnumEx")?;
+            (self.enum_ex)(category, flags, &input, &output, &mut list, &mut count)
+                .ok()
+                .context("MFTEnumEx")?;
             let mut out = Vec::new();
             for i in 0..count as usize {
                 let p = *list.add(i);
@@ -503,17 +527,17 @@ impl Drop for MfEncoder {
     }
 }
 
-fn set_codec(c: &ICodecAPI, api: &GUID, value: VARIANT) {
+pub(super) fn set_codec(c: &ICodecAPI, api: &GUID, value: VARIANT) {
     if let Err(e) = unsafe { c.SetValue(api, &value) } {
         tracing::debug!("ICodecAPI {api:?}: {e}");
     }
 }
 
-fn u32_variant(v: u32) -> VARIANT {
+pub(super) fn u32_variant(v: u32) -> VARIANT {
     variant(VT_UI4, VARIANT_0_0_0 { ulVal: v })
 }
 
-fn bool_variant() -> VARIANT {
+pub(super) fn bool_variant() -> VARIANT {
     variant(
         VT_BOOL,
         VARIANT_0_0_0 {

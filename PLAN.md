@@ -187,7 +187,8 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - **Media Foundation** (Windows AMD/Intel, `hw/mediafoundation.rs`): the vendor's H.264 encoder MFT (async events handled), fed NV12 from memory. mfplat.dll is loaded at run time, so Windows N and Server without Media Foundation still start. CI tests it with Microsoft's software MFT; not yet run on a real AMD/Intel Windows PC.
   - **NVDEC** (Linux + Windows, `hw/nvdec.rs`): the driver's parser and decoder, with the frame scaled to the tile on the GPU (the output size changes at the next keyframe) and copied back as NV12. 4K into a 1080p tile takes 5 ms instead of 14; a 4K60 viewer holds 60 fps at 74% of one core where OpenH264 manages about 34 fps at 196%. On failure it switches to OpenH264 and asks for a keyframe.
   - **VideoToolbox decode** (macOS, `hw/vtdecode.rs`): Annex-B is rewrapped as AVCC sample buffers for a VTDecompressionSession, which scales to the tile (remade at the next keyframe when the tile changes) and returns NV12. Tested in CI; not yet run on a real Mac.
-  - Remaining: hardware decode on AMD/Intel (VA-API decode needs our own slice-header and reference-list handling; Media Foundation's decoder needs a D3D11 device to use the GPU).
+  - **Media Foundation decode** (Windows without NVIDIA, `hw/mfdecode.rs`): Microsoft's H.264 decoder MFT given a D3D11 device, so it decodes with DXVA on AMD/Intel GPUs. Used only when it gets the GPU; CI tests its software mode against OpenH264. Not yet run on a real AMD/Intel Windows PC.
+  - Remaining: hardware decode on Linux AMD/Intel (VA-API decode needs our own slice-header and reference-list handling).
 - [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.
 
 ## 5. Running and testing

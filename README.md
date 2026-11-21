@@ -11,7 +11,7 @@ Peer-to-peer screen sharing rooms with a familiar, Discord-style interface. Star
 - **Contacts:** add people you've called, see when they're online or in a call, ring them, send them files outside calls. glance waits in the tray and starts on login.
 - **Settings:** devices, light/dark theme, a custom relay server, start on login.
 
-See [PLAN.md](PLAN.md) for the roadmap. Video is encoded on the GPU when there is one (NVENC on NVIDIA, VA-API on Linux AMD/Intel, Media Foundation on Windows AMD/Intel, VideoToolbox on Macs) and decoded on the GPU with NVDEC (NVIDIA) or VideoToolbox (Macs); everything else uses OpenH264. Not done yet: GPU decoding on AMD/Intel, and signed installers.
+See [PLAN.md](PLAN.md) for the roadmap. Video is encoded on the GPU when there is one (NVENC on NVIDIA, VA-API on Linux AMD/Intel, Media Foundation on Windows AMD/Intel, VideoToolbox on Macs) and decoded on the GPU with NVDEC (NVIDIA), Media Foundation/DXVA (Windows AMD/Intel) or VideoToolbox (Macs); everything else uses OpenH264. Not done yet: GPU decoding on Linux AMD/Intel, and signed installers.
 
 ## Install
 

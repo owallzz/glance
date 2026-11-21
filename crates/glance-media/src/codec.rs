@@ -589,6 +589,8 @@ enum DecoderBackend {
     Nvdec(crate::hw::nvdec::NvdecDecoder),
     #[cfg(target_os = "macos")]
     VideoToolbox(crate::hw::vtdecode::VtDecoder),
+    #[cfg(target_os = "windows")]
+    MediaFoundation(crate::hw::mfdecode::MfDecoder),
 }
 
 static HARDWARE_DECODING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -602,6 +604,10 @@ pub fn hardware_decoder() -> Option<&'static str> {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         if crate::hw::nvdec::available() {
             return Some("NVIDIA NVDEC");
+        }
+        #[cfg(target_os = "windows")]
+        if crate::hw::mfdecode::hardware_available() {
+            return Some("Media Foundation (DXVA)");
         }
         #[cfg(target_os = "macos")]
         return Some("Apple VideoToolbox");
@@ -642,6 +648,15 @@ impl VideoDecoder {
                 Ok(d) => return Ok(Self::wrap(DecoderBackend::Nvdec(d))),
                 Err(e) => tracing::debug!("NVDEC unavailable, decoding with OpenH264: {e:#}"),
             }
+            #[cfg(target_os = "windows")]
+            match crate::hw::mfdecode::MfDecoder::new(true) {
+                // Microsoft's decoder only when it runs on the GPU.
+                Ok(d) if d.is_hardware() => {
+                    return Ok(Self::wrap(DecoderBackend::MediaFoundation(d)));
+                }
+                Ok(_) => tracing::debug!("no DXVA decoding, decoding with OpenH264"),
+                Err(e) => tracing::debug!("Media Foundation decoder unavailable: {e:#}"),
+            }
             #[cfg(target_os = "macos")]
             match crate::hw::vtdecode::VtDecoder::new() {
                 Ok(d) => return Ok(Self::wrap(DecoderBackend::VideoToolbox(d))),
@@ -669,6 +684,8 @@ impl VideoDecoder {
             DecoderBackend::Nvdec(_) => "NVIDIA NVDEC",
             #[cfg(target_os = "macos")]
             DecoderBackend::VideoToolbox(_) => "Apple VideoToolbox",
+            #[cfg(target_os = "windows")]
+            DecoderBackend::MediaFoundation(_) => "Media Foundation (DXVA)",
         }
     }
 
@@ -681,6 +698,8 @@ impl VideoDecoder {
             DecoderBackend::Nvdec(d) => d.fail_next(),
             #[cfg(target_os = "macos")]
             DecoderBackend::VideoToolbox(d) => d.fail_next(),
+            #[cfg(target_os = "windows")]
+            DecoderBackend::MediaFoundation(d) => d.fail_next(),
         }
     }
 
@@ -710,6 +729,8 @@ impl VideoDecoder {
             DecoderBackend::Nvdec(d) => d.decode(data, target),
             #[cfg(target_os = "macos")]
             DecoderBackend::VideoToolbox(d) => d.decode(data, target),
+            #[cfg(target_os = "windows")]
+            DecoderBackend::MediaFoundation(d) => d.decode(data),
         };
         match gpu {
             Ok(Some(f)) => self.gpu_frame_to_bgra(f, target).map(Some),
@@ -1209,6 +1230,93 @@ mod tests {
             assert!(d < 60, "channel {c} off by {d}");
         }
         enc.set_bitrate(2_000_000).unwrap();
+    }
+
+    /// Microsoft's decoder (in software, so this runs on CI; on the GPU too
+    /// when the machine has one) decodes to OpenH264's pictures, a late
+    /// joiner can start at a keyframe, and the timing is printed.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn media_foundation_decoder_matches_openh264() {
+        use crate::hw::mfdecode::MfDecoder;
+        use std::time::Duration;
+        let (w, h) = (1366, 768);
+        let mut enc =
+            VideoEncoder::with_choice(w, h, 30, bitrate_for(w, h, 30), EncoderChoice::Software)
+                .unwrap();
+        let mut pattern = Pattern::new(w, h, 8);
+        let mut packets = Vec::new();
+        for i in 0..40 {
+            if i == 25 {
+                enc.force_keyframe();
+            }
+            if let Some(p) = enc.encode(&pattern.next_frame()).unwrap() {
+                packets.push(p);
+            }
+        }
+        for gpu in [false, true] {
+            let mut mfd = match MfDecoder::new(gpu) {
+                Ok(d) => d,
+                Err(e) if format!("{e:#}").contains("mfplat.dll") => {
+                    eprintln!("no Media Foundation on this Windows; skipping: {e:#}");
+                    return;
+                }
+                Err(e) => panic!("{e:#}"),
+            };
+            eprintln!(
+                "Media Foundation decoder, GPU asked: {gpu}, on GPU: {}",
+                mfd.is_hardware()
+            );
+            let mut sw = VideoDecoder::new().unwrap();
+            let mut compared = 0;
+            let (mut t_mf, mut t_sw) = (Duration::ZERO, Duration::ZERO);
+            for (i, p) in packets.iter().enumerate() {
+                let t = Instant::now();
+                let a = mfd.decode(&p.data).unwrap();
+                t_mf += t.elapsed();
+                let t = Instant::now();
+                let b = sw.decode(&p.data, (0, 0)).unwrap();
+                t_sw += t.elapsed();
+                if let (Some(a), Some(b)) = (a, b) {
+                    assert_eq!((a.width, a.height), (w, h), "frame {i}");
+                    let mut planes = PlaneScaler::default();
+                    let mut chroma = (Vec::new(), Vec::new());
+                    split_chroma(&a.uv, &mut chroma.0, &mut chroma.1);
+                    let yuv = I420 {
+                        width: w as usize,
+                        height: h as usize,
+                        y: &a.y,
+                        u: &chroma.0,
+                        v: &chroma.1,
+                    };
+                    let a = to_bgra(&mut planes, &yuv, (0, 0)).unwrap();
+                    let worst = a
+                        .bgra
+                        .iter()
+                        .zip(&b.bgra)
+                        .map(|(x, y)| (*x as i32 - *y as i32).abs())
+                        .max()
+                        .unwrap();
+                    assert!(worst <= 3, "frame {i} off by {worst}");
+                    compared += 1;
+                }
+                if p.keyframe && i > 0 {
+                    let mut late = MfDecoder::new(gpu).unwrap();
+                    assert!(late.decode(&p.data).unwrap().is_some(), "late join at {i}");
+                }
+            }
+            assert!(
+                compared >= packets.len() - 2,
+                "{compared} of {}",
+                packets.len()
+            );
+            let n = packets.len() as f64;
+            eprintln!(
+                "  {w}x{h}: Media Foundation {:.2} ms/frame, OpenH264 {:.2} ms/frame",
+                t_mf.as_secs_f64() * 1e3 / n,
+                t_sw.as_secs_f64() * 1e3 / n
+            );
+        }
     }
 
     /// VideoToolbox (Apple's software encoder is allowed, so this runs on CI

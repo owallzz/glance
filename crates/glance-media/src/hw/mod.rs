@@ -6,6 +6,8 @@ pub mod annexb;
 mod h264_headers;
 #[cfg(target_os = "windows")]
 pub mod mediafoundation;
+#[cfg(target_os = "windows")]
+pub mod mfdecode;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 mod nv12;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
