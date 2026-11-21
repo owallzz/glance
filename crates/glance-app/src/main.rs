@@ -97,13 +97,15 @@ fn main() {
         scheme::register();
     }
 
-    // Look for a GPU encoder in the background (loading the driver takes a
+    // Look for a GPU encoder and decoder in the background (loading the driver takes a
     // moment); settings and Go Live read the answer once it's in.
     std::thread::Builder::new()
         .name("encoder-probe".into())
         .spawn(|| {
             let found = glance_media::codec::hardware_encoder();
             tracing::info!("hardware encoder: {}", found.unwrap_or("none"));
+            let found = glance_media::codec::hardware_decoder();
+            tracing::info!("hardware decoder: {}", found.unwrap_or("none"));
         })
         .ok();
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);

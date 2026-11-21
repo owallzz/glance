@@ -574,17 +574,92 @@ impl Drop for RawEncoder {
     }
 }
 
+/// H.264 to BGRA at the size a tile shows: NVDEC on NVIDIA GPUs, OpenH264
+/// everywhere else.
 pub struct VideoDecoder {
-    decoder: Decoder,
+    backend: DecoderBackend,
     planes: PlaneScaler,
+    /// U and V split out of a hardware decoder's NV12.
+    chroma: (Vec<u8>, Vec<u8>),
+}
+
+enum DecoderBackend {
+    Software(Box<Decoder>),
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    Nvdec(crate::hw::nvdec::NvdecDecoder),
+}
+
+static HARDWARE_DECODING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+static HARDWARE_DECODER: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+
+/// The GPU decoder this machine has, if any. The first call loads the
+/// driver, so call it off the UI thread.
+pub fn hardware_decoder() -> Option<&'static str> {
+    *HARDWARE_DECODER.get_or_init(|| {
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if crate::hw::nvdec::available() {
+            return Some("NVIDIA NVDEC");
+        }
+        None
+    })
+}
+
+/// [`hardware_decoder`]'s answer if it has been probed already.
+pub fn hardware_decoder_known() -> Option<Option<&'static str>> {
+    HARDWARE_DECODER.get().copied()
+}
+
+/// Whether [`VideoDecoder::auto`] may decode on the GPU (a setting).
+pub fn set_hardware_decoding(on: bool) {
+    HARDWARE_DECODING.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 impl VideoDecoder {
+    /// An OpenH264 (software) decoder.
     pub fn new() -> Result<Self> {
-        Ok(Self {
-            decoder: Decoder::new().context("create H.264 decoder")?,
+        Ok(Self::wrap(DecoderBackend::Software(Box::new(
+            Decoder::new().context("create H.264 decoder")?,
+        ))))
+    }
+
+    /// A GPU decoder when there is one (and hardware decoding is on),
+    /// otherwise OpenH264. `GLANCE_DECODER=software|hardware` overrides.
+    pub fn auto() -> Result<Self> {
+        let want = match std::env::var("GLANCE_DECODER").as_deref() {
+            Ok("software") => false,
+            Ok("hardware") => true,
+            _ => HARDWARE_DECODING.load(std::sync::atomic::Ordering::Relaxed),
+        };
+        if want {
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            match crate::hw::nvdec::NvdecDecoder::new() {
+                Ok(d) => return Ok(Self::wrap(DecoderBackend::Nvdec(d))),
+                Err(e) => tracing::debug!("NVDEC unavailable, decoding with OpenH264: {e:#}"),
+            }
+        }
+        Self::new()
+    }
+
+    fn wrap(backend: DecoderBackend) -> Self {
+        Self {
+            backend,
             planes: PlaneScaler::default(),
-        })
+            chroma: Default::default(),
+        }
+    }
+
+    /// A human-readable name for logs and the stats overlay.
+    pub fn backend_name(&self) -> &'static str {
+        match &self.backend {
+            DecoderBackend::Software(_) => "OpenH264 (software)",
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            DecoderBackend::Nvdec(_) => "NVIDIA NVDEC",
+        }
+    }
+
+    pub fn is_hardware(&self) -> bool {
+        !matches!(self.backend, DecoderBackend::Software(_))
     }
 
     /// Decode one packet and return a BGRA frame scaled to fit `target`
@@ -594,53 +669,150 @@ impl VideoDecoder {
     /// When the tile is smaller than the video, the Y/U/V planes are scaled
     /// first and only the tile-sized picture is converted to BGRA: a 4K
     /// stream in a 1080p tile costs about a third of converting it whole.
+    ///
+    /// If the GPU decoder fails, this switches to OpenH264 and returns the
+    /// error; the caller should ask for a keyframe.
     pub fn decode(&mut self, data: &[u8], target: (u32, u32)) -> Result<Option<VideoFrame>> {
-        let Some(yuv) = self.decoder.decode(data).context("decode packet")? else {
-            return Ok(None);
-        };
-        let (w, h) = yuv.dimensions();
-        let out = if target.0 == 0 || target.1 == 0 {
-            (w as u32, h as u32)
-        } else {
-            fit_within((w as u32, h as u32), target)
-        };
-        // Even sizes, and a width the SIMD converter likes (multiple of 8).
-        let out = ((out.0 & !7).max(8), (out.1 & !1).max(2));
-        if out.0 as usize >= w || out.1 as usize >= h {
-            // Full size: convert straight from the decoder's planes.
-            let (sy, su, sv) = yuv.strides();
-            let mut bgra = vec![0u8; w * h * 4];
-            i420_to_bgra(
-                Planes {
-                    y: (yuv.y(), sy),
-                    u: (yuv.u(), su),
-                    v: (yuv.v(), sv),
-                },
-                (w & !1, h & !1),
-                w,
-                &mut bgra,
-            );
-            return Ok(Some(VideoFrame {
-                width: w as u32,
-                height: h as u32,
-                bgra,
-            }));
+        match &mut self.backend {
+            DecoderBackend::Software(d) => {
+                let Some(yuv) = d.decode(data).context("decode packet")? else {
+                    return Ok(None);
+                };
+                to_bgra(&mut self.planes, &yuv, target).map(Some)
+            }
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            DecoderBackend::Nvdec(d) => match d.decode(data, target) {
+                Ok(Some(f)) if tile_size((f.width, f.height), target) == (f.width, f.height) => {
+                    // Already scaled on the GPU.
+                    let (w, h) = (f.width as usize, f.height as usize);
+                    let mut bgra = vec![0u8; w * h * 4];
+                    nv12_to_bgra((&f.y, w), (&f.uv, w), (w & !1, h & !1), w, &mut bgra);
+                    Ok(Some(VideoFrame {
+                        width: f.width,
+                        height: f.height,
+                        bgra,
+                    }))
+                }
+                Ok(Some(f)) => {
+                    let (u, v) = &mut self.chroma;
+                    split_chroma(&f.uv, u, v);
+                    let yuv = I420 {
+                        width: f.width as usize,
+                        height: f.height as usize,
+                        y: &f.y,
+                        u,
+                        v,
+                    };
+                    to_bgra(&mut self.planes, &yuv, target).map(Some)
+                }
+                Ok(None) => Ok(None),
+                Err(e) => {
+                    tracing::warn!("NVDEC failed, decoding with OpenH264 from now on: {e:#}");
+                    *self = Self::new()?;
+                    Err(e.context("hardware decode"))
+                }
+            },
         }
-        let (ow, oh) = (out.0 as usize, out.1 as usize);
-        let (y, u, v) = self.planes.scale(&yuv, out)?;
-        let mut bgra = vec![0u8; ow * oh * 4];
-        let planes = Planes {
-            y: (y, ow),
-            u: (u, ow / 2),
-            v: (v, ow / 2),
-        };
-        i420_to_bgra(planes, (ow, oh), ow, &mut bgra);
-        Ok(Some(VideoFrame {
-            width: out.0,
-            height: out.1,
-            bgra,
-        }))
     }
+}
+
+/// The size a `src` picture is shown at in a `target` tile ((0, 0) for
+/// full size): fitted, never upscaled, even, and a multiple of 8 wide.
+pub(crate) fn tile_size(src: (u32, u32), target: (u32, u32)) -> (u32, u32) {
+    let out = if target.0 == 0 || target.1 == 0 {
+        src
+    } else {
+        fit_within(src, target)
+    };
+    if out.0 >= src.0 || out.1 >= src.1 {
+        return src;
+    }
+    ((out.0 & !7).max(8), (out.1 & !1).max(2))
+}
+
+/// Convert (and scale to fit `target`) a decoded picture to BGRA.
+fn to_bgra(
+    planes: &mut PlaneScaler,
+    yuv: &impl YUVSource,
+    target: (u32, u32),
+) -> Result<VideoFrame> {
+    let (w, h) = yuv.dimensions();
+    let out = tile_size((w as u32, h as u32), target);
+    if out.0 as usize >= w || out.1 as usize >= h {
+        // Full size: convert straight from the decoder's planes.
+        let (sy, su, sv) = yuv.strides();
+        let mut bgra = vec![0u8; w * h * 4];
+        i420_to_bgra(
+            Planes {
+                y: (yuv.y(), sy),
+                u: (yuv.u(), su),
+                v: (yuv.v(), sv),
+            },
+            (w & !1, h & !1),
+            w,
+            &mut bgra,
+        );
+        return Ok(VideoFrame {
+            width: w as u32,
+            height: h as u32,
+            bgra,
+        });
+    }
+    let (ow, oh) = (out.0 as usize, out.1 as usize);
+    let (y, u, v) = planes.scale(yuv, out)?;
+    let mut bgra = vec![0u8; ow * oh * 4];
+    let planes = Planes {
+        y: (y, ow),
+        u: (u, ow / 2),
+        v: (v, ow / 2),
+    };
+    i420_to_bgra(planes, (ow, oh), ow, &mut bgra);
+    Ok(VideoFrame {
+        width: out.0,
+        height: out.1,
+        bgra,
+    })
+}
+
+/// Tightly packed I420 planes borrowed from elsewhere.
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+struct I420<'a> {
+    width: usize,
+    height: usize,
+    y: &'a [u8],
+    u: &'a [u8],
+    v: &'a [u8],
+}
+
+impl YUVSource for I420<'_> {
+    fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    fn strides(&self) -> (usize, usize, usize) {
+        (self.width, self.width / 2, self.width / 2)
+    }
+
+    fn y(&self) -> &[u8] {
+        self.y
+    }
+
+    fn u(&self) -> &[u8] {
+        self.u
+    }
+
+    fn v(&self) -> &[u8] {
+        self.v
+    }
+}
+
+/// NV12's interleaved UV plane into separate U and V planes.
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+fn split_chroma(uv: &[u8], u: &mut Vec<u8>, v: &mut Vec<u8>) {
+    u.clear();
+    v.clear();
+    u.extend(uv.iter().step_by(2));
+    v.extend(uv.iter().skip(1).step_by(2));
 }
 
 /// Scales I420 planes (bilinear) into reusable buffers.
@@ -714,27 +886,61 @@ fn i420_to_bgra(p: Planes<'_>, (w, h): (usize, usize), out_w: usize, out: &mut [
         .for_each(|(pair_row, rows)| {
             let urow = &p.u.0[pair_row * p.u.1..][..cw];
             let vrow = &p.v.0[pair_row * p.v.1..][..cw];
-            for (k, orow) in rows.chunks_mut(out_w * 4).enumerate() {
-                let row = pair_row * 2 + k;
-                let yrow = &p.y.0[row * p.y.1..][..w];
-                let orow = &mut orow[..w * 4];
-                let pairs = orow.as_chunks_mut::<8>().0.iter_mut();
-                for (((pair, ys), &cu), &cv) in
-                    pairs.zip(yrow.as_chunks::<2>().0).zip(urow).zip(vrow)
-                {
-                    let d = cu as i32 - 128;
-                    let e = cv as i32 - 128;
-                    let (rb, rg, rr) = (516 * d + 128, 128 - 100 * d - 208 * e, 409 * e + 128);
-                    for (k, &yv) in ys.iter().enumerate() {
-                        let c = (yv as i32 - 16) * 298;
-                        pair[k * 4] = ((c + rb) >> 8).clamp(0, 255) as u8;
-                        pair[k * 4 + 1] = ((c + rg) >> 8).clamp(0, 255) as u8;
-                        pair[k * 4 + 2] = ((c + rr) >> 8).clamp(0, 255) as u8;
-                        pair[k * 4 + 3] = 255;
-                    }
-                }
-            }
+            convert_row_pair(rows, pair_row, p.y, w, out_w, || {
+                urow.iter().copied().zip(vrow.iter().copied())
+            });
         });
+}
+
+/// [`i420_to_bgra`] for NV12 (interleaved U and V), as GPU decoders give.
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
+fn nv12_to_bgra(
+    y: (&[u8], usize),
+    uv: (&[u8], usize),
+    (w, h): (usize, usize),
+    out_w: usize,
+    out: &mut [u8],
+) {
+    use rayon::prelude::*;
+    out[..out_w * 4 * h]
+        .par_chunks_mut(out_w * 4 * 2)
+        .enumerate()
+        .for_each(|(pair_row, rows)| {
+            let uvrow = &uv.0[pair_row * uv.1..][..w];
+            convert_row_pair(rows, pair_row, y, w, out_w, || {
+                uvrow.as_chunks::<2>().0.iter().map(|c| (c[0], c[1]))
+            });
+        });
+}
+
+/// Two output rows sharing one row of chroma, given as (U, V) pairs.
+#[inline(always)]
+fn convert_row_pair<I: Iterator<Item = (u8, u8)>>(
+    rows: &mut [u8],
+    pair_row: usize,
+    y: (&[u8], usize),
+    w: usize,
+    out_w: usize,
+    chroma: impl Fn() -> I,
+) {
+    for (k, orow) in rows.chunks_mut(out_w * 4).enumerate() {
+        let row = pair_row * 2 + k;
+        let yrow = &y.0[row * y.1..][..w];
+        let orow = &mut orow[..w * 4];
+        let pairs = orow.as_chunks_mut::<8>().0.iter_mut();
+        for ((pair, ys), (cu, cv)) in pairs.zip(yrow.as_chunks::<2>().0).zip(chroma()) {
+            let d = cu as i32 - 128;
+            let e = cv as i32 - 128;
+            let (rb, rg, rr) = (516 * d + 128, 128 - 100 * d - 208 * e, 409 * e + 128);
+            for (k, &yv) in ys.iter().enumerate() {
+                let c = (yv as i32 - 16) * 298;
+                pair[k * 4] = ((c + rb) >> 8).clamp(0, 255) as u8;
+                pair[k * 4 + 1] = ((c + rg) >> 8).clamp(0, 255) as u8;
+                pair[k * 4 + 2] = ((c + rr) >> 8).clamp(0, 255) as u8;
+                pair[k * 4 + 3] = 255;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1015,6 +1221,114 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// NVDEC (where there is one) decodes OpenH264's and the hardware
+    /// encoder's streams to the same pictures OpenH264 does, at an odd size,
+    /// and a viewer joining at a keyframe can start there.
+    #[test]
+    fn hardware_decoder_matches_openh264() {
+        if std::env::var("GLANCE_DECODER").as_deref() == Ok("software") {
+            return;
+        }
+        let hw = VideoDecoder::auto().unwrap();
+        if !hw.is_hardware() {
+            eprintln!("no hardware decoder; skipping");
+            return;
+        }
+        let (w, h) = (1366, 768);
+        let mut choices = vec![EncoderChoice::Software];
+        if hardware_encoder().is_some() {
+            choices.push(EncoderChoice::Hardware);
+        }
+        for choice in choices {
+            let mut enc =
+                VideoEncoder::with_choice(w, h, 30, bitrate_for(w, h, 30), choice).unwrap();
+            let mut hw = VideoDecoder::auto().unwrap();
+            let mut sw = VideoDecoder::new().unwrap();
+            // Its tile shrinks mid-stream: CPU scaling until the keyframe,
+            // then the GPU's.
+            let mut resized = VideoDecoder::auto().unwrap();
+            let mut sw_resized = VideoDecoder::new().unwrap();
+            let mut pattern = Pattern::new(w, h, 6);
+            let mut compared = 0;
+            for i in 0..30 {
+                if i == 20 {
+                    enc.force_keyframe();
+                }
+                let Some(pkt) = enc.encode(&pattern.next_frame()).unwrap() else {
+                    continue;
+                };
+                let tile = if i < 10 { (0, 0) } else { (960, 540) };
+                let reference = sw_resized.decode(&pkt.data, tile).unwrap();
+                if let (Some(f), Some(reference)) =
+                    (resized.decode(&pkt.data, tile).unwrap(), reference)
+                {
+                    assert_eq!((f.width, f.height), tile_size((w, h), tile), "frame {i}");
+                    assert_eq!((f.width, f.height), (reference.width, reference.height));
+                    let mean = f
+                        .bgra
+                        .iter()
+                        .zip(&reference.bgra)
+                        .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as u64)
+                        .sum::<u64>()
+                        / f.bgra.len() as u64;
+                    assert!(
+                        mean < 12,
+                        "frame {i}: scaled picture off by {mean} on average"
+                    );
+                }
+                let a = hw.decode(&pkt.data, (0, 0)).unwrap();
+                let b = sw.decode(&pkt.data, (0, 0)).unwrap();
+                if let (Some(a), Some(b)) = (a, b) {
+                    assert_eq!((a.width, a.height), (w, h));
+                    let worst = a
+                        .bgra
+                        .iter()
+                        .zip(&b.bgra)
+                        .map(|(x, y)| (*x as i32 - *y as i32).abs())
+                        .max()
+                        .unwrap();
+                    assert!(worst <= 3, "{}: off by {worst}", enc.backend_name());
+                    compared += 1;
+                }
+                if i == 20 {
+                    assert!(pkt.keyframe);
+                    let mut late = VideoDecoder::auto().unwrap();
+                    let f = late
+                        .decode(&pkt.data, (640, 360))
+                        .unwrap()
+                        .expect("late join");
+                    assert_eq!((f.width, f.height), (640, 360));
+                }
+            }
+            assert!(compared >= 25, "{}: {compared}", enc.backend_name());
+            assert!(resized.is_hardware());
+            assert!(hw.is_hardware(), "stayed on the GPU");
+        }
+    }
+
+    /// A GPU decoder that chokes switches to OpenH264 and says so.
+    #[test]
+    fn hardware_decoder_falls_back_to_software() {
+        let mut dec = VideoDecoder::auto().unwrap();
+        if !dec.is_hardware() {
+            return;
+        }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if let DecoderBackend::Nvdec(d) = &mut dec.backend {
+            d.fail_next();
+        }
+        assert!(dec.decode(&[0, 0, 0, 1, 0x09, 0xf0], (0, 0)).is_err());
+        assert!(!dec.is_hardware(), "now on OpenH264");
+        // And it decodes the stream from the next keyframe.
+        let (w, h) = (320, 240);
+        let mut enc =
+            VideoEncoder::with_choice(w, h, 30, 500_000, EncoderChoice::Software).unwrap();
+        let mut pattern = Pattern::new(w, h, 1);
+        enc.force_keyframe();
+        let pkt = enc.encode(&pattern.next_frame()).unwrap().unwrap();
+        assert!(dec.decode(&pkt.data, (0, 0)).unwrap().is_some());
     }
 
     /// Runs only where a hardware encoder exists (not in CI).

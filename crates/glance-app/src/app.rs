@@ -116,7 +116,8 @@ pub struct Settings {
     /// The quality last used to Go Live (the picker starts there).
     pub stream_resolution: Resolution,
     pub stream_fps: u32,
-    /// Encode with the GPU when there's a supported one.
+    /// Encode (and decode) video with the GPU when there's a supported one.
+    /// The name predates GPU decoding; it stays for saved settings.
     pub hardware_encoding: bool,
 }
 
@@ -277,6 +278,7 @@ impl GlanceApp {
     }
 
     pub fn save_settings(&self) {
+        glance_media::codec::set_hardware_decoding(self.settings.hardware_encoding);
         if let Some(net) = &self.net
             && let Err(e) = self.settings.save(&net.data_dir)
         {
@@ -499,6 +501,7 @@ impl GlanceApp {
             .as_ref()
             .map(|n| Settings::load(&n.data_dir))
             .unwrap_or_default();
+        glance_media::codec::set_hardware_decoding(settings.hardware_encoding);
         let direct_files = net
             .as_ref()
             .map(|n| crate::direct::load(&n.data_dir))

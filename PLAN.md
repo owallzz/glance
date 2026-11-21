@@ -184,7 +184,9 @@ Each milestone ends with something that runs. Commit and push in small steps.
   - Streams fit within 4096x2304 (H.264 level 5.2, and the most GPU encoders take) and 4K's pixel count, so 5120x1440 goes out as 4096x1152. Going wider needs HEVC or AV1.
   - **VideoToolbox** (macOS, `hw/videotoolbox.rs`): a hardware session with low-latency rate control, Constrained Baseline, and AVCC converted to Annex-B with SPS/PPS before keyframes. Tested in CI with Apple's software encoder; not yet run on a real Mac.
   - **VA-API** (Linux AMD/Intel, `hw/vaapi.rs`): libva is loaded at run time and glance tries each render node until one has a Constrained Baseline encoder. BGRA is converted to NV12 on the CPU in parallel. Mesa writes no headers itself, so `hw/h264_headers.rs` supplies SPS, PPS and slice headers as packed headers. On an AMD integrated GPU, 4K encodes in 15 ms per frame and the sharer holds 58 fps. NVENC is tried first.
-  - Remaining: Media Foundation (AMD/Intel on Windows) and hardware decode.
+  - **Media Foundation** (Windows AMD/Intel, `hw/mediafoundation.rs`): the vendor's H.264 encoder MFT (async events handled), fed NV12 from memory. mfplat.dll is loaded at run time, so Windows N and Server without Media Foundation still start. CI tests it with Microsoft's software MFT; not yet run on a real AMD/Intel Windows PC.
+  - **NVDEC** (Linux + Windows, `hw/nvdec.rs`): the driver's parser and decoder, with the frame scaled to the tile on the GPU (the output size changes at the next keyframe) and copied back as NV12. 4K into a 1080p tile takes 5 ms instead of 14; a 4K60 viewer holds 60 fps at 74% of one core where OpenH264 manages about 34 fps at 196%. On failure it switches to OpenH264 and asks for a keyframe.
+  - Remaining: hardware decode on AMD/Intel (VA-API decode needs our own slice-header and reference-list handling) and macOS (VideoToolbox decode).
 - [ ] **M11: Polish + release.** Settings persistence, keybinds, light theme, notifications, AppImage/.dmg/.msi packaging, v0.1.0 tag.
 
 ## 5. Running and testing

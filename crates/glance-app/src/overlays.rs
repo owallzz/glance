@@ -715,8 +715,8 @@ impl GlanceApp {
                 ))
                 .child(toggle!(
                     "hw-encode",
-                    "Hardware encoding",
-                    "Use the graphics card to encode your stream when it can. Needed for 4K at 60 FPS; turn it off if streams look wrong.",
+                    "Hardware video acceleration",
+                    "Use the graphics card to encode your stream and decode the ones you watch when it can. Needed for 4K at 60 FPS; turn it off if video looks wrong. Applies to streams started afterwards.",
                     hardware_encoding
                 ))
                 .child(info_row(
@@ -727,6 +727,16 @@ impl GlanceApp {
                         Some(Some(name)) => format!("{name} (hardware), OpenH264 as fallback").into(),
                         Some(None) => "Software H.264 (OpenH264): no supported hardware encoder found".into(),
                         None => "Checking for a hardware encoder…".into(),
+                    },
+                ))
+                .child(info_row(
+                    p,
+                    "Video decoder",
+                    match glance_media::codec::hardware_decoder_known() {
+                        _ if !self.settings.hardware_encoding => "Software H.264 (OpenH264)".into(),
+                        Some(Some(name)) => format!("{name} (hardware), OpenH264 as fallback").into(),
+                        Some(None) => "Software H.264 (OpenH264): no supported hardware decoder found".into(),
+                        None => "Checking for a hardware decoder…".into(),
                     },
                 ))
                 .into_any_element(),

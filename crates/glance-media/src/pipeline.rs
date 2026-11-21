@@ -330,9 +330,10 @@ pub fn spawn_decoder(
     std::thread::Builder::new()
         .name("decode".into())
         .spawn(move || {
-            let Ok(mut decoder) = VideoDecoder::new() else {
+            let Ok(mut decoder) = VideoDecoder::auto() else {
                 return;
             };
+            tracing::info!("decoding with {}", decoder.backend_name());
             while let Some(data) = next() {
                 match decoder.decode(&data, target.get()) {
                     Ok(Some(frame)) => {

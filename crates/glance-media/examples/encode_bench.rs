@@ -61,13 +61,32 @@ fn main() -> anyhow::Result<()> {
     }
     let ms = total.as_secs_f64() * 1000.0 / frames as f64;
     println!("  (BGRA->I420 alone: {:.1} ms)", conversion_ms(w, h));
-    // Viewer side: decode and scale to a 1080p-sized tile.
+    // Viewer side: decode and scale to a 1080p-sized tile, in software and
+    // with the GPU decoder (if there is one).
     let mut dec = glance_media::codec::VideoDecoder::new()?;
     let t = std::time::Instant::now();
     for p in &packets {
         let _ = dec.decode(p, (1920, 1080))?;
     }
     let scaled = t.elapsed();
+    let mut hw = glance_media::codec::VideoDecoder::auto()?;
+    if hw.is_hardware() {
+        let n = packets.len().max(1) as f64;
+        let t = std::time::Instant::now();
+        for p in &packets {
+            let _ = hw.decode(p, (1920, 1080))?;
+        }
+        let tile = t.elapsed().as_secs_f64() * 1000.0 / n;
+        let t = std::time::Instant::now();
+        for p in &packets {
+            let _ = hw.decode(p, (0, 0))?;
+        }
+        let full = t.elapsed().as_secs_f64() * 1000.0 / n;
+        println!(
+            "  {}: decode+scale to 1080p tile {tile:.1} ms/frame, full size {full:.1} ms/frame",
+            hw.backend_name()
+        );
+    }
     let mut raw = openh264::decoder::Decoder::new()?;
     let (mut t_dec, mut t_rgb) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
     let mut rgba = Vec::new();
