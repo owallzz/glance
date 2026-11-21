@@ -396,13 +396,19 @@ impl VtDecoder {
             number(out.0 as i32),
             number(out.1 as i32),
         );
+        // Ask for a size only when scaling: VideoToolbox resamples whenever
+        // one is given, even the stream's own.
         // SAFETY: as above.
         let attrs = unsafe {
-            dict(&[
-                (kCVPixelBufferPixelFormatTypeKey, pixel.0),
-                (kCVPixelBufferWidthKey, w.0),
-                (kCVPixelBufferHeightKey, h.0),
-            ])
+            if out == size {
+                dict(&[(kCVPixelBufferPixelFormatTypeKey, pixel.0)])
+            } else {
+                dict(&[
+                    (kCVPixelBufferPixelFormatTypeKey, pixel.0),
+                    (kCVPixelBufferWidthKey, w.0),
+                    (kCVPixelBufferHeightKey, h.0),
+                ])
+            }
         };
         let record = OutputCallbackRecord {
             callback: on_output,

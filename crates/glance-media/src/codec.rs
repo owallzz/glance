@@ -1426,14 +1426,23 @@ mod tests {
                 let b = sw.decode(&pkt.data, (0, 0)).unwrap();
                 if let (Some(a), Some(b)) = (a, b) {
                     assert_eq!((a.width, a.height), (w, h));
-                    let worst = a
+                    let (at, worst) = a
                         .bgra
                         .iter()
                         .zip(&b.bgra)
                         .map(|(x, y)| (*x as i32 - *y as i32).abs())
-                        .max()
+                        .enumerate()
+                        .max_by_key(|(_, d)| *d)
                         .unwrap();
-                    assert!(worst <= 3, "{}: off by {worst}", enc.backend_name());
+                    let px = at / 4;
+                    assert!(
+                        worst <= 3,
+                        "{}: frame {i} off by {worst} at ({}, {}) channel {}",
+                        enc.backend_name(),
+                        px % w as usize,
+                        px / w as usize,
+                        at % 4
+                    );
                     compared += 1;
                 }
                 if i == 20 {
