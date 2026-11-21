@@ -219,6 +219,13 @@ fn local_time(ms: u64) -> String {
 
 /// An id for a received file's timeline entry (stable, so a resent file
 /// doesn't show twice).
+/// Width a DM message body gets in a window `window_width` wide: less the
+/// rail and contacts sidebar, the list's padding (16 px each side) and a
+/// scrollbar's worth, the avatar (40) and its gap (12).
+pub fn dm_body_width(window_width: f32) -> f32 {
+    (window_width - crate::room::LEFT_PANELS_WIDTH - 32. - 52. - 8.).max(0.)
+}
+
 fn file_entry_id(hash: &[u8; 32]) -> u64 {
     u64::from_le_bytes(hash[..8].try_into().expect("8 bytes"))
 }
@@ -485,7 +492,16 @@ impl GlanceApp {
             .collect()
     }
 
-    pub fn render_dm(&mut self, p: &Palette, peer: PeerId, cx: &mut Context<Self>) -> AnyElement {
+    pub fn render_dm(
+        &mut self,
+        p: &Palette,
+        peer: PeerId,
+        window_width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // Room for a message body: the window less the rail and contacts
+        // sidebar, the conversation's padding, the avatar and its gap.
+        let body_w = dm_body_width(window_width);
         let contact = self.contacts.iter().find(|c| c.profile.id == peer).cloned();
         let Some(contact) = contact else {
             self.dm_open = None;
@@ -533,7 +549,7 @@ impl GlanceApp {
             .into_iter()
             .map(|g| {
                 let who = if g[0].mine { &me } else { &them };
-                self.dm_group(p, who, &name, g, cx)
+                self.dm_group(p, who, &name, g, body_w, cx)
             })
             .collect();
 
@@ -716,6 +732,7 @@ impl GlanceApp {
         who: &Profile,
         their_name: &str,
         msgs: Vec<glance_core::dms::DmMessage>,
+        body_w: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let time = local_time(msgs[0].sent_at);
@@ -760,7 +777,7 @@ impl GlanceApp {
                                     t,
                                 ))
                                 .into_any_element(),
-                            DmBody::File(f) => self.dm_file_card(p, m.mine, &f, cx),
+                            DmBody::File(f) => self.dm_file_card(p, m.mine, &f, body_w, cx),
                         };
                         div()
                             .flex()
@@ -789,6 +806,7 @@ impl GlanceApp {
         p: &Palette,
         mine: bool,
         f: &DmFile,
+        body_w: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let Some(i) = self
@@ -808,7 +826,7 @@ impl GlanceApp {
                         ("dm-image", file_entry_id(&f.hash)),
                         &path,
                         &f.name,
-                        crate::images::THUMB_MAX_W,
+                        body_w,
                         cx,
                     )
                 });
@@ -875,7 +893,7 @@ pub fn unread_badge(p: &Palette, n: u32) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dms, message_time};
+    use super::{Dms, dm_body_width, message_time};
     use chrono::{TimeZone, Utc};
     use glance_core::PeerId;
     use glance_core::dms::{DmBody, DmState, hex};
@@ -949,5 +967,18 @@ mod tests {
         assert_eq!(message_time(t(5, 9, 7), now), "Today at 09:07");
         assert_eq!(message_time(t(4, 23, 59), now), "Yesterday at 23:59");
         assert_eq!(message_time(t(1, 18, 30), now), "2026-03-01 18:30");
+    }
+
+    #[test]
+    fn dm_images_fit_a_narrow_window() {
+        // The smallest window leaves about 316 px for a message body, so a
+        // wide picture is shrunk to that, not the usual 400.
+        let body = dm_body_width(720.);
+        assert!(body < 330. && body > 300., "{body}");
+        let (w, _) = crate::images::fit_within(1600., 900., body.min(400.), 300.);
+        assert!(w <= body);
+        // Wide windows still cap previews at 400.
+        assert!(dm_body_width(1600.) > 400.);
+        assert_eq!(dm_body_width(100.), 0.);
     }
 }

@@ -18,12 +18,13 @@ impl GlanceApp {
     pub fn render_home(
         &mut self,
         p: &Palette,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let page = match self.dm_open {
             Some(peer) if self.contacts.iter().any(|c| c.profile.id == peer) => {
-                self.render_dm(p, peer, cx)
+                let window_width = f32::from(window.viewport_size().width);
+                self.render_dm(p, peer, window_width, cx)
             }
             _ => div()
                 .flex_1()

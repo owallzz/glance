@@ -26,7 +26,7 @@ pub const CHAT_MIN_WIDTH: f32 = 240.;
 pub const CHAT_MAX_WIDTH: f32 = 640.;
 pub const CHAT_DEFAULT_WIDTH: f32 = 360.;
 /// The rail and the room sidebar, left of the stage.
-const LEFT_PANELS_WIDTH: f32 = 312.;
+pub const LEFT_PANELS_WIDTH: f32 = 312.;
 /// Keep at least this much for the stage (its control bar needs it).
 const STAGE_MIN_WIDTH: f32 = 420.;
 
