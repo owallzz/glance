@@ -698,9 +698,10 @@ impl GlanceApp {
         };
         // While the tray icon is up, closing the window minimizes it so calls
         // keep going and contacts can still ring you.
-        window.on_window_should_close(cx, |window, _cx| {
+        let this = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
             if crate::tray::active() {
-                window.minimize_window();
+                close_to_tray(&this, window, cx);
                 false
             } else {
                 true
@@ -1250,7 +1251,11 @@ impl Render for GlanceApp {
             .font_family(font)
             .text_color(p.text_normal)
             .bg(p.bg_rail)
-            .child(render_title_bar(&p, self.render_update_pill(&p, cx)));
+            .child(render_title_bar(
+                &p,
+                self.render_update_pill(&p, cx),
+                cx.entity().downgrade(),
+            ));
         // Overlays live below the title bar so the window can always be
         // dragged, minimized and closed.
         let mut content = div()
@@ -1288,15 +1293,33 @@ impl Render for GlanceApp {
     }
 }
 
+/// Closing the window while the tray is up only hides it, so stop the mic
+/// test first: nobody can see it or stop it from the tray, and it would keep
+/// the mic open and play it back through the speakers.
+fn close_to_tray(this: &WeakEntity<GlanceApp>, window: &mut Window, cx: &mut App) {
+    this.update(cx, |app, cx| {
+        if app.mic_test.is_some() {
+            app.stop_mic_test();
+            cx.notify();
+        }
+    })
+    .ok();
+    window.minimize_window();
+}
+
 /// Discord-style title bar: a thin strip in the rail colour with the app name
 /// centred. gpui-kit's `TitleBar` handles dragging, double-click to maximize,
 /// the window menu, and the minimize/maximize/close buttons per platform.
-fn render_title_bar(p: &Palette, update_pill: Option<AnyElement>) -> impl IntoElement {
+fn render_title_bar(
+    p: &Palette,
+    update_pill: Option<AnyElement>,
+    this: WeakEntity<GlanceApp>,
+) -> impl IntoElement {
     gpui_kit::component::TitleBar::new()
         // Linux close button (other platforms use on_window_should_close).
-        .on_close_window(|_, window, _| {
+        .on_close_window(move |_, window, cx| {
             if crate::tray::active() {
-                window.minimize_window();
+                close_to_tray(&this, window, cx);
             } else {
                 window.remove_window();
             }
