@@ -445,6 +445,11 @@ pub struct GlanceApp {
     pub link_copied: bool,
     /// Bumped on every copy, so only the latest one clears `link_copied`.
     pub link_copied_gen: u32,
+    /// The invite link is masked until you click to show it.
+    pub link_revealed: bool,
+    /// Message at the bottom of the window ("Invite link copied").
+    pub toast: Option<SharedString>,
+    pub toast_gen: u32,
     /// Mic and speaker volume sliders in the voice settings (0–200%).
     pub input_volume_slider: Entity<SliderState>,
     pub output_volume_slider: Entity<SliderState>,
@@ -570,6 +575,9 @@ impl GlanceApp {
             settings,
             link_copied: false,
             link_copied_gen: 0,
+            link_revealed: false,
+            toast: None,
+            toast_gen: 0,
             input_volume_slider,
             output_volume_slider,
             volumes: HashMap::new(),
@@ -1125,6 +1133,9 @@ impl Render for GlanceApp {
         }
         if self.incoming_call.is_some() {
             content = content.child(self.render_incoming_call(&p, cx));
+        }
+        if let Some(toast) = self.render_toast(&p) {
+            content = content.child(toast);
         }
         root = root.child(content);
         root.into_any_element()

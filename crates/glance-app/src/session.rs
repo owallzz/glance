@@ -87,6 +87,10 @@ impl GlanceApp {
                         tracing::info!("room link: {link}");
                         app.attach_room(handle, "Your room".into(), cx);
                         app.copy_invite_link(cx);
+                        app.show_toast(
+                            "Invite link copied. Send it to whoever you want in the room.",
+                            cx,
+                        );
                         app.ring_pending();
                     }
                     Err(e) => app.join_error = Some(format!("Couldn't start a room: {e:#}")),
@@ -190,6 +194,7 @@ impl GlanceApp {
             met: Default::default(),
         });
         self.screen = Screen::Room;
+        self.link_revealed = false;
         self.start_voice(cx);
         self.push_presence();
         self.refresh_contacts();
