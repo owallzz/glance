@@ -212,7 +212,7 @@ pub fn render_message(
         .min_w_0()
         .text_size(size)
         .line_height(relative(LINE_HEIGHT))
-        .children(r.blocks(&msg.msg.blocks))
+        .children(r.blocks(&msg.msg.blocks, 0.))
         .into_any_element()
 }
 
@@ -274,7 +274,9 @@ impl Renderer<'_> {
     /// The children of one container, spaced like CSS block flow: adjacent
     /// vertical margins collapse to the larger one (flex layout would add
     /// them), and `first` means first child of its parent, as `:first-child`.
-    fn blocks(&mut self, blocks: &[Block]) -> Vec<AnyElement> {
+    /// The last child's bottom margin collapses with `absorb`, a margin the
+    /// container already leaves under it (a list item's 4px).
+    fn blocks(&mut self, blocks: &[Block], absorb: f32) -> Vec<AnyElement> {
         let margins: Vec<(f32, f32)> = blocks
             .iter()
             .enumerate()
@@ -287,7 +289,7 @@ impl Renderer<'_> {
                 let top = if i == 0 { margins[i].0 } else { 0. };
                 let bottom = match margins.get(i + 1) {
                     Some(next) => margins[i].1.max(next.0),
-                    None => margins[i].1,
+                    None => (margins[i].1 - absorb).max(0.),
                 };
                 let el = self.block(b);
                 if top == 0. && bottom == 0. {
@@ -339,7 +341,7 @@ impl Renderer<'_> {
                             .pr(px(8.))
                             .flex()
                             .flex_col()
-                            .children(self.blocks(inner)),
+                            .children(self.blocks(inner, 0.)),
                     )
                     .into_any_element()
             }
@@ -393,7 +395,8 @@ impl Renderer<'_> {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .children(self.blocks(item)),
+                            // The row gap is the item's `margin-bottom: 4px`.
+                            .children(self.blocks(item, 4.)),
                     )
                     .into_any_element()
             })
@@ -485,7 +488,7 @@ impl Renderer<'_> {
         let (was_hidden, was_spoiler) = (self.hidden, self.block_spoiler);
         self.hidden = self.hidden || !shown;
         self.block_spoiler = Some(id);
-        let inner = self.blocks(blocks);
+        let inner = self.blocks(blocks, 0.);
         self.hidden = was_hidden;
         self.block_spoiler = was_spoiler;
         let el = div()
