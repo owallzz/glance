@@ -67,12 +67,15 @@ pub struct DmMessage {
 }
 
 impl DmMessage {
+    /// One line for the conversation list: the first line of the message
+    /// as plain text (markdown removed, spoilers masked).
     pub fn preview(&self) -> String {
         match &self.body {
             DmBody::Text(t) => {
-                let line = t.lines().next().unwrap_or_default();
+                let plain = crate::markdown::plain_text(t);
+                let line = plain.lines().next().unwrap_or_default();
                 let mut p: String = line.chars().take(PREVIEW_CHARS).collect();
-                if p.len() < t.len() {
+                if p.len() < plain.len() {
                     p.push('…');
                 }
                 p
@@ -383,6 +386,36 @@ mod tests {
 
     fn text(t: &str) -> DmBody {
         DmBody::Text(t.into())
+    }
+
+    #[test]
+    fn previews_are_plain_text() {
+        let msg = |t: &str| DmMessage {
+            id: 1,
+            mine: false,
+            sent_at: 0,
+            body: text(t),
+            state: DmState::Delivered,
+        };
+        assert_eq!(msg("**hi** _there_").preview(), "hi there");
+        assert_eq!(msg("look ||secret||").preview(), "look ▮▮▮▮");
+        assert_eq!(msg("[docs](https://x.io) now").preview(), "docs now");
+        assert_eq!(
+            msg("> quoted
+reply")
+            .preview(),
+            "quoted…"
+        );
+        assert_eq!(
+            msg("```rs
+fn main() {}
+```")
+            .preview(),
+            "fn main() {}"
+        );
+        assert_eq!(msg("  plain  ").preview(), "plain");
+        let long = "x".repeat(100);
+        assert_eq!(msg(&long).preview(), format!("{}…", "x".repeat(80)));
     }
 
     #[test]
