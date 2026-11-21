@@ -1,7 +1,7 @@
 //! Apple VideoToolbox H.264 encoding (macOS).
 //!
-//! Frames go in as BGRA pixel buffers (the media engine converts them) and
-//! come out as Constrained Baseline H.264. VideoToolbox hands back AVCC
+//! Frames are converted to NV12 (limited-range BT.601, like the other
+//! encoders) and come out as Constrained Baseline H.264. VideoToolbox hands back AVCC
 //! (length-prefixed NAL units, parameter sets on the side); we turn that
 //! into Annex-B with SPS/PPS in front of every keyframe, like the other
 //! encoders, so viewers decode it with OpenH264.
@@ -62,7 +62,10 @@ type OutputCallback = extern "C" fn(
 );
 
 const CODEC_H264: u32 = u32::from_be_bytes(*b"avc1");
-const PIXEL_BGRA: u32 = u32::from_be_bytes(*b"BGRA");
+/// NV12, limited range: we convert BGRA ourselves (BT.601, like every
+/// other encoder), so viewers' OpenH264 sees the same colours; given BGRA,
+/// VideoToolbox picks its own range and matrix.
+const PIXEL_NV12: u32 = u32::from_be_bytes(*b"420v");
 const CF_NUMBER_SINT32: isize = 3;
 const LOCK_READ_WRITE: u64 = 0;
 
@@ -99,8 +102,8 @@ unsafe extern "C" {
     ) -> i32;
     fn CVPixelBufferLockBaseAddress(buffer: CVPixelBufferRef, flags: u64) -> i32;
     fn CVPixelBufferUnlockBaseAddress(buffer: CVPixelBufferRef, flags: u64) -> i32;
-    fn CVPixelBufferGetBaseAddress(buffer: CVPixelBufferRef) -> *mut c_void;
-    fn CVPixelBufferGetBytesPerRow(buffer: CVPixelBufferRef) -> usize;
+    fn CVPixelBufferGetBaseAddressOfPlane(buffer: CVPixelBufferRef, plane: usize) -> *mut c_void;
+    fn CVPixelBufferGetBytesPerRowOfPlane(buffer: CVPixelBufferRef, plane: usize) -> usize;
     fn CVPixelBufferRelease(buffer: CVPixelBufferRef);
 }
 
@@ -231,6 +234,7 @@ pub struct VtEncoder {
     width: u32,
     height: u32,
     hardware: bool,
+    nv12: Vec<u8>,
 }
 
 // SAFETY: the session is used from one thread at a time (&mut self); the
@@ -270,7 +274,7 @@ impl VtEncoder {
                 )])
             };
             let (fmt, w, h) = (
-                number(PIXEL_BGRA as i32),
+                number(PIXEL_NV12 as i32),
                 number(width as i32),
                 number(height as i32),
             );
@@ -301,6 +305,7 @@ impl VtEncoder {
             width,
             height,
             hardware: require_hardware,
+            nv12: Vec::new(),
         };
         // SAFETY: a live session; values are CF objects alive for the call.
         unsafe {
@@ -383,16 +388,23 @@ impl VtEncoder {
             if rc != 0 || buf.is_null() {
                 bail!("create pixel buffer failed ({rc})");
             }
+            let (w, h) = (self.width as usize, self.height as usize);
+            self.nv12.resize(w * h * 3 / 2, 0);
+            let (ys, uvs) = self.nv12.split_at_mut(w * h);
+            super::nv12::bgra_to_nv12(bgra, w, h, ys, uvs);
             CVPixelBufferLockBaseAddress(buf, LOCK_READ_WRITE);
-            let base = CVPixelBufferGetBaseAddress(buf).cast::<u8>();
-            let stride = CVPixelBufferGetBytesPerRow(buf);
-            if base.is_null() || stride < row {
-                CVPixelBufferUnlockBaseAddress(buf, LOCK_READ_WRITE);
-                CVPixelBufferRelease(buf);
-                bail!("pixel buffer is too small");
-            }
-            for (y, src) in bgra.chunks_exact(row).enumerate() {
-                std::ptr::copy_nonoverlapping(src.as_ptr(), base.add(y * stride), row);
+            let planes = [(ys as &[u8], h), (uvs as &[u8], h / 2)];
+            for (i, (src, rows)) in planes.into_iter().enumerate() {
+                let base = CVPixelBufferGetBaseAddressOfPlane(buf, i).cast::<u8>();
+                let stride = CVPixelBufferGetBytesPerRowOfPlane(buf, i);
+                if base.is_null() || stride < w {
+                    CVPixelBufferUnlockBaseAddress(buf, LOCK_READ_WRITE);
+                    CVPixelBufferRelease(buf);
+                    bail!("pixel buffer is too small");
+                }
+                for (y, line) in src.chunks_exact(w).take(rows).enumerate() {
+                    std::ptr::copy_nonoverlapping(line.as_ptr(), base.add(y * stride), w);
+                }
             }
             CVPixelBufferUnlockBaseAddress(buf, LOCK_READ_WRITE);
 

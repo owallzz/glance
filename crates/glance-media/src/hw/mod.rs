@@ -8,7 +8,6 @@ mod h264_headers;
 pub mod mediafoundation;
 #[cfg(target_os = "windows")]
 pub mod mfdecode;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 mod nv12;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub mod nvdec;
