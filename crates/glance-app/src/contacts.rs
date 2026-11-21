@@ -67,10 +67,17 @@ impl GlanceApp {
         let events = handle.events.clone();
         self._contacts_task = Some(cx.spawn(async move |this, cx| {
             while let Ok(ev) = events.recv_async().await {
-                if this
-                    .update(cx, |app, cx| app.on_contact_event(ev, cx))
-                    .is_err()
-                {
+                // Handle a burst (e.g. acks for a flushed outbox) in one
+                // update so the DM files are saved once.
+                let mut batch = vec![ev];
+                batch.extend(events.try_iter().take(255));
+                let handled = this.update(cx, |app, cx| {
+                    for ev in batch {
+                        app.on_contact_event(ev, cx);
+                    }
+                    app.dms.flush();
+                });
+                if handled.is_err() {
                     break;
                 }
             }

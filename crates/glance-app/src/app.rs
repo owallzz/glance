@@ -840,7 +840,7 @@ impl GlanceApp {
 
     fn render_rail(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let home_selected = self.screen == Screen::Home;
-        let unread = self.dms.total_unread();
+        let unread = self.dm_total_unread();
         let rail_item = |id: &'static str, selected: bool, bg: Hsla, child: AnyElement| {
             let hover_bg = p.brand;
             div()

@@ -11,7 +11,7 @@
 //! lost ack is recognised and dropped by the receiver.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -102,19 +102,18 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    /// Load a saved conversation. Messages that were in flight when the app
-    /// stopped go back to queued.
-    pub fn load(path: &Path) -> Self {
-        let mut c: Conversation = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+    /// Load a saved conversation (empty if there's none yet). Messages that
+    /// were in flight when the app stopped go back to queued. A file that
+    /// can't be read is moved aside (see [`Corrupt`]) so the next save
+    /// doesn't overwrite it.
+    pub fn load(path: &Path) -> Result<Self, Corrupt> {
+        let mut c: Conversation = load_json(path)?;
         for m in &mut c.messages {
             if m.state == DmState::Sending {
                 m.state = DmState::Queued;
             }
         }
-        c
+        Ok(c)
     }
 
     pub fn to_json(&self) -> Vec<u8> {
@@ -253,11 +252,32 @@ pub struct DmIndex {
 }
 
 impl DmIndex {
-    pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+    /// Load the index (empty if there's none yet). A damaged one is moved
+    /// aside like a conversation; [`DmIndex::rebuild`] makes a new one.
+    pub fn load(path: &Path) -> Result<Self, Corrupt> {
+        load_json(path)
+    }
+
+    /// Build the index from the conversation files in `dir` (after the
+    /// saved one was lost).
+    pub fn rebuild(dir: &Path) -> Self {
+        let mut idx = DmIndex::default();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return idx;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().is_none_or(|x| x != "json") {
+                continue;
+            }
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()).and_then(unhex) else {
+                continue;
+            };
+            if let Ok(c) = Conversation::load(&path) {
+                idx.update(&id, &c);
+            }
+        }
+        idx
     }
 
     pub fn to_json(&self) -> Vec<u8> {
@@ -291,6 +311,54 @@ impl DmIndex {
         list.sort_by_key(|(_, s)| std::cmp::Reverse(s.last_at));
         list
     }
+}
+
+/// A saved file that couldn't be parsed (truncated by a crash, or written
+/// by an incompatible version). It's renamed to `kept_as` so nothing is
+/// lost, and the caller starts fresh.
+#[derive(Debug)]
+pub struct Corrupt {
+    pub path: PathBuf,
+    /// Where the damaged file was moved (None if the rename failed too).
+    pub kept_as: Option<PathBuf>,
+    pub reason: String,
+}
+
+impl std::fmt::Display for Corrupt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is damaged ({})", self.path.display(), self.reason)?;
+        match &self.kept_as {
+            Some(k) => write!(f, "; kept it as {}", k.display()),
+            None => write!(f, "; couldn't move it aside"),
+        }
+    }
+}
+
+impl std::error::Error for Corrupt {}
+
+/// Read a JSON file; a missing file is the default value. Anything else
+/// that fails moves the file aside.
+fn load_json<T: Default + serde::de::DeserializeOwned>(path: &Path) -> Result<T, Corrupt> {
+    let reason = match std::fs::read(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(T::default()),
+        Err(e) => e.to_string(),
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(v) => return Ok(v),
+            Err(e) => e.to_string(),
+        },
+    };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".corrupt-{stamp}"));
+    let aside = path.with_file_name(name);
+    let kept_as = std::fs::rename(path, &aside).ok().map(|_| aside);
+    Err(Corrupt {
+        path: path.to_path_buf(),
+        kept_as,
+        reason,
+    })
 }
 
 /// A contact id as lowercase hex (file names, index keys).
@@ -421,16 +489,49 @@ mod tests {
         );
         c.receive(4, 4, text("hey"), false);
         std::fs::write(&path, c.to_json()).unwrap();
-        let back = Conversation::load(&path);
+        let back = Conversation::load(&path).unwrap();
         assert_eq!(back.messages.len(), 4);
         assert_eq!(back.messages[0].state, DmState::Queued);
         assert_eq!(back.messages[1].state, DmState::Delivered);
         assert_eq!(back.unread, 1);
         assert_eq!(back.messages[2].preview(), "Sent a file: a.png");
         assert_eq!(
-            Conversation::load(&dir.join("missing.json")),
+            Conversation::load(&dir.join("missing.json")).unwrap(),
             Conversation::default()
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn damaged_files_are_kept_aside_and_the_index_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("glance-dms-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good_id = [1; 32];
+        let mut good = Conversation::default();
+        good.receive(1, 50, text("still here"), false);
+        std::fs::write(dir.join(format!("{}.json", hex(&good_id))), good.to_json()).unwrap();
+
+        // A conversation truncated by a crash.
+        let bad = dir.join(format!("{}.json", hex(&[2; 32])));
+        let json = good.to_json();
+        std::fs::write(&bad, &json[..json.len() / 2]).unwrap();
+        let err = Conversation::load(&bad).unwrap_err();
+        let kept = err.kept_as.clone().expect("moved aside");
+        assert!(!bad.exists());
+        assert_eq!(std::fs::read(&kept).unwrap(), &json[..json.len() / 2]);
+        assert!(err.to_string().contains("damaged"));
+        // Now it's just missing: a fresh conversation.
+        assert_eq!(Conversation::load(&bad).unwrap(), Conversation::default());
+
+        // A zero-length index (power loss) is set aside and rebuilt.
+        let index = dir.join("index.json");
+        std::fs::write(&index, b"").unwrap();
+        assert!(DmIndex::load(&index).is_err());
+        let idx = DmIndex::rebuild(&dir);
+        assert_eq!(idx.conversations.len(), 1);
+        assert_eq!(idx.get(&good_id).unwrap().unread, 1);
+        assert_eq!(idx.get(&good_id).unwrap().preview, "still here");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

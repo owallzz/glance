@@ -35,7 +35,9 @@ pub struct Dms {
     /// Conversations loaded so far.
     convs: HashMap<PeerId, Conversation>,
     dir: Option<PathBuf>,
-    writer: Option<flume::Sender<(PathBuf, Vec<u8>)>>,
+    writer: Option<flume::Sender<Save>>,
+    /// Conversations changed since the last [`Dms::flush`].
+    dirty: HashSet<PeerId>,
     /// Contacts whose glance predates direct messages (until they reconnect).
     pub unsupported: HashSet<PeerId>,
     /// How many messages of the open conversation are shown.
@@ -46,18 +48,30 @@ pub struct Dms {
 impl Dms {
     pub fn open(data_dir: &std::path::Path) -> Self {
         let dir = data_dir.join("dms");
-        let (tx, rx) = flume::unbounded::<(PathBuf, Vec<u8>)>();
+        let (tx, rx) = flume::unbounded::<Save>();
         let spawned = std::thread::Builder::new()
             .name("glance-dms".into())
             .spawn(move || writer(rx))
             .is_ok();
-        Self {
-            index: DmIndex::load(&dir.join("index.json")),
+        let index = match DmIndex::load(&dir.join("index.json")) {
+            Ok(index) => index,
+            Err(e) => {
+                tracing::warn!("{e}; rebuilding the message index");
+                DmIndex::rebuild(&dir)
+            }
+        };
+        let dms = Self {
+            index,
             dir: Some(dir),
             writer: spawned.then_some(tx),
             shown: PAGE,
             ..Default::default()
+        };
+        if dms.dir.as_ref().is_some_and(|d| d.exists()) {
+            // Write the (possibly rebuilt) index back.
+            dms.save_index();
         }
+        dms
     }
 
     fn path(&self, peer: PeerId) -> Option<PathBuf> {
@@ -67,62 +81,117 @@ impl Dms {
     /// The conversation with `peer`, loading it on first use.
     pub fn conv(&mut self, peer: PeerId) -> &mut Conversation {
         let path = self.path(peer);
-        self.convs
-            .entry(peer)
-            .or_insert_with(|| path.map(|p| Conversation::load(&p)).unwrap_or_default())
+        self.convs.entry(peer).or_insert_with(|| {
+            let Some(path) = path else {
+                return Conversation::default();
+            };
+            Conversation::load(&path).unwrap_or_else(|e| {
+                tracing::warn!("{e}; starting the conversation afresh");
+                Conversation::default()
+            })
+        })
     }
 
     pub fn loaded(&self, peer: PeerId) -> Option<&Conversation> {
         self.convs.get(&peer)
     }
 
-    /// Save a conversation and the index (off the UI thread).
-    fn save(&mut self, peer: PeerId) {
+    /// Note that a conversation changed: its summary updates now, the
+    /// files are written by the next [`Dms::flush`].
+    pub fn save(&mut self, peer: PeerId) {
         let Some(c) = self.convs.get(&peer) else {
             return;
         };
         self.index.update(&peer.0, c);
-        let (Some(tx), Some(path), Some(dir)) = (&self.writer, self.path(peer), &self.dir) else {
+        self.dirty.insert(peer);
+    }
+
+    /// Hand the changed conversations and the index to the writer thread,
+    /// which serializes and writes them. Call once per batch of changes.
+    pub fn flush(&mut self) {
+        if self.dirty.is_empty() {
             return;
-        };
-        let _ = tx.send((path, c.to_json()));
-        let _ = tx.send((dir.join("index.json"), self.index.to_json()));
+        }
+        for peer in std::mem::take(&mut self.dirty) {
+            let (Some(tx), Some(path), Some(c)) =
+                (&self.writer, self.path(peer), self.convs.get(&peer))
+            else {
+                continue;
+            };
+            let _ = tx.send(Save::Conversation(path, c.clone()));
+        }
+        self.save_index();
+    }
+
+    fn save_index(&self) {
+        if let (Some(tx), Some(dir)) = (&self.writer, &self.dir) {
+            let _ = tx.send(Save::Index(dir.join("index.json"), self.index.clone()));
+        }
     }
 
     pub fn unread(&self, peer: PeerId) -> u32 {
         self.index.get(&peer.0).map_or(0, |s| s.unread)
     }
+}
 
-    pub fn total_unread(&self) -> u32 {
-        self.index.total_unread()
+/// A snapshot for the writer thread to serialize and write.
+enum Save {
+    Conversation(PathBuf, Conversation),
+    Index(PathBuf, DmIndex),
+}
+
+impl Save {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            Save::Conversation(p, _) | Save::Index(p, _) => p,
+        }
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        match self {
+            Save::Conversation(_, c) => c.to_json(),
+            Save::Index(_, i) => i.to_json(),
+        }
     }
 }
 
 /// Write files atomically, coalescing writes queued for the same file.
-fn writer(rx: flume::Receiver<(PathBuf, Vec<u8>)>) {
+fn writer(rx: flume::Receiver<Save>) {
     while let Ok(first) = rx.recv() {
-        let mut batch: Vec<(PathBuf, Vec<u8>)> = vec![first];
-        for (path, bytes) in rx.try_iter() {
-            match batch.iter_mut().find(|(p, _)| *p == path) {
-                Some(slot) => slot.1 = bytes,
-                None => batch.push((path, bytes)),
+        let mut batch: Vec<Save> = vec![first];
+        for save in rx.try_iter() {
+            match batch.iter_mut().find(|s| s.path() == save.path()) {
+                Some(slot) => *slot = save,
+                None => batch.push(save),
             }
         }
-        for (path, bytes) in batch {
-            if let Err(e) = write_atomic(&path, &bytes) {
-                tracing::warn!("saving {} failed: {e}", path.display());
+        for save in batch {
+            if let Err(e) = write_atomic(save.path(), &save.bytes()) {
+                tracing::warn!("saving {} failed: {e}", save.path().display());
             }
         }
     }
 }
 
+/// Write to a temp file, flush it to disk, then rename it over `path`, so a
+/// crash leaves either the old file or the new one.
 fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)?;
+    // Make the rename itself durable (not possible on Windows).
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
 }
 
 /// "Today at 14:05", "Yesterday at 09:12", "2026-03-04 18:30".
@@ -246,7 +315,15 @@ impl GlanceApp {
         if self.dms.unread(peer) > 0 || self.dms.loaded(peer).is_some_and(|c| c.unread > 0) {
             self.dms.conv(peer).mark_read();
             self.dms.save(peer);
+            self.dms.flush();
         }
+    }
+
+    /// Unread messages from mutual contacts (the rail badge). Conversations
+    /// with people who are no longer contacts are hidden, so they don't
+    /// count.
+    pub fn dm_total_unread(&self) -> u32 {
+        self.dm_list().iter().map(|(_, _, unread)| unread).sum()
     }
 
     /// Write a message to a contact: it goes out now if they're online,
@@ -271,6 +348,7 @@ impl GlanceApp {
             .conv(peer)
             .push_mine(id, sent_at, DmBody::Text(text.clone()), state);
         self.dms.save(peer);
+        self.dms.flush();
         self.dms.scroll.scroll_to_bottom();
         if online && let Ok(to) = glance_net::EndpointId::from_bytes(&peer.0) {
             self.contacts_send(ContactCommand::SendDm {
@@ -310,6 +388,7 @@ impl GlanceApp {
             conv.mark_sending(dm.id);
         }
         self.dms.save(peer);
+        self.dms.flush();
         for dm in out {
             self.contacts_send(ContactCommand::SendDm { to, dm });
         }
@@ -382,6 +461,7 @@ impl GlanceApp {
             }
         }
         self.dms.save(peer);
+        self.dms.flush();
         self.dms.scroll.scroll_to_bottom();
     }
 
@@ -420,6 +500,11 @@ impl GlanceApp {
             None => contact.presence.label().to_string(),
         };
         let unsupported = self.dms.unsupported.contains(&peer);
+        // On screen in the focused window, however we got back here (e.g.
+        // leaving a call): nothing in it is unread.
+        if self.window_active {
+            self.mark_open_dm_read();
+        }
 
         let shown_max = self.dms.shown;
         let conv = self.dms.conv(peer);
@@ -764,8 +849,72 @@ pub fn unread_badge(p: &Palette, n: u32) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::message_time;
+    use super::{Dms, message_time};
     use chrono::{TimeZone, Utc};
+    use glance_core::PeerId;
+    use glance_core::dms::{DmBody, DmState, hex};
+    use std::time::{Duration, Instant};
+
+    /// Wait for the writer thread to have written `path` with `pred` true.
+    fn wait_for(path: &std::path::Path, pred: impl Fn(&str) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::fs::read_to_string(path).is_ok_and(|t| pred(&t)) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} never written",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn outbox_survives_a_restart_and_flushes_once() {
+        let data = std::env::temp_dir().join(format!("glance-app-dms-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let peer = PeerId([7; 32]);
+        let conv_path = data.join("dms").join(format!("{}.json", hex(&peer.0)));
+        let index_path = data.join("dms").join("index.json");
+
+        let mut dms = Dms::open(&data);
+        let c = dms.conv(peer);
+        c.push_mine(1, 10, DmBody::Text("in flight".into()), DmState::Sending);
+        c.push_mine(2, 20, DmBody::Text("waiting".into()), DmState::Queued);
+        dms.save(peer);
+        // Saving only marks the conversation; the summary is current at once.
+        assert_eq!(dms.index.get(&peer.0).unwrap().pending, 2);
+        assert!(!conv_path.exists());
+        dms.conv(peer)
+            .receive(3, 30, DmBody::Text("hi".into()), false);
+        dms.save(peer);
+        dms.flush();
+        wait_for(&conv_path, |t| t.contains("\"hi\""));
+        wait_for(&index_path, |t| t.contains("\"unread\": 1"));
+        drop(dms);
+
+        // After a restart, what was in flight waits to be resent with the
+        // rest of the outbox.
+        let mut dms = Dms::open(&data);
+        let s = dms.index.get(&peer.0).unwrap();
+        assert_eq!((s.pending, s.unread), (2, 1));
+        let pending: Vec<_> = dms
+            .conv(peer)
+            .pending()
+            .iter()
+            .map(|m| (m.id, m.state))
+            .collect();
+        assert_eq!(pending, vec![(1, DmState::Queued), (2, DmState::Queued)]);
+        // Delivered once acked.
+        assert!(dms.conv(peer).ack(1));
+        assert!(dms.conv(peer).ack(2));
+        dms.save(peer);
+        dms.flush();
+        wait_for(&index_path, |t| t.contains("\"pending\": 0"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
 
     #[test]
     fn message_times_read_naturally() {
