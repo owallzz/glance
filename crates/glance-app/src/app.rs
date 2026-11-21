@@ -148,6 +148,8 @@ pub struct Settings {
     pub peer_audio: glance_core::voice::PeerAudio,
     /// Room chat panel width (logical px), set by dragging its edge.
     pub chat_width: f32,
+    /// Leave people without a stream or camera off the room stage.
+    pub hide_non_video: bool,
 }
 
 impl Default for Settings {
@@ -175,6 +177,7 @@ impl Default for Settings {
             auto_update: true,
             peer_audio: Default::default(),
             chat_width: crate::room::CHAT_DEFAULT_WIDTH,
+            hide_non_video: false,
         }
     }
 }
