@@ -323,7 +323,10 @@ async fn a_message_dropped_before_the_contact_is_mutual_is_resent() {
     meet(&a, &b).await;
     let (ca, cb) = (a.contacts().clone(), b.contacts().clone());
     ca.send(ContactCommand::SetRelations(rel(b.id(), Relation::Mutual)));
-    cb.send(ContactCommand::SetRelations(rel(a.id(), Relation::Incoming)));
+    cb.send(ContactCommand::SetRelations(rel(
+        a.id(),
+        Relation::Incoming,
+    )));
 
     ca.send(ContactCommand::SendDm {
         to: b.id(),
@@ -361,9 +364,11 @@ async fn a_message_dropped_before_the_contact_is_mutual_is_resent() {
     // Ben's app catches up: Ana hears from him and resends (as her app's
     // flush on Online does).
     cb.send(ContactCommand::SetRelations(rel(a.id(), Relation::Mutual)));
-    expect(&ca, "ben online", |e| {
-        matches!(e, ContactEvent::Online { id, .. } if *id == b.id())
-    })
+    expect(
+        &ca,
+        "ben online",
+        |e| matches!(e, ContactEvent::Online { id, .. } if *id == b.id()),
+    )
     .await;
     ca.send(ContactCommand::SendDm {
         to: b.id(),
