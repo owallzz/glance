@@ -476,7 +476,7 @@ pub struct GlanceApp {
     pub calls: Vec<CallRecord>,
     pub room: Option<Room>,
     pub join_input: Entity<InputState>,
-    pub chat_input: Entity<InputState>,
+    pub chat_input: Entity<gpui_kit::component::input::TextareaState>,
     pub go_live: Option<GoLive>,
     pub settings_open: bool,
     /// The window's rounded corners this frame (zero when maximized,
@@ -552,7 +552,13 @@ impl GlanceApp {
             .detach();
         let join_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Paste a glance link or code"));
-        let chat_input = cx.new(|cx| InputState::new(window, cx).placeholder("Message the room"));
+        // Enter sends, Shift+Enter starts a new line; grows up to 8 lines.
+        let chat_input = cx.new(|cx| {
+            gpui_kit::component::input::TextareaState::new(window, cx)
+                .placeholder("Message the room")
+                .submit_on_enter(true)
+                .auto_grow(1, 8)
+        });
         let nickname_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Nickname (blank to use their name)")
         });
@@ -727,7 +733,7 @@ impl GlanceApp {
 
     fn on_chat_input(
         &mut self,
-        input: &Entity<InputState>,
+        input: &Entity<gpui_kit::component::input::TextareaState>,
         event: &gpui_kit::component::input::InputEvent,
         window: &mut Window,
         cx: &mut Context<Self>,

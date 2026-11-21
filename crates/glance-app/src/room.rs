@@ -6,7 +6,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::SelectableText;
 use gpui_kit::component::Sizable;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::Input;
+use gpui_kit::component::input::Textarea;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -1255,37 +1255,51 @@ impl GlanceApp {
             .child(
                 div().px_4().pt_2().pb(px(PANEL_MARGIN)).child(
                     div()
-                        .h(px(COMPOSER_HEIGHT))
                         .rounded(px(8.))
                         .bg(p.bg_hover)
                         .flex()
-                        .items_center()
+                        // Like the DM box: the + stays level with the last
+                        // line, and a long message grows the box upwards.
+                        .items_end()
                         .gap_2()
                         .px_2()
                         .child(
-                            icon_button(
-                                "attach",
-                                IconName::CirclePlus,
-                                "Send a file",
-                                p.interactive,
-                                p,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| this.pick_files_to_send(cx))),
+                            div().h(px(COMPOSER_HEIGHT)).flex().items_center().child(
+                                icon_button(
+                                    "attach",
+                                    IconName::CirclePlus,
+                                    "Send a file",
+                                    p.interactive,
+                                    p,
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.pick_files_to_send(cx)),
+                                ),
+                            ),
                         )
-                        .child(div().flex_1().child(
-                            Input::new(&self.chat_input).appearance(false).on_paste({
-                                // Pasted files or images are sent; text pastes as usual.
-                                let app = cx.entity().downgrade();
-                                move |item, _, cx| {
-                                    let paths = crate::files::pasted_files(item);
-                                    if paths.is_empty() {
-                                        return false;
-                                    }
-                                    let _ = app.update(cx, |app, cx| app.send_files(paths, cx));
-                                    true
-                                }
-                            }),
-                        )),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                // A one-line textarea is 40 px tall.
+                                .py(px((COMPOSER_HEIGHT - 40.) / 2.))
+                                .child(Textarea::new(&self.chat_input).appearance(false).on_paste(
+                                    {
+                                        // Pasted files or images are sent; text
+                                        // pastes as usual.
+                                        let app = cx.entity().downgrade();
+                                        move |item, _, cx| {
+                                            let paths = crate::files::pasted_files(item);
+                                            if paths.is_empty() {
+                                                return false;
+                                            }
+                                            let _ =
+                                                app.update(cx, |app, cx| app.send_files(paths, cx));
+                                            true
+                                        }
+                                    },
+                                )),
+                        ),
                 ),
             )
             // Last, so it's on top of the panel's left edge.
