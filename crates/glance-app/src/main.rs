@@ -17,6 +17,7 @@ mod overlays;
 mod person_menu;
 mod popout;
 mod recent;
+mod rich_text;
 mod room;
 mod scheme;
 mod session;
