@@ -286,36 +286,44 @@ pub fn autostart_available() -> bool {
 
 /// Register or unregister "start on login". Only release builds touch the
 /// system, and never for test identities (`GLANCE_DATA_DIR`) or portable
-/// copies. Inside Flatpak it asks the Background portal instead.
-pub fn sync_autostart(enabled: bool) {
+/// copies. Inside Flatpak it asks the Background portal instead; the
+/// returned channel then yields once if the desktop or the user refused.
+pub fn sync_autostart(enabled: bool) -> Option<flume::Receiver<()>> {
     if !autostart_available() {
-        return;
+        return None;
     }
     #[cfg(target_os = "linux")]
     if crate::net::in_flatpak() {
-        portal::request_background(enabled);
-        return;
+        return Some(portal::request_background(enabled));
     }
-    let Ok(exe) = std::env::current_exe() else {
-        return;
+    let exe = crate::net::launch_path()?;
+    let path = exe.to_str()?;
+    // The Linux autostart entry is a desktop file: quote paths with spaces.
+    let path = if cfg!(target_os = "linux") && path.contains(char::is_whitespace) {
+        format!("\"{path}\"")
+    } else {
+        path.to_owned()
     };
-    let Some(path) = exe.to_str() else { return };
     let Ok(launcher) = auto_launch::AutoLaunchBuilder::new()
         .set_app_name("glance")
-        .set_app_path(path)
+        .set_app_path(&path)
         .set_args(&["--hidden"])
         .build()
     else {
-        return;
+        return None;
     };
+    // auto-launch only checks that an entry exists, not where it points, so
+    // rewrite it whenever it's on: the app may have moved, and older builds
+    // pointed AppImage entries at the temporary mount.
     let result = match (enabled, launcher.is_enabled().unwrap_or(false)) {
-        (true, false) => launcher.enable(),
+        (true, _) => launcher.enable(),
         (false, true) => launcher.disable(),
-        _ => Ok(()),
+        (false, false) => Ok(()),
     };
     if let Err(e) = result {
         tracing::warn!("couldn't update start-on-login: {e}");
     }
+    None
 }
 
 /// The XDG Background portal: a sandboxed app can't write its own
@@ -325,9 +333,12 @@ mod portal {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use zbus::zvariant::Value;
+    use zbus::zvariant::{OwnedValue, Value};
 
-    pub fn request_background(autostart: bool) {
+    /// Ask for (or drop) autostart. The receiver yields once if the portal
+    /// refused; it's dropped without a message otherwise.
+    pub fn request_background(autostart: bool) -> flume::Receiver<()> {
+        let (tx, rx) = flume::bounded(1);
         let spawned = std::thread::Builder::new()
             .name("background-portal".into())
             .spawn(move || {
@@ -337,16 +348,26 @@ mod portal {
                 else {
                     return;
                 };
-                if let Err(e) = rt.block_on(request(autostart)) {
-                    tracing::warn!("couldn't update start-on-login through the portal: {e}");
+                match rt.block_on(request(autostart)) {
+                    Ok(Some(granted)) if autostart && !granted => {
+                        tracing::info!("the desktop refused start-on-login");
+                        let _ = tx.try_send(());
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("couldn't update start-on-login through the portal: {e}")
+                    }
                 }
             });
         if let Err(e) = spawned {
             tracing::warn!("couldn't start the portal thread: {e}");
         }
+        rx
     }
 
-    async fn request(autostart: bool) -> zbus::Result<()> {
+    /// Whether autostart ended up enabled, per the portal's answer; `None`
+    /// when no answer came.
+    async fn request(autostart: bool) -> zbus::Result<Option<bool>> {
         use futures_util::StreamExt;
         let conn = zbus::Connection::session().await?;
         // Listen for the answer before asking, on the path the portal will
@@ -382,14 +403,38 @@ mod portal {
         .await?;
         // The portal drops requests whose caller has gone, so stay connected
         // until the user answers (or gives up).
-        let _ = tokio::time::timeout(Duration::from_secs(300), answers.next()).await;
-        Ok(())
+        let Ok(Some(Ok(msg))) =
+            tokio::time::timeout(Duration::from_secs(300), answers.next()).await
+        else {
+            return Ok(None);
+        };
+        let (response, results): (u32, HashMap<String, OwnedValue>) = msg.body().deserialize()?;
+        let granted_autostart = results
+            .get("autostart")
+            .and_then(|v| bool::try_from(v).ok());
+        Ok(Some(autostart_granted(response, granted_autostart)))
+    }
+
+    /// Response 0 is success; the results say whether autostart was set up.
+    pub(super) fn autostart_granted(response: u32, autostart: Option<bool>) -> bool {
+        response == 0 && autostart.unwrap_or(false)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::icon_rgba;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn portal_refusals_turn_autostart_off() {
+        use super::portal::autostart_granted;
+        assert!(autostart_granted(0, Some(true)));
+        assert!(!autostart_granted(0, Some(false)));
+        assert!(!autostart_granted(0, None));
+        assert!(!autostart_granted(1, Some(true)), "user cancelled");
+        assert!(!autostart_granted(2, None), "other failure");
+    }
 
     #[test]
     fn ico_matches_the_packaged_one() {

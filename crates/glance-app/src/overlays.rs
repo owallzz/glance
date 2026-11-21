@@ -495,7 +495,7 @@ impl GlanceApp {
                             this.on_settings_changed();
                             this.apply_theme(window, cx);
                             this.apply_tray(window, cx);
-                            crate::tray::sync_autostart(this.settings.autostart);
+                            this.sync_autostart(cx);
                             cx.notify();
                         })),
                 )
