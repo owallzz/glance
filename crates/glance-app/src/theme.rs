@@ -85,6 +85,8 @@ pub struct Palette {
     pub red_hover: Hsla,
     /// Away/idle status.
     pub yellow: Hsla,
+    /// Someone you muted for yourself (apart from red, their own mute).
+    pub muted_by_you: Hsla,
     /// Offline/invisible status.
     pub gray: Hsla,
 }
@@ -111,6 +113,7 @@ impl Palette {
             red: rgb(0xda373c).into(),
             red_hover: rgb(0xa12828).into(),
             yellow: rgb(0xf0b232).into(),
+            muted_by_you: rgb(0xe8732c).into(),
             gray: rgb(0x80848e).into(),
         }
     }
@@ -136,6 +139,7 @@ impl Palette {
             red: rgb(0xda373c).into(),
             red_hover: rgb(0xa12828).into(),
             yellow: rgb(0xf0b232).into(),
+            muted_by_you: rgb(0xe8732c).into(),
             gray: rgb(0x80848e).into(),
         }
     }

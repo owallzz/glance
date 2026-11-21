@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use glance_core::PeerId;
+use glance_core::voice::PeerAudioPrefs;
 use glance_media::audio::{AudioEngine, EncodedAudio, EngineConfig, InputKind, OutputKind};
 use glance_net::{Command, EndpointId};
 use glance_proto::AudioDatagram;
@@ -49,8 +50,8 @@ impl GlanceApp {
                 return;
             }
         };
-        engine.set_muted(self.muted);
-        engine.set_deafened(self.deafened);
+        engine.set_muted(self.voice.muted);
+        engine.set_deafened(self.voice.deafened);
         engine.set_input_volume(self.settings.input_volume);
         engine.set_output_volume(self.settings.output_volume);
         // Network -> engine.
@@ -78,12 +79,11 @@ impl GlanceApp {
             .ok();
         handle.send(Command::SetAudioSink(Some(tx)));
         for p in &room.participants {
-            if let Some(v) = self.volumes.get(&p.profile.id) {
-                engine.set_peer_volume(p.profile.id.0, *v);
-            }
-            if let Some(v) = self.stream_volumes.get(&p.profile.id) {
-                engine.set_peer_volume(glance_media::stream_audio::stream_key(p.profile.id.0), *v);
-            }
+            apply_peer_audio(
+                &engine,
+                p.profile.id,
+                self.settings.peer_audio.get(p.profile.id),
+            );
         }
         let problems = engine.problems.clone();
         room.audio = Some(engine);
@@ -148,8 +148,8 @@ impl GlanceApp {
     /// Push mute/deafen to the engine (called from set_muted/set_deafened).
     pub fn sync_voice(&mut self) {
         if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
-            engine.set_muted(self.muted);
-            engine.set_deafened(self.deafened);
+            engine.set_muted(self.voice.muted);
+            engine.set_deafened(self.voice.deafened);
         }
     }
 
@@ -179,30 +179,50 @@ impl GlanceApp {
         cx.notify();
     }
 
+    /// Change what you chose for one person, apply it live and save it
+    /// (it's remembered by peer id across rooms and restarts).
+    fn update_peer_audio(&mut self, peer: PeerId, f: impl FnOnce(&mut PeerAudioPrefs)) {
+        let prefs = self.settings.peer_audio.update(peer, f);
+        if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
+            apply_peer_audio(engine, peer, prefs);
+        }
+        self.save_settings();
+    }
+
     /// Per-user volume, 0–200%.
     pub fn set_user_volume(&mut self, peer: PeerId, volume: f32) {
-        let v = volume.clamp(0.0, 2.0);
-        self.volumes.insert(peer, v);
-        if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
-            engine.set_peer_volume(peer.0, v);
-        }
+        self.update_peer_audio(peer, |p| p.volume = volume);
     }
 
     pub fn user_volume(&self, peer: PeerId) -> f32 {
-        self.volumes.get(&peer).copied().unwrap_or(1.0)
+        self.settings.peer_audio.get(peer).volume
+    }
+
+    /// Mute someone for you only (the room isn't told).
+    pub fn set_user_muted(&mut self, peer: PeerId, muted: bool) {
+        self.update_peer_audio(peer, |p| p.muted = muted);
+    }
+
+    pub fn user_muted(&self, peer: PeerId) -> bool {
+        self.settings.peer_audio.get(peer).muted
     }
 
     /// Volume of the audio shared with someone's screen, 0–200%.
     pub fn set_stream_volume(&mut self, peer: PeerId, volume: f32) {
-        let v = volume.clamp(0.0, 2.0);
-        self.stream_volumes.insert(peer, v);
-        if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
-            engine.set_peer_volume(glance_media::stream_audio::stream_key(peer.0), v);
-        }
+        self.update_peer_audio(peer, |p| p.stream_volume = volume);
     }
 
     pub fn stream_volume(&self, peer: PeerId) -> f32 {
-        self.stream_volumes.get(&peer).copied().unwrap_or(1.0)
+        self.settings.peer_audio.get(peer).stream_volume
+    }
+
+    /// Silence the audio shared with someone's screen (their voice stays).
+    pub fn set_stream_muted(&mut self, peer: PeerId, muted: bool) {
+        self.update_peer_audio(peer, |p| p.stream_muted = muted);
+    }
+
+    pub fn stream_muted(&self, peer: PeerId) -> bool {
+        self.settings.peer_audio.get(peer).stream_muted
     }
 
     pub fn apply_audio_processing(&mut self) {
@@ -228,4 +248,14 @@ impl GlanceApp {
             });
         }
     }
+}
+
+/// Push one person's saved volume/mute (voice and stream audio) into the
+/// engine.
+pub fn apply_peer_audio(engine: &AudioEngine, peer: PeerId, prefs: PeerAudioPrefs) {
+    let stream = glance_media::stream_audio::stream_key(peer.0);
+    engine.set_peer_volume(peer.0, prefs.volume);
+    engine.set_peer_muted(peer.0, prefs.muted);
+    engine.set_peer_volume(stream, prefs.stream_volume);
+    engine.set_peer_muted(stream, prefs.stream_muted);
 }
