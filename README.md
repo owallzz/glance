@@ -29,6 +29,7 @@ Start a room, send the link, and everyone in it can go live at the same time. Th
 
 ### What's new in 0.3
 
+- **0.3.1:** no console window when glance starts on Windows, the call timer counts up every second, and a direct message still waiting for the contact to come online can be cancelled (**Cancel** next to *Waiting for…*).
 - **Formatting in chat:** room chat and direct messages understand Discord-style markdown: **bold**, *italic*, __underline__, ~~strikethrough~~, ||spoilers|| (click to reveal), `inline code`, code blocks with syntax highlighting, quotes, headings, small subtext, bulleted and numbered lists, and links (including `[text](https://…)`). See [Formatting messages](#formatting-messages).
 - **A message box that formats as you type:** formatting shows while you write, code blocks get their language's colours, **Enter** sends, **Shift+Enter** starts a new line (room chat now takes several lines too), and **Ctrl+Enter** (**Cmd+Enter** on macOS) also sends.
 - **Safer links:** web links from chat ask before opening (tick **Trust** to skip that for a site from then on), and `glance://` invites in chat join the room, asking first if you're in another call.
