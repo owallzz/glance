@@ -484,6 +484,10 @@ impl GlanceApp {
                 .hover(move |s| s.bg(hover))
                 .child(pg.label())
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    if pg != this.settings.page {
+                        // The meter lives on the Voice page.
+                        this.stop_mic_test();
+                    }
                     this.settings.page = pg;
                     cx.notify();
                 }))
@@ -528,7 +532,7 @@ impl GlanceApp {
                         .gap_1()
                         .child(close_button("settings-close", p).on_click(cx.listener(
                             |this, _, _, cx| {
-                                this.settings_open = false;
+                                this.close_settings();
                                 cx.notify();
                             },
                         )))
@@ -599,6 +603,7 @@ impl GlanceApp {
                 )
                 .into_any_element(),
             SettingsPage::Voice => {
+                let mic_test = self.render_mic_test(p, cx);
                 let devices = self.audio_devices.get_or_insert_with(|| {
                     (
                         glance_media::audio::device::input_devices(),
@@ -663,6 +668,7 @@ impl GlanceApp {
                                         this.settings.output_device = value.clone();
                                     }
                                     this.start_voice(cx);
+                                    this.restart_mic_test(cx);
                                     this.save_settings();
                                     cx.notify();
                                 }))
@@ -748,6 +754,7 @@ impl GlanceApp {
                                 self.settings.output_volume,
                             )),
                     )
+                    .child(mic_test)
                     .child(
                         div()
                             .py_4()
@@ -1343,6 +1350,86 @@ fn volume_slider(
                 ),
         )
         .child(Slider::new(state).accessibility_label(label))
+}
+
+impl GlanceApp {
+    /// Settings → Voice: "Let's Check" plays your mic back to you while a
+    /// meter shows its level against the speaking threshold.
+    fn render_mic_test(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        const SEGMENTS: usize = 50;
+        let in_call = self.room.is_some();
+        let testing = self.mic_test.is_some();
+        let level = self.mic_test.as_ref().map_or(0, |t| t.level) as usize;
+        let threshold = glance_media::audio::SPEAKING_LEVEL as usize;
+        let lit = level * SEGMENTS / 100;
+        let segments = (0..SEGMENTS).map(|i| {
+            // Quieter than the speaking threshold: yellow; past it: green.
+            let colour = if i >= lit {
+                p.bg_input
+            } else if i * 100 / SEGMENTS < threshold {
+                p.yellow
+            } else {
+                p.green
+            };
+            div().flex_1().h_full().rounded(px(1.)).bg(colour)
+        });
+        let marker = div()
+            .absolute()
+            .top(px(-3.))
+            .bottom(px(-3.))
+            .left(relative(threshold as f32 / 100.))
+            .w(px(2.))
+            .rounded(px(1.))
+            .bg(p.text_header);
+        let button = Button::new("mic-test")
+            .label(if testing {
+                "Stop Testing"
+            } else {
+                "Let's Check"
+            })
+            .when(testing, |b| b.danger())
+            .when(!testing, |b| b.primary())
+            .disabled(in_call)
+            .when(in_call, |b| b.tooltip("Not available during a call"))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_mic_test(cx)));
+        div()
+            .py_4()
+            .border_b_1()
+            .border_color(p.bg_selected)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(section_label(p, "MIC TEST"))
+            .child(div().text_sm().text_color(p.text_muted).child(
+                "Having mic trouble? Start a test and say something: you'll hear yourself the way \
+                 others do, after noise suppression and the rest. The marker is where you start \
+                 counting as speaking.",
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_4()
+                    // Same width either way, so the meter doesn't jump.
+                    .child(div().flex_none().w(px(124.)).child(button.w_full()))
+                    .child(
+                        div()
+                            .id("mic-test-meter")
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(18.))
+                            .relative()
+                            .flex()
+                            .gap(px(2.))
+                            .children(segments)
+                            .child(marker),
+                    ),
+            )
+            .when_some(self.mic_test_error.clone(), |d, err| {
+                d.child(div().text_sm().text_color(p.red).child(err))
+            })
+            .into_any_element()
+    }
 }
 
 fn setting_row(

@@ -16,6 +16,11 @@ impl GlanceApp {
     /// Start voice for the current room (called when a live room opens or
     /// audio settings change). Failures leave the room usable without voice.
     pub fn start_voice(&mut self, cx: &mut Context<Self>) {
+        if self.room.is_some() {
+            // A call takes over the devices (and the test isn't offered in
+            // one).
+            self.stop_mic_test();
+        }
         let config = EngineConfig {
             input: InputKind::Device(self.settings.input_device.clone()),
             output: OutputKind::Device(self.settings.output_device.clone()),
@@ -169,7 +174,7 @@ impl GlanceApp {
         } else {
             self.settings.output_volume = volume;
         }
-        if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
+        for engine in self.live_engines() {
             engine.set_input_volume(self.settings.input_volume);
             engine.set_output_volume(self.settings.output_volume);
         }
@@ -242,13 +247,114 @@ impl GlanceApp {
     }
 
     pub fn apply_audio_processing(&mut self) {
-        if let Some(engine) = self.room.as_ref().and_then(|r| r.audio.as_ref()) {
+        for engine in self.live_engines() {
             engine.set_processing(
                 self.settings.echo_cancel,
                 self.settings.noise_suppression,
                 self.settings.auto_gain,
             );
         }
+    }
+
+    /// The call's engine and the mic test's (at most one runs at a time).
+    fn live_engines(&self) -> impl Iterator<Item = &AudioEngine> {
+        let call = self.room.as_ref().and_then(|r| r.audio.as_ref());
+        call.into_iter()
+            .chain(self.mic_test.as_ref().map(|t| &t.engine))
+    }
+
+    /// Settings → Voice "Let's Check" / "Stop Testing".
+    pub fn toggle_mic_test(&mut self, cx: &mut Context<Self>) {
+        if self.mic_test.is_some() {
+            self.stop_mic_test();
+        } else {
+            self.start_mic_test(cx);
+        }
+        cx.notify();
+    }
+
+    /// Start the mic test: a local engine (no network) that plays your
+    /// processed mic back through the chosen speakers, and a meter timer
+    /// that only runs while it does. Not offered during a call, where the
+    /// devices belong to the call's engine.
+    pub fn start_mic_test(&mut self, cx: &mut Context<Self>) {
+        self.stop_mic_test();
+        self.mic_test_error = None;
+        if self.room.is_some() {
+            return;
+        }
+        let config = EngineConfig {
+            input: InputKind::Device(self.settings.input_device.clone()),
+            output: OutputKind::Device(self.settings.output_device.clone()),
+            echo_cancel: self.settings.echo_cancel,
+            noise_suppression: self.settings.noise_suppression,
+            auto_gain: self.settings.auto_gain,
+        };
+        // Muted: nothing is encoded (and there's nowhere to send it anyway).
+        let engine = match AudioEngine::start(config, |_| {}) {
+            Ok(e) => e,
+            Err(e) => {
+                self.mic_test_error = Some(format!("Couldn't start the test: {e:#}"));
+                return;
+            }
+        };
+        engine.set_muted(true);
+        engine.set_input_volume(self.settings.input_volume);
+        engine.set_output_volume(self.settings.output_volume);
+        engine.set_loopback(true);
+        let problems = engine.problems.clone();
+        // ~25 fps meter; re-render only when the level moved.
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(40))
+                    .await;
+                let problem = problems.try_recv().ok();
+                let running = this
+                    .update(cx, |app, cx| {
+                        let Some(test) = app.mic_test.as_mut() else {
+                            return false;
+                        };
+                        let level = test.engine.mic_level();
+                        if level != test.level || problem.is_some() {
+                            test.level = level;
+                            if let Some(p) = problem {
+                                app.mic_test_error = Some(p);
+                            }
+                            cx.notify();
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !running {
+                    break;
+                }
+            }
+        });
+        self.mic_test = Some(MicTest {
+            engine,
+            level: 0,
+            _task: task,
+        });
+    }
+
+    /// Stop the mic test (frees the devices and the meter timer).
+    pub fn stop_mic_test(&mut self) {
+        self.mic_test = None;
+    }
+
+    /// A device changed: run the test again on the new one.
+    pub fn restart_mic_test(&mut self, cx: &mut Context<Self>) {
+        if self.mic_test.is_some() {
+            self.start_mic_test(cx);
+        }
+    }
+
+    /// Close the settings dialog (and any mic test with it).
+    pub fn close_settings(&mut self) {
+        self.settings_open = false;
+        self.stop_mic_test();
+        self.mic_test_error = None;
     }
 
     /// Append a system line to the room chat.
@@ -264,6 +370,14 @@ impl GlanceApp {
             });
         }
     }
+}
+
+/// Settings → Voice: a running mic test.
+pub struct MicTest {
+    pub engine: AudioEngine,
+    /// Last level shown on the meter, 0–100.
+    pub level: u8,
+    _task: Task<()>,
 }
 
 /// Push one person's saved volume/mute (voice and stream audio) into the

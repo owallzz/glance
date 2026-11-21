@@ -31,6 +31,9 @@ pub enum OutputKind {
     Device(Option<String>),
     /// Mix and discard (bots/tests).
     Null,
+    /// Hand each mixed 20 ms frame to a channel instead of speakers
+    /// (tests). Frames are dropped while the channel is full.
+    Capture(flume::Sender<Vec<f32>>),
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +73,8 @@ struct Shared {
     effects: Mutex<std::collections::VecDeque<f32>>,
     /// Loop the outgoing ringback (we're calling someone).
     ringback: AtomicBool,
+    /// Mic test: play the processed mic back to the speakers.
+    loopback: AtomicBool,
 }
 
 pub struct AudioEngine {
@@ -141,6 +146,15 @@ impl AudioEngine {
         self.shared.ringback.store(on, Ordering::Relaxed);
     }
 
+    /// Mic test: play your processed mic (after echo cancellation, noise
+    /// suppression, auto gain and mic volume, so exactly what others would
+    /// hear) back through the speakers. It's added to the echo canceller's
+    /// reference like any playback, so speakers don't feed back. Not meant
+    /// for calls: pair it with `set_muted(true)` so nothing is sent.
+    pub fn set_loopback(&self, on: bool) {
+        self.shared.loopback.store(on, Ordering::Relaxed);
+    }
+
     pub fn set_deafened(&self, deafened: bool) {
         self.shared.deafened.store(deafened, Ordering::Relaxed);
     }
@@ -202,6 +216,12 @@ impl AudioEngine {
         self.shared.removed.lock().unwrap().push(peer);
         self.shared.levels.lock().unwrap().remove(&peer);
         self.shared.heard.lock().unwrap().remove(&peer);
+    }
+
+    /// Loudness of the processed mic, 0–100 (see [`super::level_of`]), even
+    /// while muted. One atomic load: cheap enough for a meter.
+    pub fn mic_level(&self) -> u8 {
+        self.shared.my_level.load(Ordering::Relaxed)
     }
 
     /// Whether we're currently speaking (unmuted and loud enough).
@@ -429,6 +449,11 @@ fn run(
                 h.insert(key, (level, now));
             }
         }
+        if shared.loopback.load(Ordering::Relaxed) {
+            for (m, s) in mix.iter_mut().zip(&mic) {
+                *m += s * master;
+            }
+        }
         for m in mix.iter_mut() {
             // Soft clip so several loud speakers don't distort harshly.
             *m = m.tanh();
@@ -451,6 +476,9 @@ fn run(
         // (Sounds are in the echo canceller's reference, so the mic doesn't
         // send them back.)
         far_end.copy_from_slice(&mix);
+        if let OutputKind::Capture(tx) = &config.output {
+            let _ = tx.try_send(mix.clone());
+        }
         if spk_live {
             let queued = spk_tx.buffer().capacity() - spk_tx.slots();
             // Keep 40–120 ms queued: skip a frame when far ahead (clock
@@ -630,6 +658,67 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         true
+    }
+
+    /// Mic test: with loopback on, the (processed) mic comes out of the
+    /// speakers; with it off, nothing does. Nothing is sent while muted.
+    #[test]
+    fn loopback_plays_the_mic_back() {
+        let (tx, rx) = flume::bounded::<Vec<f32>>(64);
+        let sent = std::sync::Arc::new(AtomicU32::new(0));
+        let counter = sent.clone();
+        let engine = AudioEngine::start(
+            EngineConfig {
+                output: OutputKind::Capture(tx),
+                ..synthetic(InputKind::Tone(440.0))
+            },
+            move |_| {
+                counter.fetch_add(1, Ordering::Relaxed);
+            },
+        )
+        .unwrap();
+        engine.set_muted(true);
+        // The meter reads the mic even while muted.
+        assert!(
+            wait_until(&|| engine.mic_level() > 70),
+            "{}",
+            engine.mic_level()
+        );
+        let next_frame = || rx.recv_timeout(Duration::from_secs(5)).expect("a frame");
+        // Off: silence (skip frames mixed before the mute took effect).
+        let _ = rx.drain();
+        next_frame();
+        let sent_before = sent.load(Ordering::Relaxed);
+        for _ in 0..3 {
+            assert!(next_frame().iter().all(|&s| s == 0.0));
+        }
+
+        engine.set_loopback(true);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let frame = loop {
+            let f = next_frame();
+            if level_of(&f) > 0 || Instant::now() > deadline {
+                break f;
+            }
+        };
+        assert!(level_of(&frame) > 70, "level {}", level_of(&frame));
+        // It's the 440 Hz tone: ~17.6 zero crossings per 20 ms frame.
+        let crossings = frame
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        assert!((15..=20).contains(&crossings), "{crossings} crossings");
+
+        engine.set_loopback(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while level_of(&next_frame()) > 0 {
+            assert!(Instant::now() < deadline, "loopback didn't stop");
+        }
+        assert_eq!(
+            sent.load(Ordering::Relaxed),
+            sent_before,
+            "muted test sent audio"
+        );
     }
 
     /// Two tone engines talk into a listener; muting one locally silences
