@@ -6,7 +6,9 @@
 # system libraries stay on the host: glibc, GL/Vulkan, fontconfig and
 # friends via linuxdeploy's excludelist, plus PipeWire, ALSA, D-Bus and the
 # C++ runtime, which must match the host. Without FUSE, set
-# APPIMAGE_EXTRACT_AND_RUN=1.
+# APPIMAGE_EXTRACT_AND_RUN=1. Nothing is stripped (NO_STRIP): the bundled
+# libraries already are, and linuxdeploy's strip is too old for some hosts
+# (.relr.dyn).
 set -euo pipefail
 bin=$(realpath "$1")
 out=$(realpath -m "$2")
@@ -26,6 +28,13 @@ if [ -z "$ld" ]; then
   echo "$ld_sha256  $ld" | sha256sum -c --quiet -
   chmod +x "$ld"
 fi
+# The AppImage runtime (the loader at the start of the AppImage), pinned the
+# same way; otherwise appimagetool fetches its moving "continuous" build.
+rt_tag=20251108
+rt_sha256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+runtime="$work/runtime-x86_64"
+curl -fsSLo "$runtime" "https://github.com/AppImage/type2-runtime/releases/download/$rt_tag/runtime-x86_64"
+echo "$rt_sha256  $runtime" | sha256sum -c --quiet -
 
 app="$work/AppDir"
 mkdir -p "$app/usr/share/metainfo"
@@ -39,7 +48,7 @@ for s in 16 32 48 64 128 256 512; do
 done
 
 cd "$work"
-ARCH=x86_64 LDAI_OUTPUT="$out" OUTPUT="$out" "$ld" \
+NO_STRIP=1 ARCH=x86_64 LDAI_RUNTIME_FILE="$runtime" LDAI_OUTPUT="$out" OUTPUT="$out" "$ld" \
   --appdir "$app" \
   --executable "$bin" \
   --desktop-file "$root/packaging/linux/$id.desktop" \
