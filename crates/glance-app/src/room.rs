@@ -1173,15 +1173,23 @@ impl GlanceApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if let Some(ChatBody::System(text)) = msgs.first().map(|m| m.body.clone()) {
+            // Wraps (long words too) so the whole line stays readable.
             return div()
                 .px_4()
                 .flex()
-                .items_center()
+                .items_start()
                 .gap_2()
                 .text_sm()
                 .text_color(p.text_muted)
-                .child(icon(IconName::Radio, 14., p.red))
-                .child(text)
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .h(rems(1.25))
+                        .flex()
+                        .items_center()
+                        .child(icon(IconName::Radio, 14., p.red)),
+                )
+                .child(div().flex_1().min_w_0().whitespace_normal().child(text))
                 .into_any_element();
         }
         let profile = self.profile_of(author);
