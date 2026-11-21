@@ -146,6 +146,9 @@ pub struct Settings {
     pub auto_update: bool,
     /// Per-person volume and local mute, by peer id.
     pub peer_audio: glance_core::voice::PeerAudio,
+    /// Web sites whose chat links open without the "Leaving glance" check
+    /// (lowercase host names).
+    pub trusted_domains: Vec<String>,
 }
 
 impl Default for Settings {
@@ -172,6 +175,7 @@ impl Default for Settings {
             hardware_encoding: true,
             auto_update: true,
             peer_audio: Default::default(),
+            trusted_domains: Vec::new(),
         }
     }
 }
@@ -370,6 +374,16 @@ impl Room {
     }
 }
 
+/// A web link from chat waiting for "Visit Site" in the "Leaving glance"
+/// dialog.
+pub struct LeavingLink {
+    pub url: String,
+    /// The host the link goes to (what "Trust" would trust).
+    pub domain: String,
+    /// The "Trust <domain> links from now on" box.
+    pub trust: bool,
+}
+
 /// Everything about the room you're in.
 pub struct Room {
     pub name: String,
@@ -529,6 +543,8 @@ pub struct GlanceApp {
     pub update: crate::update_ui::UpdateState,
     /// Parsed chat messages, so markdown isn't parsed every frame.
     pub md_cache: crate::markdown_view::MarkdownCache,
+    /// The "Leaving glance" dialog for a clicked web link.
+    pub leaving: Option<LeavingLink>,
     /// Spoilers clicked open this session.
     pub revealed_spoilers: std::collections::HashSet<crate::markdown_view::SpoilerKey>,
 }
@@ -685,6 +701,7 @@ impl GlanceApp {
             immersive: None,
             update: Default::default(),
             md_cache: Default::default(),
+            leaving: None,
             revealed_spoilers: Default::default(),
         };
         // While the tray icon is up, closing the window minimizes it so calls
@@ -1219,6 +1236,8 @@ impl Render for GlanceApp {
             .on_action(cx.listener(|this, _: &CloseOverlay, window, cx| {
                 if this.close_person_menu() {
                     // Just the menu.
+                } else if this.leaving.is_some() {
+                    this.leaving = None;
                 } else if this.immersive.is_some() {
                     this.exit_fullscreen(window, cx);
                 } else if this.settings_open {
@@ -1265,6 +1284,9 @@ impl Render for GlanceApp {
         }
         if self.settings_open {
             content = content.child(self.render_settings(&p, cx));
+        }
+        if self.leaving.is_some() {
+            content = content.child(self.render_leaving(&p, cx));
         }
         if self.incoming_call.is_some() {
             content = content.child(self.render_incoming_call(&p, cx));
@@ -1334,6 +1356,19 @@ mod key_tests {
         assert!(back.peer_audio.get(a).muted);
         assert_eq!(back.peer_audio.get(a).volume, 0.4);
         assert!(!back.peer_audio.get(b).muted);
+    }
+
+    #[test]
+    fn trusted_domains_survive_a_restart() {
+        let dir = std::env::temp_dir().join(format!("glance-trust-test-{}", std::process::id()));
+        let s = super::Settings {
+            trusted_domains: vec!["example.com".into()],
+            ..Default::default()
+        };
+        s.save(&dir).unwrap();
+        let back = super::Settings::load(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(back.trusted_domains, ["example.com"]);
     }
 
     #[test]

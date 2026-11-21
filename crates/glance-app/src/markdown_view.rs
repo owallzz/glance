@@ -570,9 +570,22 @@ impl GlanceApp {
                 self.join_link(&link.url, cx);
                 self.screen = crate::app::Screen::Room;
             }
-            // Web links get the "Leaving glance" dialog in the next step.
             markdown::LinkKind::Web => {
-                let _ = (window, web_domain(&link.url));
+                // The parser only makes http(s) links; check again anyway.
+                let Some(domain) = web_domain(&link.url) else {
+                    return;
+                };
+                if self.settings.trusted_domains.contains(&domain) {
+                    cx.open_url(&link.url);
+                } else {
+                    self.leaving = Some(crate::app::LeavingLink {
+                        url: link.url.clone(),
+                        domain,
+                        trust: false,
+                    });
+                    // Escape closes the dialog.
+                    self.focus.focus(window, cx);
+                }
             }
         }
         cx.notify();

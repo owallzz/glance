@@ -1113,6 +1113,108 @@ impl GlanceApp {
         )
     }
 
+    /// "Leaving glance": a web link from chat, before it opens in the browser.
+    pub fn render_leaving(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let leaving = self.leaving.as_ref().expect("leaving open");
+        let (url, domain, trust) = (leaving.url.clone(), leaving.domain.clone(), leaving.trust);
+        modal_backdrop("leaving-backdrop")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.leaving = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("leaving")
+                    .occlude()
+                    .w(px(440.))
+                    .rounded(px(8.))
+                    .bg(p.bg_content)
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .p_4()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(p.text_header)
+                                    .child("Leaving glance"),
+                            )
+                            .child(
+                                div()
+                                    .text_color(p.text_normal)
+                                    .child("This link is taking you to the following website"),
+                            )
+                            .child(
+                                div()
+                                    .p_2()
+                                    .rounded(px(4.))
+                                    .bg(p.bg_input)
+                                    .text_sm()
+                                    .text_color(p.text_header)
+                                    .child(url),
+                            )
+                            .child(
+                                gpui_kit::component::checkbox::Checkbox::new("leaving-trust")
+                                    .checked(trust)
+                                    .label(format!("Trust {domain} links from now on"))
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                        if let Some(l) = this.leaving.as_mut() {
+                                            l.trust = *checked;
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .p_4()
+                            .bg(p.bg_sidebar)
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("leaving-back")
+                                    .ghost()
+                                    .label("Go Back")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.leaving = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("leaving-visit")
+                                    .primary()
+                                    .label("Visit Site")
+                                    .on_click(cx.listener(|this, _, _, cx| this.visit_leaving(cx))),
+                            ),
+                    ),
+            )
+    }
+
+    /// "Visit Site": remember the domain if asked, then open the link.
+    fn visit_leaving(&mut self, cx: &mut Context<Self>) {
+        let Some(leaving) = self.leaving.take() else {
+            return;
+        };
+        // Only ever hand http(s) to the browser.
+        if crate::markdown_view::web_domain(&leaving.url).as_ref() != Some(&leaving.domain) {
+            return;
+        }
+        if leaving.trust && !self.settings.trusted_domains.contains(&leaving.domain) {
+            self.settings.trusted_domains.push(leaving.domain);
+            self.settings.trusted_domains.sort();
+            self.save_settings();
+        }
+        cx.open_url(&leaving.url);
+        cx.notify();
+    }
+
     /// Someone is calling: Join / Decline.
     pub fn render_incoming_call(
         &mut self,
