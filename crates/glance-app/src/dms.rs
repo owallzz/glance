@@ -421,13 +421,15 @@ impl GlanceApp {
         };
         let unsupported = self.dms.unsupported.contains(&peer);
 
-        let conv = self.dms.conv(peer).clone();
+        let shown_max = self.dms.shown;
+        let conv = self.dms.conv(peer);
         let total = conv.messages.len();
-        let shown = self.dms.shown.min(total);
-        let hidden = total - shown;
+        let hidden = total - shown_max.min(total);
+        // Only the visible tail is copied out for rendering.
+        let visible = conv.messages[hidden..].to_vec();
         // Group consecutive messages by author when close in time.
         let mut groups: Vec<Vec<glance_core::dms::DmMessage>> = Vec::new();
-        for m in conv.messages.into_iter().skip(hidden) {
+        for m in visible {
             match groups.last_mut() {
                 Some(g)
                     if g[0].mine == m.mine
