@@ -1116,6 +1116,65 @@ mod tests {
         assert_eq!((out.width, out.height), (320, 180));
     }
 
+    /// A sharer changing quality mid-stream sends a new encoder's keyframe
+    /// (new SPS) at another size; every decoder, software or GPU (NVDEC,
+    /// VideoToolbox, Media Foundation where this runs), must follow without
+    /// being recreated, at full size and scaled to a tile.
+    #[test]
+    fn decoders_follow_resolution_changes_at_keyframes() {
+        let sizes = [(1280, 720), (1920, 1080), (1280, 720), (854, 480)];
+        let mut packets = Vec::new();
+        for (w, h) in sizes {
+            let mut enc =
+                VideoEncoder::with_choice(w, h, 30, bitrate_for(w, h, 30), EncoderChoice::Software)
+                    .unwrap();
+            let mut pattern = Pattern::new(w, h, 4);
+            let first = packets.len();
+            for _ in 0..6 {
+                if let Some(pkt) = enc.encode(&pattern.next_frame()).unwrap() {
+                    assert_eq!(pkt.keyframe, packets.len() == first);
+                    packets.push(pkt);
+                }
+            }
+        }
+        let mut decoders = vec![("software", VideoDecoder::new().unwrap())];
+        if std::env::var("GLANCE_DECODER").as_deref() != Ok("software") {
+            let hw = VideoDecoder::auto().unwrap();
+            if hw.is_hardware() {
+                decoders.push(("hardware", hw));
+            }
+        }
+        for (name, mut dec) in decoders {
+            let backend = dec.backend_name();
+            for tile in [(0, 0), (960, 540)] {
+                let mut pictures = 0;
+                for (i, pkt) in packets.iter().enumerate() {
+                    let f = dec
+                        .decode(&pkt.data, tile)
+                        .unwrap_or_else(|e| panic!("{backend}: packet {i}: {e:#}"));
+                    // OpenH264 answers every packet; a GPU decoder may
+                    // hold one back now and then.
+                    let Some(f) = f else {
+                        assert!(dec.is_hardware(), "{backend}: packet {i} gave no picture");
+                        continue;
+                    };
+                    pictures += 1;
+                    assert_eq!(
+                        (f.width, f.height),
+                        tile_size((pkt.width, pkt.height), tile),
+                        "{backend}: packet {i} in a {tile:?} tile"
+                    );
+                }
+                assert!(pictures * 10 >= packets.len() * 9, "{backend}: {pictures}");
+            }
+            assert_eq!(
+                dec.is_hardware(),
+                name == "hardware",
+                "{backend} stayed on its backend"
+            );
+        }
+    }
+
     #[test]
     fn rejects_odd_sizes_and_mismatched_frames() {
         assert!(VideoEncoder::new(321, 240, 30, 1_000_000).is_err());
