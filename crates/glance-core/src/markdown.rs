@@ -890,6 +890,11 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// A line that continues the list item above it: not blank, not a bullet.
+    fn lazy_line(&self, ls: usize) -> bool {
+        !self.s[ls..self.line_end(ls)].trim().is_empty() && self.bullet(ls).is_none()
+    }
+
     fn list(&mut self, i: usize) -> Option<(Node, usize)> {
         let first = self.bullet(i)?;
         let base = first.indent;
@@ -907,13 +912,26 @@ impl<'a> Parser<'a> {
             if bl.indent > base || bl.ordered.is_some() != ordered {
                 break;
             }
-            let mut children = self.child1(bl.content.clone(), item_ctx);
-            let sub_start = bl.next;
-            let mut next = sub_start;
+            // Lazy continuation (simple-markdown's LIST_ITEM_R): the item
+            // takes the following lines up to a blank line or a bullet, so a
+            // spoiler or code fence opened in it can close on a later line.
+            let mut end = bl.content.end;
+            let mut next = bl.next;
+            while next < n && self.lazy_line(next) {
+                end = self.line_end(next);
+                next = if end < n { end + 1 } else { end };
+            }
+            let mut children = self.child1(bl.content.start..end, item_ctx);
+            let sub_start = next;
             while next < n {
                 match self.bullet(next) {
                     Some(c) if c.indent > base => next = c.next,
-                    _ => break,
+                    Some(_) => break,
+                    None if self.lazy_line(next) => {
+                        let le = self.line_end(next);
+                        next = if le < n { le + 1 } else { le };
+                    }
+                    None => break,
                 }
             }
             if next > sub_start {
@@ -2565,10 +2583,11 @@ mod tests {
             vec![Block::Quote(vec![code_block(Some("js"), "x")])]
         );
         assert_eq!(
-            blocks(">>> # T\n- a\n```x```"),
+            blocks(">>> # T\n- a\n\n```x```"),
             vec![Block::Quote(vec![
                 heading(1, "T"),
                 bullets(&["a"]),
+                para(""),
                 code_block(None, "x"),
             ])]
         );
@@ -2609,7 +2628,23 @@ mod tests {
         literal("+ a");
         literal("x - a");
         literal("1234567890. too long");
-        assert_eq!(blocks("- a\nb"), vec![bullets(&["a"]), para("b")]);
+        // A following line that is not a bullet continues the item.
+        assert_eq!(blocks("- a\nb"), vec![bullets(&["a\nb"])]);
+        assert_eq!(blocks("- a\nb\n- c"), vec![bullets(&["a\nb", "c"])]);
+        // ...so a spoiler or fence opened in an item can close later.
+        let m = parse("- x ||a\nb||");
+        assert_eq!(m.spoilers, 1);
+        assert_eq!(
+            plain_text("- x ||a\nb||"),
+            "\u{2022} x \u{25ae}\u{25ae}\u{25ae}\u{25ae}"
+        );
+        assert_eq!(
+            blocks("1. i: ```sh\nc\n```"),
+            vec![Block::List {
+                start: Some(1),
+                items: vec![vec![para("i: "), code_block(Some("sh"), "c")]],
+            }]
+        );
         assert_eq!(blocks("x\n- a"), vec![para("x"), bullets(&["a"])]);
         assert_eq!(
             blocks("- a\n\n- b"),
