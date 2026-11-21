@@ -86,6 +86,8 @@ pub enum RoomEvent {
         state: MemberState,
         /// Where they can be reached (remembered for rejoining).
         addr: EndpointAddr,
+        /// They were already in the room when we arrived (not a newcomer).
+        existing: bool,
     },
     MemberUpdated {
         id: EndpointId,
@@ -271,6 +273,9 @@ struct Actor {
     got_history: bool,
     /// Members still to try if the one we dialed to get in fails.
     entry: std::collections::VecDeque<EndpointAddr>,
+    /// Who was in the room when we got in (from the first Welcome), until
+    /// they're connected: their `MemberJoined` is marked `existing`.
+    present_at_join: std::collections::HashSet<EndpointId>,
 }
 
 pub(crate) fn spawn(
@@ -304,6 +309,7 @@ pub(crate) fn spawn(
         history: Default::default(),
         got_history: false,
         entry: entry.into_iter().filter(|a| a.id != me).collect(),
+        present_at_join: Default::default(),
     };
     let fwd = inbound_tx.clone();
     tokio::spawn(async move {
@@ -393,6 +399,9 @@ impl Actor {
                 let id = conn.remote_id();
                 if !self.got_history {
                     self.got_history = true;
+                    self.present_at_join.insert(id);
+                    self.present_at_join
+                        .extend(members.iter().map(|m| m.addr.id).filter(|m| *m != self.me));
                     if !history.is_empty() {
                         self.history.extend(history.iter().cloned());
                         let _ = self.events.send(RoomEvent::History(history));
@@ -584,12 +593,14 @@ impl Actor {
                 tx,
             },
         );
+        let existing = self.present_at_join.remove(&id);
         if is_new {
             let _ = self.events.send(RoomEvent::MemberJoined {
                 id,
                 profile,
                 state,
                 addr: info.addr,
+                existing,
             });
         }
     }

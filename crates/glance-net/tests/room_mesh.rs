@@ -43,14 +43,24 @@ async fn expect(
 }
 
 async fn expect_members(room: &RoomHandle, who: &str, want: &[EndpointId]) {
+    let want: Vec<_> = want.iter().map(|id| (*id, None)).collect();
+    expect_members_flagged(room, who, &want).await;
+}
+
+/// Like `expect_members`, also checking each one's `existing` flag (already
+/// in the room when `who` arrived) where it's given.
+async fn expect_members_flagged(room: &RoomHandle, who: &str, want: &[(EndpointId, Option<bool>)]) {
     let mut seen = HashSet::new();
-    while !want.iter().all(|id| seen.contains(id)) {
-        if let RoomEvent::MemberJoined { id, .. } =
+    while !want.iter().all(|(id, _)| seen.contains(id)) {
+        if let RoomEvent::MemberJoined { id, existing, .. } =
             expect(room, &format!("{who} to see all members"), |e| {
                 matches!(e, RoomEvent::MemberJoined { .. })
             })
             .await
         {
+            if let Some((_, Some(want_existing))) = want.iter().find(|(w, _)| *w == id) {
+                assert_eq!(existing, *want_existing, "{who}: existing flag of {id}");
+            }
             seen.insert(id);
         }
     }
@@ -69,16 +79,17 @@ async fn three_peers_mesh_chat_state_and_leave() {
         .join_room(ticket.clone(), profile("Ben"), MemberState::default())
         .await
         .unwrap();
-    expect_members(&b, "b", &[na.id()]).await;
+    expect_members_flagged(&b, "b", &[(na.id(), Some(true))]).await;
     let c = nc
         .join_room(ticket, profile("Cy"), MemberState::default())
         .await
         .unwrap();
 
     // Everyone sees everyone (C reached B through A's Welcome list).
-    expect_members(&a, "a", &[nb.id(), nc.id()]).await;
-    expect_members(&c, "c", &[na.id(), nb.id()]).await;
-    expect_members(&b, "b", &[nc.id()]).await;
+    // Only C sees A and B as already there.
+    expect_members_flagged(&a, "a", &[(nb.id(), Some(false)), (nc.id(), Some(false))]).await;
+    expect_members_flagged(&c, "c", &[(na.id(), Some(true)), (nb.id(), Some(true))]).await;
+    expect_members_flagged(&b, "b", &[(nc.id(), Some(false))]).await;
 
     // Chat from A reaches B and C.
     a.send(Command::Chat("hi all".into()));
