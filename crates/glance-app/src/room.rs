@@ -708,7 +708,13 @@ impl GlanceApp {
                 } else {
                     p.green
                 };
-                let tag = name_tag(p, &person.profile.name, person.muted, muted_by_you);
+                let tag = name_tag(
+                    p,
+                    &person.profile.name,
+                    person.muted,
+                    person.deafened,
+                    muted_by_you,
+                );
                 // Hover button: mute/unmute them for you.
                 let group = SharedString::from(format!("ptile-{}", peer.short()));
                 let hover_bar = (!is_me).then(|| {
@@ -1389,7 +1395,13 @@ impl GlanceApp {
     }
 }
 
-fn name_tag(p: &Palette, name: &str, muted: bool, muted_by_you: bool) -> impl IntoElement {
+fn name_tag(
+    p: &Palette,
+    name: &str,
+    muted: bool,
+    deafened: bool,
+    muted_by_you: bool,
+) -> impl IntoElement {
     div()
         .absolute()
         .bottom_2()
@@ -1407,6 +1419,9 @@ fn name_tag(p: &Palette, name: &str, muted: bool, muted_by_you: bool) -> impl In
             d.child(icon(IconName::VolumeX, 14., p.muted_by_you))
         })
         .when(muted, |d| d.child(icon(IconName::MicOff, 14., p.red)))
+        .when(deafened, |d| {
+            d.child(icon(IconName::HeadphoneOff, 14., p.red))
+        })
         .child(name.to_string())
 }
 
