@@ -174,8 +174,16 @@ mod linux {
 #[cfg(target_os = "linux")]
 pub fn start(net: &crate::net::Net, tx: flume::Sender<TrayEvent>) -> Option<Tray> {
     use ksni::TrayMethods;
+    // Flatpak doesn't let apps own the spec's StatusNotifierItem-PID-N
+    // name; hosts accept the unique bus name instead.
+    let sandboxed = crate::net::in_flatpak();
     let handle = net
-        .block_on(async move { linux::GlanceTray { tx }.spawn().await })
+        .block_on(async move {
+            linux::GlanceTray { tx }
+                .disable_dbus_name(sandboxed)
+                .spawn()
+                .await
+        })
         .ok()?;
     TRAY_ACTIVE.store(true, Ordering::Relaxed);
     Some(Tray { _handle: handle })
@@ -245,10 +253,22 @@ pub fn start(_net: &crate::net::Net, _tx: flume::Sender<TrayEvent>) -> Option<Tr
     None
 }
 
+/// Whether "start on login" can work for this copy: not for portable
+/// copies, dev builds or test identities.
+pub fn autostart_available() -> bool {
+    crate::net::may_integrate()
+}
+
 /// Register or unregister "start on login". Only release builds touch the
-/// system, and never for test identities (`GLANCE_DATA_DIR`).
+/// system, and never for test identities (`GLANCE_DATA_DIR`) or portable
+/// copies. Inside Flatpak it asks the Background portal instead.
 pub fn sync_autostart(enabled: bool) {
-    if cfg!(debug_assertions) || std::env::var_os("GLANCE_DATA_DIR").is_some() {
+    if !autostart_available() {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    if crate::net::in_flatpak() {
+        portal::request_background(enabled);
         return;
     }
     let Ok(exe) = std::env::current_exe() else {
@@ -270,6 +290,75 @@ pub fn sync_autostart(enabled: bool) {
     };
     if let Err(e) = result {
         tracing::warn!("couldn't update start-on-login: {e}");
+    }
+}
+
+/// The XDG Background portal: a sandboxed app can't write its own
+/// autostart entry, so it asks the desktop to (the user may be prompted).
+#[cfg(target_os = "linux")]
+mod portal {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use zbus::zvariant::Value;
+
+    pub fn request_background(autostart: bool) {
+        let spawned = std::thread::Builder::new()
+            .name("background-portal".into())
+            .spawn(move || {
+                let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                if let Err(e) = rt.block_on(request(autostart)) {
+                    tracing::warn!("couldn't update start-on-login through the portal: {e}");
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("couldn't start the portal thread: {e}");
+        }
+    }
+
+    async fn request(autostart: bool) -> zbus::Result<()> {
+        use futures_util::StreamExt;
+        let conn = zbus::Connection::session().await?;
+        // Listen for the answer before asking, on the path the portal will
+        // use for this token.
+        let token = format!("glance_autostart_{}", std::process::id());
+        let sender = conn
+            .unique_name()
+            .map(|n| n.as_str().trim_start_matches(':').replace('.', "_"))
+            .unwrap_or_default();
+        let path = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .interface("org.freedesktop.portal.Request")?
+            .member("Response")?
+            .path(path.as_str())?
+            .build();
+        let mut answers = zbus::MessageStream::for_match_rule(rule, &conn, Some(1)).await?;
+        let mut options: HashMap<&str, Value> = HashMap::new();
+        options.insert("handle_token", Value::from(token.as_str()));
+        options.insert(
+            "reason",
+            Value::from("Start glance when you sign in, so contacts can ring you."),
+        );
+        options.insert("autostart", Value::from(autostart));
+        options.insert("commandline", Value::from(vec!["glance", "--hidden"]));
+        conn.call_method(
+            Some("org.freedesktop.portal.Desktop"),
+            "/org/freedesktop/portal/desktop",
+            Some("org.freedesktop.portal.Background"),
+            "RequestBackground",
+            &("", options),
+        )
+        .await?;
+        // The portal drops requests whose caller has gone, so stay connected
+        // until the user answers (or gives up).
+        let _ = tokio::time::timeout(Duration::from_secs(300), answers.next()).await;
+        Ok(())
     }
 }
 

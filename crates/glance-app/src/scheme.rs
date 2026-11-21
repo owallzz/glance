@@ -8,10 +8,11 @@
 //!   links arrive through `App::on_open_urls`.
 //!
 //! Like start-on-login, only release builds that use the real data dir do
-//! this, so dev builds and test identities never take over the handler.
+//! this, so dev builds, test identities and portable copies never take over
+//! the handler. Inside Flatpak the exported desktop file claims the scheme.
 
 pub fn register() {
-    if cfg!(debug_assertions) || std::env::var_os("GLANCE_DATA_DIR").is_some() {
+    if !crate::net::may_integrate() || crate::net::in_flatpak() {
         return;
     }
     let Ok(exe) = std::env::current_exe() else {

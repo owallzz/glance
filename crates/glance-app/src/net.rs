@@ -14,12 +14,64 @@ use serde::{Deserialize, Serialize};
 
 /// Where glance keeps its identity, profile and settings.
 /// `GLANCE_DATA_DIR` overrides it, which is how you run a second "person"
-/// on one machine.
+/// on one machine. A portable copy (see [`portable_dir`]) keeps its data in
+/// `data` next to the executable; otherwise it's the OS data dir.
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("GLANCE_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::data_dir().map(|d| d.join("glance")))
+    choose_data_dir(
+        std::env::var_os("GLANCE_DATA_DIR").map(PathBuf::from),
+        portable_dir(),
+        dirs::data_dir(),
+    )
+}
+
+fn choose_data_dir(
+    override_dir: Option<PathBuf>,
+    portable: Option<PathBuf>,
+    os_data: Option<PathBuf>,
+) -> PathBuf {
+    override_dir
+        .or_else(|| portable.map(|d| d.join("data")))
+        .or_else(|| os_data.map(|d| d.join("glance")))
         .unwrap_or_else(|| PathBuf::from(".glance"))
+}
+
+/// Name of the marker file that makes a copy portable.
+pub const PORTABLE_MARKER: &str = "portable";
+
+/// The folder of a portable copy: the executable's folder (the AppImage's
+/// for an AppImage) when a file named `portable` sits in it. Portable copies
+/// keep their data next to themselves and leave the system alone (no
+/// start-on-login, no glance:// registration).
+pub fn portable_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
+    portable_root(&exe, appimage.as_deref(), |p| p.is_file())
+}
+
+fn portable_root(
+    exe: &Path,
+    appimage: Option<&Path>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    // An AppImage runs from a temporary mount; the marker sits next to the
+    // .AppImage file itself.
+    let dir = appimage.unwrap_or(exe).parent()?;
+    is_file(&dir.join(PORTABLE_MARKER)).then(|| dir.to_path_buf())
+}
+
+/// Running inside a Flatpak sandbox: updates, start-on-login and the
+/// glance:// handler are the sandbox's business.
+pub fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists()
+}
+
+/// Whether this copy may change the system (start-on-login, link handler):
+/// only release builds using the real data dir, never portable copies, so
+/// dev builds and test identities don't take over the installed app.
+pub fn may_integrate() -> bool {
+    !cfg!(debug_assertions)
+        && std::env::var_os("GLANCE_DATA_DIR").is_none()
+        && portable_dir().is_none()
 }
 
 /// Load the identity key, creating it on first run (0600 on Unix).
@@ -266,6 +318,55 @@ impl Net {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_dir_prefers_override_then_portable_then_os() {
+        let o = Some(PathBuf::from("/o"));
+        let port = Some(PathBuf::from("/apps/glance"));
+        let os = Some(PathBuf::from("/home/u/.local/share"));
+        assert_eq!(
+            choose_data_dir(o.clone(), port.clone(), os.clone()),
+            PathBuf::from("/o")
+        );
+        assert_eq!(
+            choose_data_dir(None, port, os.clone()),
+            PathBuf::from("/apps/glance/data")
+        );
+        assert_eq!(
+            choose_data_dir(None, None, os),
+            PathBuf::from("/home/u/.local/share/glance")
+        );
+        assert_eq!(choose_data_dir(None, None, None), PathBuf::from(".glance"));
+    }
+
+    #[test]
+    fn portable_needs_the_marker_next_to_the_exe() {
+        let exe = Path::new("/apps/glance/glance.exe");
+        let marker = |want: &'static str| move |p: &Path| p == Path::new(want);
+        assert_eq!(
+            portable_root(exe, None, marker("/apps/glance/portable")),
+            Some(PathBuf::from("/apps/glance"))
+        );
+        assert_eq!(
+            portable_root(exe, None, marker("/elsewhere/portable")),
+            None
+        );
+        // AppImage: look next to the .AppImage, not inside its mount.
+        let mounted = Path::new("/tmp/.mount_abc/usr/bin/glance");
+        let image = Path::new("/home/u/Apps/glance.AppImage");
+        assert_eq!(
+            portable_root(mounted, Some(image), marker("/home/u/Apps/portable")),
+            Some(PathBuf::from("/home/u/Apps"))
+        );
+        assert_eq!(
+            portable_root(
+                mounted,
+                Some(image),
+                marker("/tmp/.mount_abc/usr/bin/portable")
+            ),
+            None
+        );
+    }
 
     #[test]
     fn key_and_profile_persist() {
