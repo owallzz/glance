@@ -10,6 +10,9 @@ use glance_proto::{MemberState, Ticket, WireProfile};
 
 use crate::net::Net;
 
+/// Mixed into a DM's id to make the id of the bot's echo of it.
+const ECHO_ID: u64 = 0x6563_686f_6563_686f;
+
 /// `stream`: share a test pattern of this size and frame rate.
 /// `tone`: speak a sine tone so others see/hear us talking.
 /// `file`: offer this file to the room after joining.
@@ -57,6 +60,8 @@ pub fn run(
     ));
     let relations = std::cell::RefCell::new(std::collections::HashMap::new());
     let rang = std::cell::Cell::new(false);
+    // DMs already echoed: a resend after a lost ack has the same id.
+    let echoed = std::cell::RefCell::new(std::collections::HashSet::new());
     println!("bot joined as {name}; me = {}", room.me.fmt_short());
     // Share a moving test pattern through the real encoder and network path.
     let broadcast = stream.map(|(w, h, fps)| {
@@ -406,11 +411,16 @@ pub fn run(
                     }
                     // Echo direct messages from contacts.
                     ContactEvent::DmReceived { from, dm } => {
+                        if !echoed.borrow_mut().insert((*from, dm.id)) {
+                            return;
+                        }
                         println!("dm: {}", dm.text);
                         contacts.send(ContactCommand::SendDm {
                             to: *from,
                             dm: glance_proto::WireDm {
-                                id: rand::random(),
+                                // Derived from theirs, so even a repeated
+                                // echo is recognised as the same message.
+                                id: dm.id ^ ECHO_ID,
                                 sent_at: std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_millis() as u64)
