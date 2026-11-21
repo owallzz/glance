@@ -1405,6 +1405,9 @@ fn tile_button(_p: &Palette, id: &str, glyph: IconName, tip: &'static str) -> St
         .items_center()
         .justify_center()
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+        // Clicks on a control stay there: a double-click must not reach the
+        // tile, where it toggles focus.
+        .on_click(|_, _, cx| cx.stop_propagation())
         .child(icon(glyph, 18., gpui_kit::white()))
 }
 
