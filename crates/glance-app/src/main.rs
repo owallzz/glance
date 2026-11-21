@@ -158,6 +158,7 @@ fn main() {
 
         cx.bind_keys([KeyBinding::new(app::SHORTCUTS[3], Quit, None)]);
         app::bind_keys(cx);
+        popout::bind_keys(cx);
 
         let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
         // We draw our own Discord-style title bar (drag area, minimize,

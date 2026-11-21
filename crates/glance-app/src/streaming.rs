@@ -563,8 +563,8 @@ impl GlanceApp {
             glance_proto::Track::Screen => room
                 .popouts
                 .get(&peer)
-                .or_else(|| room.watching.get(&peer))
-                .cloned(),
+                .map(|p| p.video.clone())
+                .or_else(|| room.watching.get(&peer).cloned()),
         };
         let Some(view) = view else {
             return; // stopped watching meanwhile; dropping the feed ends it
