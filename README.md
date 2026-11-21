@@ -51,7 +51,7 @@ Download the file for your system from the [latest release](https://github.com/o
 
 Every release also has plain binaries (`glance-vX.Y.Z-linux-x86_64`, `-windows-x86_64.exe`, `-macos-aarch64`): download, make executable, run.
 
-After that, glance keeps itself up to date (all but the Flatpak, see below). Every file is signed with [minisign](https://jedisct1.github.io/minisign/); the `.minisig` next to it and the public key in [`packaging/minisign.pub`](packaging/minisign.pub) let you check a download by hand: `minisign -Vm <file> -p minisign.pub`.
+After that, glance keeps itself up to date (the Flatpak tells you when there's a new one, see below). Every file is signed with [minisign](https://jedisct1.github.io/minisign/); the `.minisig` next to it and the public key in [`packaging/minisign.pub`](packaging/minisign.pub) let you check a download by hand: `minisign -Vm <file> -p minisign.pub`.
 
 ### First launch
 
@@ -64,7 +64,7 @@ The builds aren't signed with a paid certificate yet, so your system warns the f
 ### Linux notes
 
 - The AppImage and the plain binary use your system's PipeWire, Vulkan and graphics drivers. They need a distro from 2024 or newer (glibc 2.39, e.g. Ubuntu 24.04, Fedora 40). If the AppImage complains about FUSE, run it with `--appimage-extract-and-run`.
-- The Flatpak needs the Flathub remote for its runtime: `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. It doesn't update itself; install the new `.flatpak` to upgrade.
+- The Flatpak needs the Flathub remote for its runtime: `flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`. It can't update itself, but glance tells you when a new version is out; install the new `.flatpak` to upgrade.
 - glance waits in the system tray so contacts can ring you. KDE, Cinnamon, XFCE and most desktops show it; stock GNOME needs the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/). Without a tray, closing the window quits glance.
 - The AppImage and plain binary register `glance://` links on first launch; the Flatpak does so when it's installed. If you ran the AppImage or plain binary before, it may still own the links; make the Flatpak the handler with `xdg-mime default io.github.owallzz.glance.desktop x-scheme-handler/glance`.
 
