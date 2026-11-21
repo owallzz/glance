@@ -250,6 +250,11 @@ impl Node {
     /// someone turned out to be in it after all, join them instead of
     /// starting a second copy of the room next to theirs. Only when every
     /// remembered member answers that they've left does it host the room.
+    ///
+    /// Two former members pressing "Start again" at the same moment can both
+    /// find it empty and both host it. So after hosting, it waits a random
+    /// moment and probes once more; if another copy turned up, our room
+    /// connects to its members and the two meshes merge into one.
     pub async fn restart_room(
         &self,
         ticket: Ticket,
@@ -259,7 +264,13 @@ impl Node {
         timeout: Duration,
     ) -> Result<RoomHandle> {
         match self.probe_room(&ticket, candidates.clone(), timeout).await {
-            probe::RoomStatus::Empty => self.host_room(ticket, profile, state).await,
+            probe::RoomStatus::Empty => {
+                let mut hosted = ticket.clone();
+                hosted.host = invite_addr(self.endpoint().addr());
+                let (handle, room) = self.spawn_room(hosted, profile, state, Vec::new());
+                self.merge_split_copy(ticket, candidates, timeout, room);
+                Ok(handle)
+            }
             status => {
                 let mut via: Vec<EndpointAddr> = match status {
                     probe::RoomStatus::Alive(members) => {
@@ -289,6 +300,34 @@ impl Node {
         probe::probe(self.endpoint(), ticket, candidates, timeout).await
     }
 
+    /// The tie-break after hosting a room that looked empty: wait a random
+    /// 300–1500 ms (so two hosts don't keep probing in lockstep), probe the
+    /// same peers again, and if someone else is now running the room, have
+    /// our room connect to its members.
+    fn merge_split_copy(
+        &self,
+        ticket: Ticket,
+        mut candidates: Vec<EndpointAddr>,
+        timeout: Duration,
+        room: flume::Sender<room::Inbound>,
+    ) {
+        let endpoint = self.endpoint().clone();
+        candidates.push(ticket.host.clone());
+        tokio::spawn(async move {
+            let wait = rand::random_range(300..=1500);
+            tokio::time::sleep(Duration::from_millis(wait)).await;
+            if room.is_disconnected() {
+                return;
+            }
+            if let probe::RoomStatus::Alive(members) =
+                probe::probe(&endpoint, &ticket, candidates, timeout).await
+            {
+                let addrs = members.into_iter().map(|m| m.addr).collect();
+                let _ = room.send(room::Inbound::Merge(addrs));
+            }
+        });
+    }
+
     fn start_room(
         &self,
         ticket: Ticket,
@@ -296,6 +335,16 @@ impl Node {
         state: MemberState,
         entry: Vec<EndpointAddr>,
     ) -> RoomHandle {
+        self.spawn_room(ticket, profile, state, entry).0
+    }
+
+    fn spawn_room(
+        &self,
+        ticket: Ticket,
+        profile: WireProfile,
+        state: MemberState,
+        entry: Vec<EndpointAddr>,
+    ) -> (RoomHandle, flume::Sender<room::Inbound>) {
         let (handle, inbound_tx) = room::spawn(
             self.endpoint().clone(),
             ticket,
@@ -304,8 +353,8 @@ impl Node {
             entry,
             self.room_slot.clone(),
         );
-        *self.room_slot.lock().expect("room slot") = Some(inbound_tx);
-        handle
+        *self.room_slot.lock().expect("room slot") = Some(inbound_tx.clone());
+        (handle, inbound_tx)
     }
 
     pub async fn shutdown(&self) {

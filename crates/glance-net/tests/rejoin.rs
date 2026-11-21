@@ -313,3 +313,79 @@ async fn restarting_a_room_everyone_left_hosts_it() {
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].addr.id, nb.id());
 }
+
+/// Ben and Cy press "Start again" at the same moment: both may find the room
+/// empty and host it, but the follow-up probe finds the other copy and the
+/// two merge into one room.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_simultaneous_restarts_end_up_in_one_room() {
+    let (na, nb, nc) = (node().await, node().await, node().await);
+    let a = na
+        .create_room(profile("Ana"), MemberState::default())
+        .await
+        .unwrap();
+    let ticket = Ticket::parse(&a.link()).unwrap();
+    let b = nb
+        .join_room(ticket.clone(), profile("Ben"), MemberState::default())
+        .await
+        .unwrap();
+    let c = nc
+        .join_room(ticket.clone(), profile("Cy"), MemberState::default())
+        .await
+        .unwrap();
+    expect_members(&b, "b", &[na.id(), nc.id()]).await;
+    expect_members(&c, "c", &[na.id(), nb.id()]).await;
+    for room in [a, b, c] {
+        room.send(Command::Leave);
+        expect(&room, "closed", |e| matches!(e, RoomEvent::Closed)).await;
+    }
+    // Everyone has left.
+    let mut status = RoomStatus::Unknown;
+    for _ in 0..50 {
+        status = na
+            .probe_room(
+                &ticket,
+                vec![nb.endpoint().addr(), nc.endpoint().addr()],
+                Duration::from_secs(3),
+            )
+            .await;
+        if status == RoomStatus::Empty {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, RoomStatus::Empty);
+
+    let timeout = Duration::from_secs(3);
+    let (b, c) = tokio::join!(
+        nb.restart_room(
+            ticket.clone(),
+            vec![na.endpoint().addr(), nc.endpoint().addr()],
+            profile("Ben"),
+            MemberState::default(),
+            timeout,
+        ),
+        nc.restart_room(
+            ticket.clone(),
+            vec![na.endpoint().addr(), nb.endpoint().addr()],
+            profile("Cy"),
+            MemberState::default(),
+            timeout,
+        ),
+    );
+    let (b, c) = (b.unwrap(), c.unwrap());
+    // A hosted copy names its host in its ticket.
+    let split = b.ticket.host.id == nb.id() && c.ticket.host.id == nc.id();
+    eprintln!("both hosted (split, then merged): {split}");
+    expect_members(&b, "b", &[nc.id()]).await;
+    expect_members(&c, "c", &[nb.id()]).await;
+    // And they stay one room: each copy now reports the other inside it.
+    let RoomStatus::Alive(members) = na
+        .probe_room(&ticket, vec![nb.endpoint().addr()], timeout)
+        .await
+    else {
+        panic!("the room should be alive")
+    };
+    let ids: HashSet<EndpointId> = members.iter().map(|m| m.addr.id).collect();
+    assert_eq!(ids, HashSet::from([nb.id(), nc.id()]));
+}
