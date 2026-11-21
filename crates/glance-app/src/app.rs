@@ -334,7 +334,7 @@ pub struct Room {
     /// Participant whose volume control is open in the sidebar.
     pub volume_open: Option<PeerId>,
     /// Streams shown in their own windows.
-    pub popouts: HashMap<PeerId, Entity<VideoView>>,
+    pub popouts: HashMap<PeerId, crate::popout::Popout>,
     /// Camera tiles (everyone's camera is shown automatically, ours too).
     pub cameras: HashMap<PeerId, Entity<VideoView>>,
     /// Our camera broadcast, if the camera is on.
