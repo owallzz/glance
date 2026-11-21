@@ -2,10 +2,12 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Test-builds every package without a tag: the files land as workflow
+  # artifacts (named after the branch), nothing is uploaded to a release.
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,9 +17,11 @@ jobs:
     name: Linux
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
     steps:
       - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-dev libx11-xcb-dev libxrandr-dev libwayland-dev libvulkan-dev libssl-dev libpipewire-0.3-dev libclang-dev libdbus-1-dev libasound2-dev nasm
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libx11-dev libx11-xcb-dev libxrandr-dev libwayland-dev libvulkan-dev libssl-dev libpipewire-0.3-dev libclang-dev libdbus-1-dev libasound2-dev nasm file desktop-file-utils appstream
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -31,9 +35,66 @@ jobs:
         run: |
           mkdir dist
           cp target/release/glance "dist/glance-${GITHUB_REF_NAME}-linux-x86_64"
+      - name: AppImage
+        env:
+          # GitHub runners have no FUSE.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          out="dist/glance-${GITHUB_REF_NAME}-linux-x86_64.AppImage"
+          scripts/package-appimage.sh target/release/glance "$out"
+          "$out" --version
       - uses: actions/upload-artifact@v7
         with:
           name: dist-linux
+          path: dist/*
+      - uses: softprops/action-gh-release@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/*
+
+  # flatpak-builder builds offline, so the crates come from a sources file
+  # generated from Cargo.lock.
+  flatpak-sources:
+    name: Flatpak sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/flatpak-cargo-sources.sh packaging/flatpak/cargo-sources.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flatpak-cargo-sources
+          path: packaging/flatpak/cargo-sources.json
+
+  flatpak:
+    name: Flatpak
+    needs: flatpak-sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: flatpak-cargo-sources
+          path: packaging/flatpak
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: glance-${{ github.ref_name }}-linux-x86_64.flatpak
+          manifest-path: packaging/flatpak/io.github.owallzz.glance.yml
+          cache-key: flatpak-builder-${{ hashFiles('Cargo.lock') }}
+          upload-artifact: false
+      - name: Package
+        run: |
+          mkdir -p dist
+          mv "glance-${GITHUB_REF_NAME}-linux-x86_64.flatpak" dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-flatpak
           path: dist/*
       - uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
@@ -54,6 +115,8 @@ jobs:
             asset: windows-x86_64.exe
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 90
+    permissions:
+      contents: write
     defaults:
       run:
         shell: bash
@@ -74,12 +137,40 @@ jobs:
           bin=target/release/glance
           [ "${{ matrix.name }}" = "Windows" ] && bin=target/release/glance.exe
           cp "$bin" "dist/glance-${GITHUB_REF_NAME}-${{ matrix.asset }}"
-      - name: macOS app bundle (.dmg)
+          "$bin" --version
+      - name: macOS app bundle (.dmg, .app.tar.gz)
         if: matrix.name == 'macOS'
         run: |
           # The .app holds the permission prompts and glance:// handler.
           scripts/package-macos.sh target/release/glance "${GITHUB_REF_NAME#v}" bundle
           mv bundle/glance.dmg "dist/glance-${GITHUB_REF_NAME}-macos-aarch64.dmg"
+          # No AppleDouble (._*) files, which would break the signature.
+          COPYFILE_DISABLE=1 tar -C bundle -czf "dist/glance-${GITHUB_REF_NAME}-macos-aarch64.app.tar.gz" glance.app
+      - name: Windows installer and portable zip
+        if: matrix.name == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = ((cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object name -eq 'glance-app').version
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          & $iscc "/DAppVersion=$version" "/DSourceExe=$PWD\target\release\glance.exe" `
+            "/DOutputDir=$PWD\dist" "/DOutputName=glance-$tag-windows-x86_64-setup" `
+            packaging\windows\glance.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Portable: glance.exe plus an empty `portable` marker, which keeps
+          # the data in a `data` folder next to it.
+          New-Item -ItemType Directory portable | Out-Null
+          Copy-Item target\release\glance.exe portable\glance.exe
+          New-Item -ItemType File portable\portable | Out-Null
+          Push-Location portable
+          7z a -tzip "..\dist\glance-$tag-windows-x86_64-portable.zip" glance.exe portable
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Pop-Location
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.name }}

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build glance.app and a .dmg from a release binary (run on macOS).
 #   scripts/package-macos.sh <glance-binary> <version> <out-dir>
+# Leaves <out-dir>/glance.dmg and <out-dir>/glance.app.
 # The app is ad-hoc signed (no Apple Developer ID): the first launch of a
 # downloaded copy needs right-click > Open.
 set -euo pipefail
@@ -27,4 +28,7 @@ mkdir -p "$stage"
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
 hdiutil create -volname glance -srcfolder "$stage" -ov -format UDZO "$out/glance.dmg" >/dev/null
+# The bare bundle too, for the .app.tar.gz the updater installs.
+rm -rf "$out/glance.app"
+cp -R "$app" "$out/"
 echo "$out/glance.dmg"
