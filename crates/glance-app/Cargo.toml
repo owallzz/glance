@@ -45,3 +45,7 @@ tray-icon = "0.26"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.56"
+
+# Icon and version info in glance.exe (see build.rs).
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"

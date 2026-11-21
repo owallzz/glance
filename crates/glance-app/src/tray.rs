@@ -71,12 +71,37 @@ pub fn icon_png(size: u32) -> Vec<u8> {
     out
 }
 
-/// `glance --export-icons <dir>`: icon_<size>.png for packaging.
+/// The app icon as a Windows .ico (PNG-compressed entries, 16 to 256 px).
+pub fn icon_ico() -> Vec<u8> {
+    const SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
+    let images: Vec<Vec<u8>> = SIZES.iter().map(|&s| icon_png(s)).collect();
+    let mut out = vec![0, 0, 1, 0];
+    out.extend_from_slice(&(SIZES.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * SIZES.len();
+    for (&size, png) in SIZES.iter().zip(&images) {
+        // 0 means 256 in the directory entry.
+        let dim = if size >= 256 { 0 } else { size as u8 };
+        out.extend_from_slice(&[dim, dim, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes()); // colour planes
+        out.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
+        out.extend_from_slice(&(png.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += png.len();
+    }
+    for png in images {
+        out.extend(png);
+    }
+    out
+}
+
+/// `glance --export-icons <dir>`: icon_<size>.png and glance.ico for
+/// packaging.
 pub fn export_icons(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    for size in [16, 32, 64, 128, 256, 512, 1024] {
+    for size in [16, 32, 48, 64, 128, 256, 512, 1024] {
         std::fs::write(dir.join(format!("icon_{size}.png")), icon_png(size))?;
     }
+    std::fs::write(dir.join("glance.ico"), icon_ico())?;
     Ok(())
 }
 
@@ -365,6 +390,20 @@ mod portal {
 #[cfg(test)]
 mod tests {
     use super::icon_rgba;
+
+    #[test]
+    fn ico_matches_the_packaged_one() {
+        let ico = super::icon_ico();
+        assert_eq!(&ico[..4], &[0, 0, 1, 0]);
+        assert_eq!(u16::from_le_bytes([ico[4], ico[5]]), 7);
+        // The Windows build embeds packaging/windows/glance.ico; regenerate it
+        // with `glance --export-icons <dir>` when the icon changes.
+        let packaged = include_bytes!("../../../packaging/windows/glance.ico");
+        assert!(
+            ico == packaged,
+            "packaging/windows/glance.ico is stale: run `glance --export-icons` and copy glance.ico"
+        );
+    }
 
     #[test]
     fn icon_png_is_a_png() {
