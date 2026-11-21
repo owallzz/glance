@@ -146,6 +146,8 @@ pub struct Settings {
     pub auto_update: bool,
     /// Per-person volume and local mute, by peer id.
     pub peer_audio: glance_core::voice::PeerAudio,
+    /// Room chat panel width (logical px), set by dragging its edge.
+    pub chat_width: f32,
 }
 
 impl Default for Settings {
@@ -172,6 +174,7 @@ impl Default for Settings {
             hardware_encoding: true,
             auto_update: true,
             peer_audio: Default::default(),
+            chat_width: crate::room::CHAT_DEFAULT_WIDTH,
         }
     }
 }

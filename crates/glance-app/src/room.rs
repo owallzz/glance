@@ -21,6 +21,39 @@ pub fn masked_link() -> String {
     "glance://join/••••••••".into()
 }
 
+/// Room chat panel width limits (logical px).
+pub const CHAT_MIN_WIDTH: f32 = 240.;
+pub const CHAT_MAX_WIDTH: f32 = 640.;
+pub const CHAT_DEFAULT_WIDTH: f32 = 360.;
+/// The rail and the room sidebar, left of the stage.
+const LEFT_PANELS_WIDTH: f32 = 312.;
+/// Keep at least this much for the stage (its control bar needs it).
+const STAGE_MIN_WIDTH: f32 = 420.;
+
+/// The chat panel width to use in a window this wide: at least the minimum,
+/// and at most the maximum, half the window, or what leaves the stage its
+/// minimum, whichever is smallest.
+pub fn clamp_chat_width(width: f32, window_width: f32) -> f32 {
+    let max = CHAT_MAX_WIDTH
+        .min(window_width * 0.5)
+        .min(window_width - LEFT_PANELS_WIDTH - STAGE_MIN_WIDTH)
+        .max(CHAT_MIN_WIDTH);
+    if width.is_finite() {
+        width.clamp(CHAT_MIN_WIDTH, max)
+    } else {
+        CHAT_DEFAULT_WIDTH.clamp(CHAT_MIN_WIDTH, max)
+    }
+}
+
+/// Drag payload (and its invisible drag view) for the chat resize handle.
+struct ChatResize;
+
+impl Render for ChatResize {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 /// "Copy" that turns into "Copied" for a moment.
 pub fn copy_button(id: &'static str, copied: bool, cx: &mut Context<GlanceApp>) -> Button {
     let button = Button::new(id)
@@ -223,10 +256,11 @@ impl GlanceApp {
     pub fn render_room(
         &mut self,
         p: &Palette,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let chat_open = self.room.as_ref().is_some_and(|r| r.chat_open);
+        let window_width = f32::from(window.viewport_size().width);
         div()
             .id("room-view")
             .flex_1()
@@ -239,7 +273,25 @@ impl GlanceApp {
             }))
             .child(self.render_room_sidebar(p, cx))
             .child(self.render_stage(p, cx))
-            .when(chat_open, |d| d.child(self.render_chat(p, cx)))
+            .when(chat_open, |d| {
+                d.child(self.render_chat(p, window_width, cx))
+            })
+            // Dragging the chat's left edge: the panel ends at the window's
+            // right edge, so its width is what's right of the pointer.
+            .on_drag_move(
+                cx.listener(|this, ev: &DragMoveEvent<ChatResize>, window, cx| {
+                    let window_width = f32::from(window.viewport_size().width);
+                    let width = clamp_chat_width(
+                        window_width - f32::from(ev.event.position.x),
+                        window_width,
+                    );
+                    if (width - this.settings.chat_width).abs() >= 0.5 {
+                        this.settings.chat_width = width;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_drop(cx.listener(|this, _: &ChatResize, _, _| this.save_settings()))
             .children(self.render_person_menu(p, cx))
     }
 
@@ -1068,7 +1120,14 @@ impl GlanceApp {
             )
     }
 
-    fn render_chat(&mut self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chat(
+        &mut self,
+        p: &Palette,
+        window_width: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let width = clamp_chat_width(self.settings.chat_width, window_width);
+        let hover = p.brand;
         let messages = self
             .room
             .as_ref()
@@ -1090,8 +1149,20 @@ impl GlanceApp {
                 _ => groups.push((m.author, vec![m])),
             }
         }
+        // Drag handle on the left edge (a few px wide, over the border).
+        let handle = div()
+            .id("chat-resize")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(-3.))
+            .w(px(6.))
+            .cursor_col_resize()
+            .hover(move |s| s.bg(hover.opacity(0.6)))
+            .on_drag(ChatResize, |_, _, _, cx| cx.new(|_| ChatResize));
         div()
-            .w(px(360.))
+            .relative()
+            .w(px(width))
             .h_full()
             .flex_shrink_0()
             .flex()
@@ -1163,6 +1234,8 @@ impl GlanceApp {
                         )),
                 ),
             )
+            // Last, so it's on top of the panel's left edge.
+            .child(handle)
     }
 
     fn chat_group(
@@ -1427,4 +1500,24 @@ fn muted_by_you_icon(p: &Palette, id: PeerId, size: f32) -> AnyElement {
         .tooltip(|window, cx| Tooltip::new("Muted by you").build(window, cx))
         .child(icon(IconName::VolumeX, size, p.muted_by_you))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CHAT_DEFAULT_WIDTH, CHAT_MAX_WIDTH, CHAT_MIN_WIDTH, clamp_chat_width};
+
+    #[test]
+    fn chat_width_stays_in_bounds() {
+        // A roomy window: the fixed maximum applies.
+        assert_eq!(clamp_chat_width(360., 1920.), 360.);
+        assert_eq!(clamp_chat_width(900., 1920.), CHAT_MAX_WIDTH);
+        assert_eq!(clamp_chat_width(100., 1920.), CHAT_MIN_WIDTH);
+        // The stage keeps its minimum: 1200 - 312 - 420, 1100 - 312 - 420.
+        assert_eq!(clamp_chat_width(600., 1200.), 468.);
+        assert_eq!(clamp_chat_width(900., 1100.), 368.);
+        // A tiny window still gets the minimum.
+        assert_eq!(clamp_chat_width(500., 400.), CHAT_MIN_WIDTH);
+        // Garbage from a hand-edited settings file.
+        assert_eq!(clamp_chat_width(f32::NAN, 1920.), CHAT_DEFAULT_WIDTH);
+    }
 }
