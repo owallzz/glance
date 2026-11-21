@@ -681,6 +681,7 @@ impl GlanceApp {
 
     pub fn leave_room(&mut self, cx: &mut Context<Self>) {
         self.record_call_end();
+        self.cancel_rings();
         self.invite_open = false;
         if let Some(room) = self.room.as_ref() {
             for b in [room.broadcast.as_ref(), room.camera_broadcast.as_ref()]

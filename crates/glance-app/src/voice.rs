@@ -22,6 +22,7 @@ impl GlanceApp {
             noise_suppression: self.settings.noise_suppression,
             auto_gain: self.settings.auto_gain,
         };
+        let ringing = !self.live.ringing_out.is_empty();
         let Some(room) = self.room.as_mut() else {
             return;
         };
@@ -85,6 +86,7 @@ impl GlanceApp {
                 engine.set_peer_volume(glance_media::stream_audio::stream_key(p.profile.id.0), *v);
             }
         }
+        engine.set_ringback(ringing);
         let problems = engine.problems.clone();
         room.audio = Some(engine);
 
