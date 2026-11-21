@@ -377,10 +377,16 @@ impl GlanceApp {
         } else {
             p.green
         });
-        let route = person.connection.map(|c| match c.route {
-            Route::Direct => format!("Direct · {} ms", c.rtt_ms),
-            Route::Relayed => format!("Relayed · {} ms", c.rtt_ms),
-        });
+        // No row tooltip while a context menu is open: it would sit on top
+        // of the menu's first item.
+        let menu_open = self.room.as_ref().is_some_and(|r| r.menu.is_some());
+        let route = person
+            .connection
+            .filter(|_| !menu_open)
+            .map(|c| match c.route {
+                Route::Direct => format!("Direct · {} ms", c.rtt_ms),
+                Route::Relayed => format!("Relayed · {} ms", c.rtt_ms),
+            });
         div()
             .id(SharedString::from(format!("person-{}", id.short())))
             .h(px(34.))
